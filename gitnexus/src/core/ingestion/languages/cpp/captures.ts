@@ -158,6 +158,25 @@ function cppCaptureBudgetMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : CPP_CAPTURE_BUDGET_DEFAULT_MS;
 }
 
+/** The grammar can close a template list on the first half of >= and put
+ * the remaining initializer in an adjacent ERROR. Keep the formal and
+ * earlier defaults, without turning a partial expression into its default. */
+function cppTypeParameterCapture(node: SyntaxNode, existing?: Capture): Capture {
+  const capture = existing ?? nodeToCapture('@declaration.type-parameters', node);
+  const recovery = node.nextSibling;
+  if (
+    recovery?.type !== 'ERROR' ||
+    recovery.startIndex !== node.endIndex ||
+    recovery.firstChild?.type !== '='
+  )
+    return capture;
+  const last = node.lastNamedChild;
+  if (last?.type !== 'optional_parameter_declaration') return capture;
+  const equals = last.children.find((child) => child.type === '=');
+  if (!equals) return capture;
+  return { ...capture, text: capture.text.slice(0, equals.startIndex - node.startIndex) + '>' };
+}
+
 export function emitCppScopeCaptures(
   sourceText: string,
   filePath: string,
@@ -246,13 +265,15 @@ export function emitCppScopeCaptures(
       nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'],
       'function_definition',
     );
-    if (callable?.parent?.type === 'template_declaration') {
-      const parameters = callable.parent.childForFieldName('parameters');
-      if (parameters !== null)
-        grouped['@declaration.type-parameters'] = nodeToCapture(
-          '@declaration.type-parameters',
-          parameters,
-        );
+    const parameters =
+      callable?.parent?.type === 'template_declaration'
+        ? callable.parent.childForFieldName('parameters')
+        : nodeMap['@declaration.type-parameters'];
+    if (parameters) {
+      grouped['@declaration.type-parameters'] = cppTypeParameterCapture(
+        parameters,
+        grouped['@declaration.type-parameters'],
+      );
     }
 
     // ── Handle using declarations (using namespace / using name) ────

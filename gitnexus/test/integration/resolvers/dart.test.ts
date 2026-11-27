@@ -1236,10 +1236,15 @@ it.skipIf(!dartAvailable)(
     );
     const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')];
     expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual(
-      ['BoundedGeneric', 'Concrete', 'Direct', 'Generic'].map((owner) => [
-        `Class:types.dart:${owner}`,
-        'Method:types.dart:Base.accept#1',
-      ]),
+      [
+        'AlreadyNullable',
+        'BoundedGeneric',
+        'Concrete',
+        'Constructed',
+        'Direct',
+        'Generic',
+        'Nested',
+      ].map((owner) => [`Class:types.dart:${owner}`, 'Method:types.dart:Base.accept#1']),
     );
   },
 );

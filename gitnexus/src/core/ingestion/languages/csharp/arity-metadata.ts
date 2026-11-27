@@ -22,6 +22,8 @@ import { csharpMethodConfig } from '../../method-extractors/configs/csharp.js';
 import { withoutTypeComments } from '../../utils/type-parameters.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
+import { csharpConstructedType } from './nullable-heritage.js';
+
 interface CsharpArityMetadata {
   readonly declaredParameterTypes?: readonly string[];
   readonly parameterCount: number | undefined;
@@ -43,7 +45,15 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
     if (p.type === null) continue;
-    if (
+    const constructed =
+      fnNode.type === 'method_declaration' && p.rawType?.includes('<')
+        ? csharpConstructedType(withoutTypeComments(p.rawType))
+        : undefined;
+    if (constructed && p.rawType !== p.type) {
+      declaredParameterTypes ??= [...types];
+      const mode = /^(?:ref|out|in|this)\s+/u.exec(p.type)?.[0] ?? '';
+      declaredParameterTypes[typeIndex] = mode + constructed;
+    } else if (
       fnNode.type === 'method_declaration' &&
       p.rawType?.endsWith('?') &&
       !p.type.endsWith('?') &&

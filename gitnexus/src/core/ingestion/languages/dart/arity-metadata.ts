@@ -10,6 +10,7 @@
  * named param or an optional positional (`[...]`) param is optional.
  */
 
+import { dartNominalType } from './nullable-heritage.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { dartMethodConfig, type DartParameterInfo } from '../../method-extractors/configs/dart.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
@@ -37,11 +38,14 @@ export function computeDartArityMetadata(fnNode: SyntaxNode): DartArityMetadata 
   }
 
   const total = params.length;
-  const declaredParameterTypes =
-    params.some((p) => p.nullableHeritageType) &&
-    params.every((p) => p.type && p.nullableHeritageType !== null)
-      ? params.map((p) => p.nullableHeritageType ?? p.type!)
-      : undefined;
+  const declared = params.some((p) => p.nullableHeritageType?.endsWith('?'))
+    ? params.map((p) =>
+        p.type && p.nullableHeritageType !== null
+          ? dartNominalType(p.nullableHeritageType ?? p.type)
+          : null,
+      )
+    : undefined;
+  const declaredParameterTypes = declared?.every((type) => type !== null) ? declared : undefined;
   return {
     declaredParameterTypes,
     parameterCount: total,

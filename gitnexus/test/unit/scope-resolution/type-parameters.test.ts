@@ -60,6 +60,10 @@ describe('parseTypeParameterList', () => {
     ],
     ['<T extends Repo = DefaultRepo>', [{ name: 'T', bound: 'Repo', defaultType: 'DefaultRepo' }]],
     // Commas inside a bound are not entry separators.
+    [
+      '<U, T extends Box<U>=Default<U>>',
+      [{ name: 'U' }, { name: 'T', bound: 'Box<U>', defaultType: 'Default<U>' }],
+    ],
     ['<T extends Map<K, V>, K>', [{ name: 'T', bound: 'Map<K, V>' }, { name: 'K' }]],
     // An intersection bound is kept VERBATIM — splitting it is the consumer's
     // decision, and `soleBoundBaseName` declines on it rather than guessing.
@@ -100,6 +104,32 @@ describe('parseTypeParameterList', () => {
     // type parameter in the same list still parses.
     expect(parseTypeParameterList("<'a, T: Repo>")).toEqual([{ name: 'T', bound: 'Repo' }]);
   });
+});
+
+it('retains proven C++ template parameters when a comparison splits the captured list', () => {
+  const source = `
+template<int N, bool Prior = true, bool B = N >= 1, class Lost = int> struct Compared { static constexpr bool value = B; };
+template<int N, bool B = N >= 1> constexpr bool compare() { return B; }
+template<int N, bool B = (N >= 1), class Kept = int> struct Grouped {};
+static_assert(!Compared<-1>::value && !compare<-1>() && static_cast<bool>(-1));
+`;
+  const parsed = extractParsedFile(cppProvider, source, 'defaults.cpp')!;
+  const parameters = (name: string) => {
+    const defs = parsed.localDefs.filter((def) => def.qualifiedName === name);
+    expect(defs.length).toBeGreaterThan(0);
+    return defs.map((def) => def.typeParameters);
+  };
+  for (const list of parameters('Compared')) {
+    expect(list).toEqual([{ name: 'N' }, { name: 'Prior', defaultType: 'true' }, { name: 'B' }]);
+  }
+  for (const list of parameters('compare')) expect(list).toEqual([{ name: 'N' }, { name: 'B' }]);
+  for (const list of parameters('Grouped')) {
+    expect(list).toEqual([
+      { name: 'N' },
+      { name: 'B', defaultType: '(N >= 1)' },
+      { name: 'Kept', defaultType: 'int' },
+    ]);
+  }
 });
 
 describe('C++ specialization discriminator (#2833 Gap A input)', () => {

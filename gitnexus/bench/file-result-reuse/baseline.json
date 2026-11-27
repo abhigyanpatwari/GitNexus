@@ -13,7 +13,8 @@
       ],
       "equivalentCandidateSourceTrees": [
         ["fd11ffbae4637070401d0ac7a4da1ceb0173d693", "e73a02d68515bff1d37b33702e889f311b18c535"],
-        ["196a9d40f93e891555e73fbf6cb74fc834944584", "e73a02d68515bff1d37b33702e889f311b18c535"]
+        ["196a9d40f93e891555e73fbf6cb74fc834944584", "e73a02d68515bff1d37b33702e889f311b18c535"],
+        ["8c3a5ce4856cf9d35ca2fb5cbd78a4f62ca9a430", "e73a02d68515bff1d37b33702e889f311b18c535"]
       ],
       "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
       "sourceFiles": 1205,

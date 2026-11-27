@@ -105,7 +105,7 @@ export class HeritageSubstitutions {
   private readonly normalizedEdges = new Map<string, Bindings>();
   private readonly nullableEdges = new Set<string>();
   private readonly nullableOwners = new Map<string, NullableOwner>();
-  private readonly declaredMethodTypes = new Map<string, string[]>();
+  private readonly declaredMethodTypes = new Map<string, string[] | null>();
   private readonly methodParameters = new Map<string, ReadonlySet<string>>();
 
   get hasBindings(): boolean {
@@ -160,7 +160,7 @@ export class HeritageSubstitutions {
   }
 
   /** Resolve source spellings after the language has installed its namespace bindings. */
-  normalizeBase(child: string, base: string, normalize: (type: string) => string) {
+  normalizeBase(child: string, base: string, normalize: (type: string) => string | null) {
     const key = heritageTypeArgumentsKey(child, base);
     const bindings = this.edges.get(key);
     if (!bindings) return;
@@ -191,10 +191,11 @@ export class HeritageSubstitutions {
     id: string,
     def: SymbolDefinition,
     useDeclaredTypes = false,
-    scopedTypes?: string[],
+    scopedTypes?: string[] | null,
   ) {
-    if (scopedTypes || (useDeclaredTypes && def.declaredParameterTypes)) {
-      this.declaredMethodTypes.set(id, scopedTypes ?? def.declaredParameterTypes!);
+    if (scopedTypes !== undefined) this.declaredMethodTypes.set(id, scopedTypes);
+    else if (useDeclaredTypes && def.declaredParameterTypes) {
+      this.declaredMethodTypes.set(id, def.declaredParameterTypes);
     }
     if (def.typeParameters?.length) {
       this.methodParameters.set(id, new Set(def.typeParameters.map((p) => p.name)));
@@ -254,7 +255,9 @@ export class HeritageSubstitutions {
         path && this.normalizedEdges.size
           ? (normalized ??= compose(true)).bindingsByOwner.get(owner)
           : bindingsByOwner.get(owner);
-      const exact = path ? (this.declaredMethodTypes.get(method) ?? types) : types;
+      const declared = path ? this.declaredMethodTypes.get(method) : undefined;
+      if (declared === null) return null;
+      const exact = declared ?? types;
       const metadata = this.nullableOwners.get(owner);
       const context = path ? metadata : undefined;
       const normalize = path?.normalize;
@@ -264,7 +267,9 @@ export class HeritageSubstitutions {
       for (const type of exact) {
         const result = specializeType(type, bindings, local, context, metadata?.qualifiedPattern);
         if (result === null) return null;
-        specialized.push(normalize?.(result) ?? result);
+        const normalized = normalize ? normalize(result) : result;
+        if (normalized === null) return null;
+        specialized.push(normalized);
       }
       return specialized;
     };

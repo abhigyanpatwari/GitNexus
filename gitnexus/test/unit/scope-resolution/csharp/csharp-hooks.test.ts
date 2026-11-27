@@ -598,6 +598,28 @@ describe('C# nullable heritage specialization', () => {
     );
   });
 
+  it('specializes only complete, grounded nominal arguments under a known constraint', () => {
+    const constrained = {
+      ...owner,
+      templateConstraints: { referenceParameters: ['T'], valueParameters: ['V'] },
+    };
+    const box = 'global::Box<global::Box<int?>>';
+    expect(specializeCsharpNullableFormal(constrained, 'T', box + '?')).toBe(box);
+    expect(specializeCsharpNullableFormal(constrained, 'V', 'global::Packet<int>?')).toBe(
+      'global::Packet<int>?',
+    );
+    expect(specializeCsharpNullableFormal(owner, 'T', box)).toBeNull();
+    for (const type of [
+      'global::Box<Local>',
+      'global::Box<,int>',
+      'global::Box<int,,int>',
+      'global::Box<(int,int)>',
+      'global::Box<int>[]',
+    ]) {
+      expect(specializeCsharpNullableFormal(constrained, 'T', type)).toBeNull();
+    }
+  });
+
   it('defers a missing partial constraint and uses a known value constraint', () => {
     const partial = { ...owner, templateConstraints: { partial: true, valueParameters: ['V'] } };
     expect(specializeCsharpNullableFormal(partial, 'T', 'int')).toBeNull();

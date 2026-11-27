@@ -2048,11 +2048,11 @@ export interface ScopeResolver {
     formal: string,
     actual: string,
   ) => string | null;
-  /** Canonical comparison spelling when nullable annotations do not change a method signature. */
+  /** Canonical comparison spelling, or null when a declaration cannot establish its type identity. */
   readonly normalizeNullableHeritageSignature?: (
     type: string,
     declaration?: { scope: ScopeId; indexes: ScopeResolutionIndexes },
-  ) => string;
+  ) => string | null;
 
   /**
    * Optional fallback for an UNQUALIFIED inheritance base that the shared

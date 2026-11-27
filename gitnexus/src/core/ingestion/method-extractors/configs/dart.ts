@@ -173,7 +173,7 @@ function extractDartReturnType(node: SyntaxNode): string | undefined {
  * - Optional named: `{int? x}` or `{required int x}` — wrapped in optional_formal_parameters with '{'
  */
 export interface DartParameterInfo extends ParameterInfo {
-  /** A bare nullable type for heritage comparison, or null for a composite type. */
+  /** A written nominal application or nullable type, or null for a non-nominal type. */
   nullableHeritageType?: string | null;
 }
 
@@ -268,10 +268,17 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): DartPa
       }
       while (suffix?.type === 'comment' || suffix?.type === 'documentation_comment')
         suffix = suffix.nextNamedSibling;
-      if (child.type !== 'type_identifier' || suffix?.type === 'type_arguments') {
+      if (child.type !== 'type_identifier') {
         nullableHeritageType = null;
-      } else if (suffix?.type === 'nullable_type' && suffix.text === '?') {
-        nullableHeritageType = typeName + '?';
+      } else {
+        if (suffix?.type === 'type_arguments') {
+          nullableHeritageType = typeName + suffix.text;
+          suffix = suffix.nextNamedSibling;
+          while (suffix?.type === 'comment' || suffix?.type === 'documentation_comment')
+            suffix = suffix.nextNamedSibling;
+        }
+        if (suffix?.type === 'nullable_type' && suffix.text === '?')
+          nullableHeritageType = (nullableHeritageType ?? typeName) + '?';
       }
       break;
     }

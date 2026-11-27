@@ -71,6 +71,10 @@ const qualifiedNames =
   /[_\p{ID_Start}][\p{ID_Continue}]*(?:\s*(?:\.|::)\s*[_\p{ID_Start}][\p{ID_Continue}]*)*/gu;
 const namedComposite = /^[\p{ID_Continue}\s.<>,\[\]()]+$/u;
 
+export function isStableCsharpTypeName(name: string): boolean {
+  return /^global\s*::/u.test(name) || isCsharpReservedTypeKeyword(name);
+}
+
 // A rooted constructor can still contain a file-local alias. Check both the
 // original type and each argument before comparing names across declarations.
 function stableType(
@@ -80,7 +84,7 @@ function stableType(
 ): boolean {
   if (!namedComposite.test(type.replace(globalQualifier, '.'))) return false;
   for (const [name] of type.matchAll(qualifiedNames)) {
-    if (/^global\s*::/u.test(name) || isCsharpReservedTypeKeyword(name)) continue;
+    if (isStableCsharpTypeName(name)) continue;
     const actual = shadowed?.has(name) ? undefined : bindings?.get(name);
     if (actual === undefined || (actual !== null && !stableType(actual))) return false;
   }

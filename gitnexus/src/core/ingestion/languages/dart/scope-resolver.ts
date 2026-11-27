@@ -26,7 +26,7 @@
  *     field-walk heuristic over-connects when types are reliable).
  */
 
-import { specializeNamedNullableOperand } from '../../heritage-substitutions.js';
+import { dartNominalType } from './nullable-heritage.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
@@ -210,8 +210,11 @@ function buildDartMro(
 }
 
 export const dartScopeResolver: ScopeResolver = {
-  specializeNullableHeritageFormal: (_owner, _formal, actual) =>
-    specializeNamedNullableOperand(actual),
+  specializeNullableHeritageFormal: (_owner, _formal, actual) => {
+    const nominal = dartNominalType(actual);
+    return nominal === null || nominal.endsWith('?') ? nominal : nominal + '?';
+  },
+  normalizeNullableHeritageSignature: (type) => dartNominalType(type) ?? type,
   populateWorkspaceReferences: (files, ctx) => {
     applyDartPackageLanguageVersions(files, ctx);
     populateDartLibraryExports(files, ctx);

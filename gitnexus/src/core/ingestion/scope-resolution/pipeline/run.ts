@@ -1414,7 +1414,7 @@ export function runScopeResolution(
       if (def.type !== 'Method') continue;
       const useDeclaredTypes = nullableBindings && def.declaredParameterTypes !== undefined;
       const declared = def.declaredParameterTypes ?? def.parameterTypes;
-      let scopedTypes: string[] | undefined;
+      let scopedTypes: string[] | null | undefined;
       if (
         normalize &&
         declared &&
@@ -1430,11 +1430,15 @@ export function runScopeResolution(
         if (finalized.scopeTree.has(scope)) {
           for (const [i, type] of declared.entries()) {
             const normalized = normalize(type, { scope, indexes });
+            if (normalized === null) {
+              scopedTypes = null;
+              break;
+            }
             if (normalized !== type) (scopedTypes ??= [...declared])[i] = normalized;
           }
         }
       }
-      if (!def.typeParameters?.length && !useDeclaredTypes && !scopedTypes) continue;
+      if (!def.typeParameters?.length && !useDeclaredTypes && scopedTypes === undefined) continue;
       const id = resolveDefGraphId(def.filePath, def, nodeLookup);
       if (id) input.heritageSubstitutions.registerMethod(id, def, useDeclaredTypes, scopedTypes);
     }

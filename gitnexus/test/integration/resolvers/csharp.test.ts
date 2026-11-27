@@ -3142,3 +3142,25 @@ it('compares CLR reference identities in nullable generic override signatures', 
     ['Class:Use.cs:AcrossFiles', 'Method:Controls.cs:Contract.Check#1'],
   ]);
 });
+
+it('preserves constructed C# arguments and their nullable value or reference signature', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/constructed-csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const base = 'Method:Constructed.cs:Base.Accept#1';
+  expect(overrides).toEqual([
+    ['Class:Child.cs:SameIdentity', base],
+    ['Class:Constructed.cs:Annotated', base],
+    ['Class:Constructed.cs:Constructed', base],
+    ['Class:Constructed.cs:DeepAnnotations', base],
+    ['Class:Constructed.cs:Explicit', base],
+    ['Class:Constructed.cs:InnerReference', base],
+    ['Class:Constructed.cs:Lifted', 'Method:Constructed.cs:ValueBase.Accept#1'],
+    ['Class:Constructed.cs:Nested', base],
+    ['Class:Constructed.cs:Simple', base],
+  ]);
+});
