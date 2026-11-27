@@ -30,6 +30,15 @@
  * class's methods, again matching `spring.ts`: there an array-form class prefix
  * only ever suppresses the class, with the cross-product tracked in #2280.
  *
+ * A controller also serves the handlers it INHERITS. Nest's `PathsExplorer`
+ * reads method names off the whole prototype chain (`MetadataScanner
+ * .getAllMethodNames`), so `class UsersController extends CrudController`
+ * mounts every `@Get`/`@Post` of `CrudController` under the `users` prefix
+ * even when the subclass body is empty. Those routes are emitted here for a
+ * base class declared in the SAME file; see {@link collectInheritedRoutes}.
+ * A base class imported from another file is not followed, so its routes are
+ * still missing.
+ *
  * Known limitation: the URLs produced here are CONTROLLER-RELATIVE. A global
  * prefix (`app.setGlobalPrefix('api')`) and URI versioning are applied by the
  * bootstrap file, not by any decorator this file can see, so neither is
@@ -374,13 +383,21 @@ export function extractNestRoutes(
 
   const out: ExtractedDecoratorRoute[] = [];
 
+  // Built on the first controller that extends something, so a file of plain
+  // controllers never pays for the lookup.
+  let classIndex: ReadonlyMap<string, Parser.SyntaxNode | null> | undefined;
+  const classes = () => (classIndex ??= indexClassesByName(tree.rootNode));
+
   const visit = (node: Parser.SyntaxNode): void => {
     if (CLASS_DECLARATION_TYPES.has(node.type)) {
       const prefix = controllerPrefix(node, filePath);
       // `undefined` — not a controller at all. `null` — a controller whose
       // prefix could not be read, so its routes' URLs are unknowable.
       if (prefix !== undefined) {
-        if (prefix !== null) collectClassRoutes(node, prefix, filePath, lineOffset, out);
+        if (prefix !== null) {
+          collectClassRoutes(node, prefix, filePath, lineOffset, out);
+          collectInheritedRoutes(node, prefix, filePath, lineOffset, out, classes);
+        }
         return; // a controller's methods are handled here; don't re-walk them
       }
     }
@@ -408,7 +425,8 @@ const NON_HANDLER_MODIFIERS: ReadonlySet<string> = new Set(['static', 'get', 'se
 const LONGEST_NON_HANDLER_MODIFIER = 6;
 
 /**
- * Whether Nest could register this `method_definition` as a request handler.
+ * The `static`, `get` or `set` keyword that keeps Nest from registering this
+ * `method_definition` as a request handler, or `undefined` for a real handler.
  *
  * Reads `children`, NOT `namedChildren`, and that is the whole difficulty:
  * `static`, `get` and `set` are ANONYMOUS tokens in all three grammars this
@@ -440,16 +458,133 @@ const LONGEST_NON_HANDLER_MODIFIER = 6;
  * the uncached-getter trap {@link collectClassRoutes} documents — that one bites
  * when a PARENT's child list is re-marshalled once per member.
  */
-function isRequestHandler(member: Parser.SyntaxNode): boolean {
+function nonHandlerModifier(member: Parser.SyntaxNode): string | undefined {
   const nameNode = member.childForFieldName('name');
   for (const child of member.children) {
     if (child === nameNode) continue;
     const text = child.text;
-    if (text.length <= LONGEST_NON_HANDLER_MODIFIER && NON_HANDLER_MODIFIERS.has(text.trim())) {
-      return false;
-    }
+    if (text.length > LONGEST_NON_HANDLER_MODIFIER) continue;
+    const keyword = text.trim();
+    if (NON_HANDLER_MODIFIERS.has(keyword)) return keyword;
+  }
+  return undefined;
+}
+
+/** Whether Nest could register this `method_definition` as a request handler. */
+function isRequestHandler(member: Parser.SyntaxNode): boolean {
+  return nonHandlerModifier(member) === undefined;
+}
+
+/**
+ * Add the names `classNode` puts on its PROTOTYPE — its methods and accessors
+ * — and report whether all of them could be read. A static member lives on the
+ * constructor, a field on the instance and a `#private` method in a namespace
+ * of its own, so none of those is a prototype property a handler name can
+ * meet. A computed key is one, under a name this file does not state: the
+ * answer is then `false`, because what that member hides is unknown.
+ */
+function addPrototypeNames(classNode: Parser.SyntaxNode, names: Set<string>): boolean {
+  const body = classNode.childForFieldName('body');
+  if (!body) return true;
+  for (const member of body.namedChildren) {
+    if (member.type !== 'method_definition') continue;
+    if (nonHandlerModifier(member) === 'static') continue;
+    const nameNode = member.childForFieldName('name');
+    if (nameNode === null || nameNode.type === 'private_property_identifier') continue;
+    const name = propertyName(nameNode);
+    if (name === null) return false;
+    names.add(name);
   }
   return true;
+}
+
+/**
+ * The class a declaration extends, when the clause is a bare identifier.
+ * `extends ns.Base` and `extends Mixin(Base)` return `null`: neither names a
+ * class this file declares.
+ */
+function extendedClassName(classNode: Parser.SyntaxNode): string | null {
+  for (const child of classNode.namedChildren) {
+    if (child.type !== 'class_heritage') continue;
+    // tree-sitter-typescript wraps the expression in an `extends_clause`;
+    // tree-sitter-javascript puts it directly under `class_heritage`.
+    const first = child.namedChild(0);
+    const target = first?.type === 'extends_clause' ? first.namedChild(0) : first;
+    return target?.type === 'identifier' ? target.text : null;
+  }
+  return null;
+}
+
+/**
+ * The file's top-level classes by name. A name maps to `null` when a class of
+ * that name is declared more than once, or only inside a function or
+ * namespace: which declaration an `extends` clause reaches then depends on
+ * scope, and following the wrong one would publish routes of an unrelated
+ * class.
+ */
+function indexClassesByName(root: Parser.SyntaxNode): Map<string, Parser.SyntaxNode | null> {
+  const byName = new Map<string, Parser.SyntaxNode | null>();
+  for (const node of root.descendantsOfType([...CLASS_DECLARATION_TYPES])) {
+    const name = node.childForFieldName('name')?.text;
+    if (name === undefined) continue;
+    const parent = node.parent;
+    const topLevel =
+      parent?.type === 'program' ||
+      (parent?.type === 'export_statement' && parent.parent?.type === 'program');
+    byName.set(name, byName.has(name) || !topLevel ? null : node);
+  }
+  return byName;
+}
+
+/**
+ * Emit the routes `controller` inherits from the base classes declared in the
+ * same file, under the controller's own prefix.
+ *
+ * Mirrors `MetadataScanner.getAllMethodNames`: Nest walks the prototype chain
+ * from the controller up and keeps the FIRST declaration of each name, then
+ * reads the route metadata off that one declaration. So a handler redeclared
+ * lower in the chain replaces the base one — with the new route when it is
+ * decorated, with no route at all when it is not — and an accessor of the same
+ * name hides it as well. `redeclared` carries those names up the chain, and
+ * the walk ends at the first class whose names cannot all be read.
+ */
+function collectInheritedRoutes(
+  controller: Parser.SyntaxNode,
+  prefix: string,
+  filePath: string,
+  lineOffset: number,
+  out: ExtractedDecoratorRoute[],
+  classes: () => ReadonlyMap<string, Parser.SyntaxNode | null>,
+): void {
+  const redeclared = new Set<string>();
+  // A chain that loops (`A extends B`, `B extends A`) cannot run, but the
+  // indexer still has to finish on it. Classes are told apart by position.
+  const walked = new Set<number>([controller.startIndex]);
+
+  let current = controller;
+  for (;;) {
+    const baseName = extendedClassName(current);
+    if (baseName === null) return;
+    const base = classes().get(baseName);
+    if (!base || walked.has(base.startIndex)) return;
+    walked.add(base.startIndex);
+
+    if (!addPrototypeNames(current, redeclared)) return;
+    collectClassRoutes(base, prefix, filePath, lineOffset, out, redeclared);
+    current = base;
+  }
+}
+
+/**
+ * Whether a base-class member is out of reach for the controller: a class
+ * lower in the chain declares the same name, or the member's own name is a
+ * computed key, which cannot be compared with those declarations at all.
+ */
+function isRedeclared(member: Parser.SyntaxNode, redeclared?: ReadonlySet<string>): boolean {
+  if (redeclared === undefined) return false;
+  const nameNode = member.childForFieldName('name');
+  const name = nameNode === null ? null : propertyName(nameNode);
+  return name === null || redeclared.has(name);
 }
 
 function collectClassRoutes(
@@ -458,6 +593,8 @@ function collectClassRoutes(
   filePath: string,
   lineOffset: number,
   out: ExtractedDecoratorRoute[],
+  /** Handler names a subclass already declares; set only for a base class. */
+  redeclared?: ReadonlySet<string>,
 ): void {
   const body = classNode.childForFieldName('body');
   if (!body) return;
@@ -503,7 +640,9 @@ function collectClassRoutes(
     // misattributed one — the strictly worse of the two, since it corrupts a
     // route that is otherwise correct.
     const decorators =
-      member.type === 'method_definition' && isRequestHandler(member)
+      member.type === 'method_definition' &&
+      isRequestHandler(member) &&
+      !isRedeclared(member, redeclared)
         ? [...pending, ...leadingDecorators(member)]
         : [];
     for (const decorator of decorators) {
