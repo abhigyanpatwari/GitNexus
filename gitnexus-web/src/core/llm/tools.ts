@@ -25,6 +25,7 @@ import type {
   EnrichedSearchResult,
   GrepOptions,
   GrepResponse,
+  SearchResponse,
 } from '../../services/backend-client';
 
 /**
@@ -45,6 +46,9 @@ const validLabel = (label: string): boolean => (NODE_TABLES as readonly string[]
 
 const validRelType = (t: string): boolean => (REL_TYPES as readonly string[]).includes(t);
 
+const withSearchWarning = (output: string, warning?: string): string =>
+  warning ? `Search warning: ${warning}\nResults may be incomplete.\n\n${output}` : output;
+
 /**
  * Backend query interface for Graph RAG tools.
  * All queries go through the backend HTTP API.
@@ -54,7 +58,7 @@ export interface GraphRAGBackend {
   search: (
     query: string,
     opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean },
-  ) => Promise<EnrichedSearchResult[]>;
+  ) => Promise<SearchResponse>;
   grep: (pattern: string, limit?: number, opts?: GrepOptions) => Promise<GrepResponse>;
   readFile: (filePath: string) => Promise<string>;
 }
@@ -87,14 +91,21 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
 
       // Step 1: Enriched search via backend (connections, cluster, processes pre-joined)
       let searchResults: EnrichedSearchResult[];
+      let warning: string | undefined;
       try {
-        searchResults = await backendSearch(query, { limit: k, enrich: true });
+        ({ results: searchResults, warning } = await backendSearch(query, {
+          limit: k,
+          enrich: true,
+        }));
       } catch {
         return 'Search is not available. Please load a repository first.';
       }
 
       if (searchResults.length === 0) {
-        return `No code found matching "${query}". Try different terms or use grep for exact patterns.`;
+        return withSearchWarning(
+          `No code found matching "${query}". Try different terms or use grep for exact patterns.`,
+          warning,
+        );
       }
 
       type ProcessInfo = { id: string; label: string; step?: number; stepCount?: number };
@@ -168,7 +179,10 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
       };
 
       if (!shouldGroup) {
-        return `Found ${searchResults.length} matches:\n\n${results.map((r) => formatResult(r)).join('\n\n')}`;
+        return withSearchWarning(
+          `Found ${searchResults.length} matches:\n\n${results.map((r) => formatResult(r)).join('\n\n')}`,
+          warning,
+        );
       }
 
       // Group by process (or "No process")
@@ -225,7 +239,7 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
         lines.push('');
       }
 
-      return lines.join('\n').trim();
+      return withSearchWarning(lines.join('\n').trim(), warning);
     },
     {
       name: 'search',
@@ -264,9 +278,15 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
           }
           // Route to backend semantic search instead of embedding locally
           try {
-            const semanticResults = await backendSearch(query, { limit: 10, mode: 'semantic' });
+            const { results: semanticResults, warning } = await backendSearch(query, {
+              limit: 10,
+              mode: 'semantic',
+            });
             if (semanticResults.length === 0) {
-              return 'Semantic search returned no results. Embeddings may not be generated yet.';
+              return withSearchWarning(
+                'Semantic search returned no results. Embeddings may not be generated yet.',
+                warning,
+              );
             }
             const formatted = semanticResults
               .map(
@@ -274,7 +294,10 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
                   `[${i + 1}] ${r.label || 'File'}: ${r.name || r.filePath?.split('/').pop() || '?'} (score: ${(r.score ?? 0).toFixed(3)})\n    File: ${r.filePath || 'n/a'}`,
               )
               .join('\n');
-            return `Semantic search for "${query}" (${semanticResults.length} results):\n\n${formatted}`;
+            return withSearchWarning(
+              `Semantic search for "${query}" (${semanticResults.length} results):\n\n${formatted}`,
+              warning,
+            );
           } catch {
             return 'Semantic search not available. Embeddings may not be generated. Use a non-vector Cypher query instead.';
           }

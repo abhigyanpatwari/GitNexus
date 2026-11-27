@@ -1,4 +1,5 @@
 import path from 'node:path';
+import lbug from '@ladybugdb/core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { resolveVendoredVectorPath } from '../../src/core/lbug/vendored-extension-path.js';
 import { escapeCypherString } from '../../src/core/lbug/cypher-escape.js';
@@ -29,7 +30,7 @@ vi.mock('@ladybugdb/core', () => {
     query = h.query;
     close = h.connClose;
   }
-  return { default: { Database, Connection } };
+  return { default: { Database: vi.fn(Database), Connection } };
 });
 
 import {
@@ -41,10 +42,22 @@ import {
 const closeable = () => ({ close: vi.fn() });
 
 beforeEach(() => {
+  vi.mocked(lbug.Database).mockClear();
   h.query.mockReset();
   h.connCtor.mockReset();
   h.connClose.mockClear();
   h.dbClose.mockClear();
+});
+
+it.each([
+  ['FTS', probeFtsExtensionLoad],
+  ['VECTOR', probeVectorExtensionLoad],
+] as const)('bounds the buffer pool and database mapping for the %s probe', async (_, probe) => {
+  h.query.mockResolvedValue(closeable());
+  await expect(probe()).resolves.toEqual({ loaded: true });
+  const [, bufferPoolSize, , , maxDBSize] = vi.mocked(lbug.Database).mock.lastCall ?? [];
+  expect(bufferPoolSize).toBe(64 * 1024 ** 2);
+  expect(maxDBSize).toBe(64 * 1024 ** 2);
 });
 
 describe('probeFtsExtensionLoad (#2374)', () => {
