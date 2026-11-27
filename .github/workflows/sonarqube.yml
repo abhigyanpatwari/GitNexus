@@ -2,6 +2,10 @@ name: SonarQube
 
 on:
   workflow_call:
+    inputs:
+      packages:
+        type: string
+        default: '["cli","web"]'
 
 jobs:
   build:
@@ -20,6 +24,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download CLI and web LCOV
+        if: fromJSON(inputs.packages)[0] != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: sonar-coverage
@@ -30,9 +35,13 @@ jobs:
 
       - name: Prepare repository-relative LCOV
         shell: bash
+        env:
+          CLI: ${{ contains(fromJSON(inputs.packages), 'cli') }}
+          WEB: ${{ contains(fromJSON(inputs.packages), 'web') }}
         run: |
           mkdir -p coverage
           for package in gitnexus gitnexus-web; do
+            if [[ "$package" == gitnexus && "$CLI" != true || "$package" == gitnexus-web && "$WEB" != true ]]; then continue; fi
             report="$RUNNER_TEMP/sonar-coverage/$package/coverage/lcov.info"
             if ! grep -q '^SF:' "$report" || ! grep -Eq '^DA:[0-9]+,[0-9]+' "$report"; then
               echo "::error::Missing source or line coverage for $package" >&2
