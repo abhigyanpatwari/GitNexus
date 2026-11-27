@@ -10,6 +10,7 @@
 import { useState, useRef, useEffect, useId, type DragEvent as ReactDragEvent } from 'react';
 import {
   Github,
+  GitBranch,
   Gitlab,
   AzureDevops,
   FolderOpen,
@@ -240,6 +241,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     skippedDirs?: number;
   } | null>(null);
   const [githubUrl, setGithubUrl] = useState('');
+  const [githubBranch, setGithubBranch] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('');
   const [azureUrl, setAzureUrl] = useState('');
@@ -317,6 +319,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     invalidateRequest();
     setMode(m);
     setGithubUrl('');
+    setGithubBranch('');
     setGithubToken('');
     setGitlabUrl('');
     setAzureUrl('');
@@ -376,10 +379,12 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     // switch / cancel / unmount invalidated this request.
     const controller = renewRequestController();
     try {
+      const branch = githubBranch.trim();
       const request =
         mode === 'github'
           ? {
               url: githubUrl.trim(),
+              ...(branch ? { branch } : {}),
               ...(githubToken.trim() ? { token: githubToken.trim() } : {}),
             }
           : mode === 'gitlab'
@@ -661,6 +666,38 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
                 )}
               </div>
             )}
+          </div>
+
+          <div className="space-y-1.5 pt-1">
+            <label
+              htmlFor={`${inputId}-branch`}
+              className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
+            >
+              {t('onboarding:repoAnalyzer.githubBranchLabel')}
+            </label>
+            <div className="flex items-center gap-3 rounded-xl border border-border-default bg-void px-4 py-3 transition-all duration-200 focus-within:border-accent/40">
+              <GitBranch className="h-4 w-4 shrink-0 text-text-muted" />
+              <input
+                id={`${inputId}-branch`}
+                type="text"
+                value={githubBranch}
+                onChange={(e) => {
+                  setGithubBranch(e.target.value);
+                  if (validationError) setValidationError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && canSubmit && !isLoading) {
+                    e.preventDefault();
+                    handleAnalyze();
+                  }
+                }}
+                disabled={isLoading}
+                placeholder={t('onboarding:repoAnalyzer.githubBranchPlaceholder')}
+                autoComplete="off"
+                spellCheck={false}
+                className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+              />
+            </div>
           </div>
 
           {/* Optional GitHub Personal Access Token for private repos */}

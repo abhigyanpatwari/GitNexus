@@ -94,7 +94,7 @@ describe('folder upload', () => {
     expect(streamAnalyzeProgress).not.toHaveBeenCalled();
     expect(cancelAnalyze).toHaveBeenCalledWith('job-1');
     // The GitHub form is clean and submittable (phase back to 'input').
-    expect(screen.getByRole('textbox')).toBeEnabled();
+    expect(screen.getByLabelText('GitHub Repository URL')).toBeEnabled();
     expect(screen.queryByTestId('upload-progress')).not.toBeInTheDocument();
   });
 
@@ -113,7 +113,7 @@ describe('folder upload', () => {
 
     expect(screen.queryByText('Request aborted')).not.toBeInTheDocument();
     expect(screen.queryByText('The operation was aborted.')).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox')).toBeEnabled();
+    expect(screen.getByLabelText('GitHub Repository URL')).toBeEnabled();
   });
 
   it('a same-tab click does not abort the in-flight upload', async () => {
@@ -194,13 +194,32 @@ describe('folder upload', () => {
 });
 
 describe('URL analyze', () => {
-  function startGithubAnalyze() {
+  function startGithubAnalyze(branch?: string) {
     render(<RepoAnalyzer variant="onboarding" onComplete={vi.fn()} />);
-    fireEvent.change(screen.getByRole('textbox'), {
+    fireEvent.change(screen.getByLabelText('GitHub Repository URL'), {
       target: { value: 'https://github.com/owner/repo' },
     });
+    if (branch !== undefined) {
+      fireEvent.change(screen.getByLabelText('Branch (optional)'), { target: { value: branch } });
+    }
     fireEvent.click(screen.getByRole('button', { name: /Analyze Repository/ }));
   }
+
+  it.each([
+    ['', { url: 'https://github.com/owner/repo' }],
+    ['  ', { url: 'https://github.com/owner/repo' }],
+    ['  release/next  ', { url: 'https://github.com/owner/repo', branch: 'release/next' }],
+  ])('submits the optional GitHub branch %j', async (branch, request) => {
+    const d = deferred<typeof JOB>();
+    vi.mocked(startAnalyze).mockReturnValue(d.promise);
+
+    startGithubAnalyze(branch);
+
+    expect(startAnalyze).toHaveBeenCalledExactlyOnceWith(request);
+    await act(async () => {
+      d.resolve(JOB);
+    });
+  });
 
   it('a mode switch mid-analyze makes the resolution inert without cancelling', async () => {
     const d = deferred<typeof JOB>();

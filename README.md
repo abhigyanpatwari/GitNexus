@@ -105,6 +105,9 @@ Run `gitnexus serve`, then open [gitnexus.vercel.app](https://gitnexus.vercel.ap
 The UI connects to the backend to browse indexed repositories and use AI chat.
 It uses the existing index; no re-upload or re-index is needed.
 
+To import a GitHub branch, enter the repository URL and the branch name
+(for example, `release/next`) in the optional **Branch** field.
+
 <img width="1280" alt="GitNexus graph explorer" src="https://github.com/user-attachments/assets/cc5d637d-e0e5-48e6-93ff-5bcfdb929285" />
 
 For Docker, hosted deployments, image verification, or a local frontend, see

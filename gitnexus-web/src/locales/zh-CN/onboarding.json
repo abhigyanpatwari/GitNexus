@@ -59,6 +59,8 @@
     "loadingGraph": "正在加载图数据...",
     "defaultRepoName": "仓库",
     "githubRepositoryUrl": "GitHub 仓库 URL",
+    "githubBranchLabel": "分支（可选）",
+    "githubBranchPlaceholder": "使用默认分支",
     "githubTokenLabel": "个人访问令牌（可选）",
     "githubTokenPlaceholder": "ghp_… 或 github_pat_…",
     "githubTokenHelp": "私有仓库需要此项。需 'repo' 范围（或细粒度 Contents:read）。仅发送一次，不会保存。",
