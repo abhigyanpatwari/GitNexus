@@ -8,8 +8,8 @@
  * Where a case describes code NestJS can run, the expectation was checked
  * against a running NestJS 12.5.0 application: the listed URLs answer and the
  * absent ones return 404. The remaining cases — an import nothing resolves, two
- * candidates for one name, files that extend each other — pin what the join
- * does with input it cannot prove.
+ * candidates for one name, files that extend each other, a class the grammar
+ * does not parse — pin what the join does with input it cannot prove.
  */
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
@@ -249,6 +249,11 @@ describe('NestJS routes inherited across files', () => {
       imports: "import Base from './base';",
     },
     {
+      label: 'a default import of an anonymous class',
+      base: "export default class { @Get('ping') ping() {} }",
+      imports: "import Base from './base';",
+    },
+    {
       label: 'an aliased import',
       base: "export class Named { @Get('ping') ping() {} }",
       imports: "import { Named as Base } from './base';",
@@ -291,6 +296,11 @@ describe('NestJS routes inherited across files', () => {
       name: 'Base',
     },
     {
+      label: 'a re-export of an anonymous default',
+      barrel: "export { default as Base } from './anonymous';",
+      name: 'Base',
+    },
+    {
       label: 'two barrels in a row',
       barrel: "export * from './inner';",
       name: 'Base',
@@ -305,6 +315,10 @@ describe('NestJS routes inherited across files', () => {
         'shared/default.ts': `
           import { Get } from '@nestjs/common';
           export default class Base { @Get('ping') ping() {} }
+        `,
+        'shared/anonymous.ts': `
+          import { Get } from '@nestjs/common';
+          export default class { @Get('ping') ping() {} }
         `,
         'shared/inner/index.ts': "export * from '../base';",
         'shared/index.ts': barrel,
@@ -401,6 +415,35 @@ describe('NestJS routes inherited across files', () => {
         'x.controller.ts': controller("import { Base } from './base';", 'Base'),
       }),
     ).toEqual(['GET /x/deep', 'GET /x/top']);
+  });
+
+  it('walks through an anonymous default class as through a named one', () => {
+    // `export default class extends Local { … }` has no name: the import of
+    // `default` is the only way in. From there it hides `hidden`, adds `mid`
+    // and passes the chain on, and its handlers are found in its own file.
+    const routes = inherited({
+      'root.ts': `
+        import { Get } from '@nestjs/common';
+        export class Root {
+          @Get('root') root() {}
+          @Get('hidden') hidden() {}
+        }
+      `,
+      'mid.ts': `
+        import { Get } from '@nestjs/common';
+        import { Root } from './root';
+        class Local extends Root { @Get('local') local() {} }
+        export default class extends Local {
+          @Get('mid') mid() {}
+          hidden() {}
+        }
+      `,
+      'x.controller.ts': controller("import Mid from './mid';", 'Mid'),
+    });
+
+    expect(
+      routes.map((route) => `${route.routePath} ${route.handlerFilePath}:${route.handlerName}`),
+    ).toEqual(['local mid.ts:local', 'mid mid.ts:mid', 'root root.ts:root']);
   });
 
   it('inherits from a base class that is a controller in its own file', () => {
@@ -634,6 +677,21 @@ describe('NestJS routes inherited across files', () => {
     ).toEqual([]);
   });
 
+  it('inherits nothing from an anonymous class declared abstract', () => {
+    // NestJS serves `GET /x/ping` here. tree-sitter-typescript has no rule for
+    // an abstract class without a name and puts an error node where the class
+    // would be, so there is nothing to read. The named form is followed above.
+    expect(
+      inheritedUrls({
+        'base.ts': `
+          import { Get } from '@nestjs/common';
+          export default abstract class { @Get('ping') ping() {} }
+        `,
+        'x.controller.ts': controller("import Base from './base';", 'Base'),
+      }),
+    ).toEqual([]);
+  });
+
   it('leaves no controller open when its prefix cannot be read', () => {
     expect(
       factsOf(
@@ -690,6 +748,27 @@ describe('NestJS routes inherited across files', () => {
         'x.controller.js': `
           import { Controller } from '@nestjs/common';
           import { Base } from './base';
+
+          @Controller('x')
+          export class XController extends Base {}
+        `,
+      }),
+    ).toEqual(['GET /x/ping']);
+  });
+
+  it('reads an anonymous default class under the JavaScript grammar', () => {
+    expect(
+      inheritedUrls({
+        'base.js': `
+          import { Get } from '@nestjs/common';
+          export default class {
+            @Get('ping')
+            ping() {}
+          }
+        `,
+        'x.controller.js': `
+          import { Controller } from '@nestjs/common';
+          import Base from './base';
 
           @Controller('x')
           export class XController extends Base {}
@@ -776,12 +855,48 @@ describe('NestJS routes inherited across files', () => {
       });
     });
 
+    it('record an anonymous default class under its export, without a name', () => {
+      expect(
+        factsOf(
+          'base.ts',
+          `
+            import { Get } from '@nestjs/common';
+            import { Root } from './root';
+            export default class extends Root { @Get('ping') ping() {} }
+          `,
+        ),
+      ).toEqual({
+        classes: [
+          {
+            exportedAs: ['default'],
+            base: { source: './root', name: 'Root' },
+            names: ['ping'],
+            routes: [
+              {
+                handlerName: 'ping',
+                httpMethod: 'GET',
+                decoratorName: 'Get',
+                routePath: 'ping',
+              },
+            ],
+          },
+        ],
+        controllers: [],
+        reexports: [],
+        starExports: [],
+      });
+    });
+
     it.each([
       { label: 'no class and no re-export', source: 'export const answer = 42;' },
       { label: 'a class that extends nothing', source: 'export class Plain { run() {} }' },
       {
         label: 'a class that extends a global',
         source: 'export class Failure extends Error { code() {} }',
+      },
+      {
+        label: 'an anonymous class extending a global',
+        source: 'export default class extends Error { code() {} }',
       },
     ])('are absent for a file with $label', ({ source }) => {
       expect(factsOf('plain.ts', source)).toBeUndefined();

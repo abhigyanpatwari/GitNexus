@@ -430,6 +430,9 @@ const INHERITANCE_HINT = new RegExp(
   `\\bextends\\b|@(?:${[...NEST_METHOD_DECORATORS.keys()].join('|')})\\b`,
 );
 
+/** Parse-free gate for {@link anonymousDefaultClass}: most files have no default export. */
+const DEFAULT_EXPORT_HINT = /\bexport\s+default\b/;
+
 /** A base class's own names hide nothing from itself; only computed keys drop out. */
 const NOTHING_REDECLARED: ReadonlySet<string> = new Set();
 
@@ -472,12 +475,14 @@ export function extractNestInheritanceFacts(
   let controllers: NestOpenController[] = [];
   const text = tree.rootNode.text;
   if (INHERITANCE_HINT.test(text)) {
-    const byName = indexClassesByName(tree.rootNode);
-    if (byName.size > 0) {
-      classes = classFacts(tree.rootNode, byName, filePath, parsedImports, lineOffset);
-      if (text.includes(CONTROLLER_HINT)) {
-        controllers = openControllers(tree.rootNode, byName, filePath, parsedImports, lineOffset);
-      }
+    const root = tree.rootNode;
+    const byName = indexClassesByName(root);
+    const anonymous = DEFAULT_EXPORT_HINT.test(text) ? anonymousDefaultClass(root) : undefined;
+    if (byName.size > 0 || anonymous !== undefined) {
+      classes = classFacts(root, byName, anonymous, filePath, parsedImports, lineOffset);
+    }
+    if (byName.size > 0 && text.includes(CONTROLLER_HINT)) {
+      controllers = openControllers(root, byName, filePath, parsedImports, lineOffset);
     }
   }
 
@@ -486,10 +491,15 @@ export function extractNestInheritanceFacts(
     : { classes, controllers, reexports, starExports };
 }
 
-/** The top-level classes of a file that declare routes or extend another class. */
+/**
+ * The top-level classes of a file that declare routes or extend another class.
+ * `anonymous` is the class of `export default class { … }`: it has no name to
+ * be indexed under, and `default` is the one name another file imports it by.
+ */
 function classFacts(
   root: Parser.SyntaxNode,
   byName: ReadonlyMap<string, Parser.SyntaxNode | null>,
+  anonymous: Parser.SyntaxNode | undefined,
   filePath: string,
   parsedImports: readonly ParsedImport[],
   lineOffset: number,
@@ -499,7 +509,9 @@ function classFacts(
   // that extends anything or declares a route.
   let exportedAs: ReadonlyMap<string, string[]> | undefined;
 
-  for (const [name, node] of byName) {
+  const candidates: Iterable<readonly [string | undefined, Parser.SyntaxNode | null]> =
+    anonymous === undefined ? byName : [...byName, [undefined, anonymous]];
+  for (const [name, node] of candidates) {
     if (node === null) continue;
     const routes: ExtractedDecoratorRoute[] = [];
     collectClassRoutes(node, '', filePath, lineOffset, routes, NOTHING_REDECLARED);
@@ -508,10 +520,12 @@ function classFacts(
 
     const names = new Set<string>();
     const readable = addPrototypeNames(node, names);
-    exportedAs ??= exportedClassNames(root);
     out.push({
-      name,
-      exportedAs: exportedAs.get(name) ?? [],
+      ...(name === undefined ? {} : { name }),
+      exportedAs:
+        name === undefined
+          ? ['default']
+          : ((exportedAs ??= exportedClassNames(root)).get(name) ?? []),
       ...(base === undefined ? {} : { base }),
       names: readable ? [...names] : null,
       routes: routes.flatMap((route) =>
@@ -755,6 +769,25 @@ function extendedClassName(classNode: Parser.SyntaxNode): string | null {
     return target?.type === 'identifier' ? target.text : null;
   }
   return null;
+}
+
+/**
+ * The class of `export default class { … }`, when the file has one. Without a
+ * name it is a `class` expression in the statement's `value` field, which only
+ * `export default <expression>` has — a node type {@link CLASS_DECLARATION_TYPES}
+ * leaves out, so {@link indexClassesByName} never meets it. `export default
+ * class Base { … }` is a declaration and is indexed by name like any other.
+ *
+ * `export default abstract class { … }` stays out of reach: tree-sitter-typescript
+ * has no rule for an abstract class without a name and yields an error node.
+ */
+function anonymousDefaultClass(root: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  for (const statement of root.namedChildren) {
+    if (statement.type !== 'export_statement') continue;
+    const value = statement.childForFieldName('value');
+    if (value?.type === 'class') return value;
+  }
+  return undefined;
 }
 
 /**

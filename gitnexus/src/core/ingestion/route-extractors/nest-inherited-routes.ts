@@ -46,7 +46,8 @@ export interface NestInheritableRoute {
 
 /** A top-level class that declares routes or extends another class. */
 export interface NestClassFacts {
-  readonly name: string;
+  /** Absent for `export default class { … }`, which only its export reaches. */
+  readonly name?: string;
   /** Names the module exports it under; `default` for a default export. */
   readonly exportedAs: readonly string[];
   readonly base?: NestBaseRef;
