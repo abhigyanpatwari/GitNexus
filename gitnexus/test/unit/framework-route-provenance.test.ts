@@ -401,6 +401,27 @@ function handler() {} function other() {}`);
       'a const derived from an aliased table',
       `const T = { A: '/a' }; const U = T; U.A = '/b'; const P = T.A; app.get(P, h);`,
     ],
+    [
+      'a const derived from a reassigned let',
+      `let B = '/old'; B = '/new'; const P = B; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a let in a concat',
+      `let B = '/old'; B = '/new'; const P = B + '/x'; app.get(P, h);`,
+    ],
+    [
+      'a two-hop derivation from a let',
+      `let B = '/old'; B = '/new'; const Q = B; const P = Q; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a var',
+      `var B = '/old'; B = '/new'; const P = ${'`'}${'$'}{B}/x${'`'}; app.get(P, h);`,
+    ],
+    [
+      'a const derived from an import',
+      `import { B } from './b'; const P = B + '/x'; app.get(P, h);`,
+    ],
+    ['a const derived from an undeclared global', `const P = GLOBAL_BASE + '/x'; app.get(P, h);`],
     ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
     ['a call', `const P = '/p'; app.get(build(P), h);`],
     ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],

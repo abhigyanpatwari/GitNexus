@@ -224,7 +224,9 @@ function isWriteTarget(read: Node): boolean {
  * exported or not, need no such check.
  *
  * Trust is transitive: a const derived from another (`const P = T.A`) is
- * rejected when any const it was built from is, at any depth.
+ * rejected when any const it was built from is, at any depth, and a const
+ * whose initializer reads anything but module consts (`const P = BASE` with
+ * `let BASE`) is rejected outright.
  *
  * Every reference in the path must fold on its own, so a const whose value is
  * not a string leaves the path unknown instead of a `${…}` placeholder, while
@@ -281,8 +283,12 @@ function createConstantPaths(
     const { ids, tables, untrustedTables, declared, values } = moduleConsts();
     // Which module consts each const's initializer reads. A derived const
     // (`const P = T.A`, `const Q = P + '/x'`) carries the value of every const
-    // it was built from, so it is only as trustworthy as all of them.
+    // it was built from, so it is only as trustworthy as all of them. An
+    // initializer that reads any other name (a `let` or `var`, an import, a
+    // parameter, an undeclared global) is not trusted at all: the module facts
+    // record a `let` by its initializer and never see a later reassignment.
     const dependsOn = new Map<string, Set<string>>();
+    const impure = new Set<string>();
     for (const [id, value] of values) {
       const deps = new Set<string>();
       const stack: Node[] = [value];
@@ -290,13 +296,15 @@ function createConstantPaths(
         for (const child of node.namedChildren) stack.push(child);
         if (node.type !== 'identifier' && node.type !== 'shorthand_property_identifier') continue;
         const dep = lexical.bindingId(node, node.text, true);
-        if (dep && dep !== id && ids.has(dep)) deps.add(dep);
+        if (dep === id) continue;
+        if (dep && ids.has(dep)) deps.add(dep);
+        else impure.add(id);
       }
       dependsOn.set(id, deps);
     }
     const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
     const leaves = facts.byFile.get(filePath)?.constants.literals ?? new Map<string, string>();
-    const untrusted = new Set(untrustedTables);
+    const untrusted = new Set([...untrustedTables, ...impure]);
     const pending: Node[] = tables.size > 0 ? [tree.rootNode] : [];
     for (let node = pending.pop(); node; node = pending.pop()) {
       for (const child of node.namedChildren) pending.push(child);
