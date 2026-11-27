@@ -21,5 +21,4 @@ export const csharpClassConfig: ClassExtractionConfig = {
     'enum_declaration',
     'record_declaration',
   ],
-  qualifiedNodeId: true,
 };
