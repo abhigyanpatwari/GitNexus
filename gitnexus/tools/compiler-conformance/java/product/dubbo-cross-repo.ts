@@ -40,6 +40,7 @@ public class Facade {
   public String load(Long id) {
     String result = account.get(id);
     Account account = null;
+    account = null;
     return result;
   }
 }`,

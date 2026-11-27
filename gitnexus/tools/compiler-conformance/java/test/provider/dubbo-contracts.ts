@@ -317,6 +317,97 @@ describe('Dubbo cross-repository source facts', () => {
     );
   });
 
+  for (const [label, source, expected] of [
+    [
+      'a reassigned method parameter',
+      CONSUMER.replace('load()', 'load(Account account)').replace(
+        'return account.list();',
+        'account = null; return this.account.list();',
+      ),
+      true,
+    ],
+    [
+      'a reassigned local with an explicit field call',
+      CONSUMER.replace(
+        'return account.list();',
+        'Account account = null; account = null; return this.account.list();',
+      ),
+      true,
+    ],
+    [
+      'a reassigned local in an ended block',
+      CONSUMER.replace(
+        'return account.list();',
+        '{ Account account = null; account = null; } return account.list();',
+      ),
+      true,
+    ],
+    [
+      'a reassigned constructor parameter',
+      CONSUMER.replace(
+        'private String load()',
+        'Facade(Account account) { account = null; } private String load()',
+      ),
+      true,
+    ],
+    [
+      'a reassigned initializer local',
+      CONSUMER.replace(
+        'private String load()',
+        '{ Account account = null; account = null; } private String load()',
+      ),
+      true,
+    ],
+    [
+      'a reassigned lambda parameter',
+      CONSUMER.replace(
+        'return account.list();',
+        'stream.map(account -> { account = null; return this.account.list(); }); return "";',
+      ),
+      true,
+    ],
+    [
+      'a reassigned catch parameter',
+      CONSUMER.replace(
+        'return account.list();',
+        'try { work(); } catch (Exception account) { account = null; return this.account.list(); } return "";',
+      ),
+      true,
+    ],
+    [
+      'an unqualified field assignment',
+      CONSUMER.replace('return account.list();', 'account = other; return this.account.list();'),
+      false,
+    ],
+    [
+      'a field assignment in a constructor',
+      CONSUMER.replace(
+        'private String load()',
+        'Facade(Account account) { this.account = account; } private String load()',
+      ),
+      false,
+    ],
+    [
+      'a field assignment in an initializer',
+      CONSUMER.replace('private String load()', '{ account = other; } private String load()'),
+      false,
+    ],
+    [
+      'a field assignment after a shadowing scope ends',
+      CONSUMER.replace(
+        'return account.list();',
+        '{ Account account = null; account = null; } account = other; return this.account.list();',
+      ),
+      false,
+    ],
+  ] as const)
+    it(`distinguishes proxy writes from local assignments: ${label}`, () => {
+      assert.equal(
+        sites(source)[2].some((s) => s.method === 'list'),
+        expected,
+      );
+    });
+
   it('does not scan strings/comments as invocations', () => {
     assert.deepEqual(
       sites(

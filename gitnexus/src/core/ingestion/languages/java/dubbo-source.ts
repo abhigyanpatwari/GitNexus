@@ -105,7 +105,7 @@ function field(node: Node, name: string): string {
   return node.childForFieldName(name)?.text ?? '';
 }
 
-/** Index lexical bindings once per method, retaining where each binding starts. */
+/** Index lexical bindings once per executable member, retaining declaration positions. */
 function referenceBindings(member: Node, nodes: Node[]): Map<number, Map<string, number>> {
   const scopes = new Map<number, Map<string, number>>();
   const bind = (scope: Node | null, name: string, start: number) => {
@@ -304,10 +304,31 @@ export function scanDubboJava(filePath: string, root: Node): JavaFile {
         ),
       });
     }
-    // Calls in private helpers are still consumers; the provider visibility filter above does not apply.
-    for (const member of body.namedChildren.filter((n) => n.type === 'method_declaration')) {
+    const assigned = new Set<string>();
+    for (const member of body.namedChildren) {
+      // Nested types have their own fields. Only inspect this type's executable members.
+      if (
+        ![
+          'method_declaration',
+          'constructor_declaration',
+          'field_declaration',
+          'block',
+          'static_initializer',
+        ].includes(member.type)
+      )
+        continue;
       const nodes = descendants(member);
       const bindings = referenceBindings(member, nodes);
+      for (const assignment of nodes.filter((n) => n.type === 'assignment_expression')) {
+        const left = assignment.childForFieldName('left');
+        const explicit = left?.type === 'field_access' && field(left, 'object') === 'this';
+        const name =
+          explicit && left ? field(left, 'field') : left?.type === 'identifier' ? left.text : '';
+        if (name && (explicit || !referenceIsShadowed(assignment, name, bindings)))
+          assigned.add(name);
+      }
+      // Calls in private helpers are consumers too; provider visibility does not apply here.
+      if (member.type !== 'method_declaration') continue;
       for (const call of nodes.filter((n) => n.type === 'method_invocation')) {
         const object = call.childForFieldName('object');
         const explicit = object?.type === 'field_access' && field(object, 'object') === 'this';
@@ -328,11 +349,6 @@ export function scanDubboJava(filePath: string, root: Node): JavaFile {
       }
     }
     // A reassigned proxy is no longer proven to refer to the annotated remote service.
-    const assigned = new Set(
-      descendants(body)
-        .filter((n) => n.type === 'assignment_expression')
-        .map((n) => field(n, 'left').replace(/^this\./, '')),
-    );
     type.references = type.references.filter((r) => !assigned.has(r.field));
     file.types.push(type);
   }
