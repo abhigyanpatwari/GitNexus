@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,7 +7,8 @@ import { requireFtsResourceOrSkip, resolveFtsExtension } from '../helpers/fts-av
 const tmpRoots: string[] = [];
 
 const makeRoot = (): string => {
-  const root = mkdtempSync(join(tmpdir(), 'gn-fts-gate-'));
+  // realpath: see vendored-extension-path.test.ts, macOS tmpdir is a symlink.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'gn-fts-gate-')));
   tmpRoots.push(root);
   return root;
 };
