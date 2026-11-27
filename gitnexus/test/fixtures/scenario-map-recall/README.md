@@ -9,7 +9,12 @@ duplicates in `test/unit/shared-type-extractors.test.ts`. The callbacks and suit
 were copied from commit `bd9586e008c6a2dbcd2f15598a3a20c3f2f44f03`; only the import's
 relative path changed. These cases have no hooks or mocks.
 
-The `.ts` suffix keeps this source fixture out of Vitest's `*.test.ts` discovery.
-`recall-audit.test.ts` explicitly parses it, keeping all 82 positive audit pairs
-while the ordinary test suite executes each of these 12 scenarios once.
+`retired-element-type.ts` preserves 16 original `extractElementTypeFromString`
+callbacks from `test/unit/shared-type-extractors.test.ts`. The active cases now
+live in `test/unit/extract-element-type-from-string.test.ts`, including the
+2,048- and 2,049-character boundary cases.
+
+The `.ts` suffix keeps both fixtures outside Vitest's `*.test.ts` discovery.
+The recall audit reads the fixtures referenced by `audit.json`, so it can
+check the original pairs without running retired callbacks as unit tests.
 The seven other `stripNullable` cases remain in `type-env.test.ts`.
