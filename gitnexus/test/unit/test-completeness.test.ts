@@ -166,30 +166,41 @@ describe('required test execution across CI jobs', () => {
     ]) {
       writeFileSync(path.join(receipts, `${name}.json`), JSON.stringify(core));
     }
-    const run = () => {
+    const releaseArgs = [receipts, output, '2'];
+    const run = (...args: string[]) => {
       writeFileSync(webReport, JSON.stringify(web));
-      return spawnSync(process.execPath, ['--import', 'tsx', script, receipts, output, '2'], {
+      return spawnSync(process.execPath, ['--import', 'tsx', script, ...args], {
         cwd: packageRoot,
         encoding: 'utf8',
         timeout: 30_000,
       });
     };
     try {
-      const complete = run();
+      const complete = run(...releaseArgs);
       expect(complete.error, complete.stderr).toBeUndefined();
       expect(complete.status, complete.stderr).toBe(0);
       expect(JSON.parse(readFileSync(output, 'utf8')).numPendingTests).toBe(0);
       writeFileSync(path.join(webRoot, 'src/lib/missing.test.ts'), '// missing receipt');
-      const missingSource = run();
+      const missingSource = run(...releaseArgs);
       expect(missingSource.status).not.toBe(0);
       expect(missingSource.stderr).toContain(
         'Test file was never collected: src/lib/missing.test.ts',
       );
+      const missingWeb = run('--web-only');
+      expect(missingWeb.status).toBe(1);
+      expect(missingWeb.stderr).toContain('Test file was never collected: src/lib/missing.test.ts');
       rmSync(path.join(webRoot, 'src/lib/missing.test.ts'));
       rmSync(path.join(receipts, 'windows-latest-2.json'));
-      const missingShard = run();
+      const missingShard = run(...releaseArgs);
       expect(missingShard.status).not.toBe(0);
       expect(missingShard.stderr).toContain('windows-latest-2.json');
+      const webOnly = run('--web-only');
+      expect(webOnly.status, webOnly.stderr).toBe(0);
+      expect(readFileSync(webReport, 'utf8')).toBe(JSON.stringify(web));
+      web.testResults[0].assertionResults[0].status = 'pending';
+      const skippedWeb = run('--web-only');
+      expect(skippedWeb.status).toBe(1);
+      expect(skippedWeb.stderr).toContain('src/lib/a.test.ts: contract case 0');
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
