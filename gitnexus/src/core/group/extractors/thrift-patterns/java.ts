@@ -152,7 +152,8 @@ export function serviceFromAnnotatedClient(
   // Handle both simple (@ThriftClient) and qualified (@com.example.ThriftClient) names
   // Reject negating annotations like @NotThriftClient, @NonThriftClient, @DisableThriftClient
   const annotationSimpleName = annotationName.split('.').at(-1) || annotationName;
-  const isThriftClient = annotationSimpleName.endsWith('ThriftClient') || annotationSimpleName.endsWith('RpcClient');
+  const isThriftClient =
+    annotationSimpleName.endsWith('ThriftClient') || annotationSimpleName.endsWith('RpcClient');
   const isNegating = /^(Not|Non|Disable|Skip|Ignore)/i.test(annotationSimpleName);
   if (!isThriftClient || isNegating) {
     return null;
