@@ -435,7 +435,7 @@ if (env('X')) {
     expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
-  it('require_once in different host files shares PHP process-wide once state', () => {
+  it('require_once in unrelated host files does not share include state', () => {
     const hostA = extractBindings(
       `<?php
 $app->router->group(['prefix' => 'a'], function ($router) {
@@ -455,7 +455,7 @@ $app->router->group(['prefix' => 'b'], function ($router) {
     const files = new Set(['bootstrap/a.php', 'bootstrap/b.php', 'routes/web.php']);
     const forward = resolvePhpRouterRequireBindings(files, [...hostA, ...hostB]);
     const reversed = resolvePhpRouterRequireBindings(files, [...hostB, ...hostA]);
-    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['a']);
+    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['a', 'b']);
     expect(reversed).toEqual(forward);
   });
 
@@ -690,6 +690,34 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toBeUndefined();
   });
 
+  it('a type-restricted catch does not treat a throw as handled', () => {
+    const source = `<?php
+try { throw new RuntimeException(); } catch (Error $e) {}
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(false);
+    expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
+  it('a require after break in a do-body is not a definite load', () => {
+    const source = `<?php
+do {
+  break;
+  require_once __DIR__ . '/../routes/web.php';
+} while (0);
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => b.lineNumber === 3)?.unguarded).toBe(false);
+    expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
   it('cross-host require_once skips after an unguarded load in another host', () => {
     const apiBindings = extractBindings(
       `<?php
@@ -707,9 +735,9 @@ require __DIR__ . '/web.php';
     );
     const bootstrapBindings = extractBindings(
       `<?php
-require __DIR__ . '/routes/api.php';
+require __DIR__ . '/../routes/api.php';
 $app->router->group(['prefix' => 'v2'], function ($router) {
-  require_once __DIR__ . '/routes/web.php';
+  require_once __DIR__ . '/../routes/web.php';
 });
 `,
       'bootstrap/app.php',

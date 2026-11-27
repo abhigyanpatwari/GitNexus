@@ -90,12 +90,23 @@ const DEFERRED_SCOPE_TYPES = new Set([
   'enum_declaration',
 ]);
 
-/** Exits that stop later sequential statements in the same block (`break` / `continue` do not). */
-const EXIT_NODE_TYPES = new Set([
+/**
+ * Hard exits skip the rest of the enclosing block and everything after it.
+ * `break` / `continue` only skip later statements in the same loop or switch body.
+ */
+const HARD_EXIT_NODE_TYPES = new Set([
   'return_statement',
   'throw_expression',
   'exit_statement',
   'goto_statement',
+]);
+const LOOP_LOCAL_EXIT_NODE_TYPES = new Set(['break_statement', 'continue_statement']);
+const LOOP_OR_SWITCH_TYPES = new Set([
+  'for_statement',
+  'foreach_statement',
+  'while_statement',
+  'do_statement',
+  'switch_statement',
 ]);
 
 /**
@@ -113,22 +124,43 @@ const MUST_RUN_CONTAINER_TYPES = new Set([
   'finally_clause',
 ]);
 
-/** `throw` inside a try that has a catch clause is handled; execution may continue after the try. */
-function throwIsCaughtByTry(node: SyntaxNode): boolean {
+function catchTypeText(catchClause: SyntaxNode): string {
+  const chunks: string[] = [];
+  const walk = (node: SyntaxNode) => {
+    if (node.type === 'name' || node.type === 'namespace_name') chunks.push(node.text);
+    for (const child of node.children ?? []) walk(child);
+  };
+  for (const child of catchClause.children ?? []) {
+    if (child.type === 'variable_name') break;
+    walk(child);
+  }
+  return chunks.join('');
+}
+
+/** A throw is definitely caught only by `catch (Throwable)` (PHP's universal type). */
+function throwIsDefinitelyCaught(node: SyntaxNode): boolean {
   let current: SyntaxNode | null = node.parent;
   while (current) {
     if (current.type === 'catch_clause' || current.type === 'finally_clause') return false;
     if (current.type === 'try_statement') {
-      return (current.children ?? []).some((child) => child.type === 'catch_clause');
+      return (current.children ?? []).some((child) => {
+        if (child.type !== 'catch_clause') return false;
+        const typeName = catchTypeText(child).replace(/^\\+/, '');
+        return typeName === 'Throwable';
+      });
     }
     current = current.parent;
   }
   return false;
 }
 
-/** Ids of nodes that contain an exit outside any nested deferred scope. */
+/**
+ * Nodes that can skip later siblings. Loop-local exits (`break` / `continue`)
+ * do not propagate through the loop or switch statement itself.
+ */
 function collectMayExit(root: SyntaxNode): Set<number> {
   const mayExit = new Set<number>();
+  const hard = new Set<number>();
   const stack: { node: SyntaxNode; done: boolean }[] = [{ node: root, done: false }];
   while (stack.length > 0) {
     const frame = stack.pop()!;
@@ -138,18 +170,30 @@ function collectMayExit(root: SyntaxNode): Set<number> {
       for (const child of children) stack.push({ node: child, done: false });
       continue;
     }
-    if (EXIT_NODE_TYPES.has(frame.node.type)) {
-      if (frame.node.type === 'throw_expression' && throwIsCaughtByTry(frame.node)) {
-        continue;
-      }
+    if (LOOP_LOCAL_EXIT_NODE_TYPES.has(frame.node.type)) {
       mayExit.add(frame.node.id);
       continue;
     }
-    for (const child of children) {
-      if (!DEFERRED_SCOPE_TYPES.has(child.type) && mayExit.has(child.id)) {
-        mayExit.add(frame.node.id);
-        break;
+    if (HARD_EXIT_NODE_TYPES.has(frame.node.type)) {
+      if (frame.node.type === 'throw_expression' && throwIsDefinitelyCaught(frame.node)) {
+        continue;
       }
+      mayExit.add(frame.node.id);
+      hard.add(frame.node.id);
+      continue;
+    }
+    let childHard = false;
+    let childLocal = false;
+    for (const child of children) {
+      if (DEFERRED_SCOPE_TYPES.has(child.type)) continue;
+      if (hard.has(child.id)) childHard = true;
+      else if (mayExit.has(child.id)) childLocal = true;
+    }
+    if (childHard) {
+      mayExit.add(frame.node.id);
+      hard.add(frame.node.id);
+    } else if (childLocal && !LOOP_OR_SWITCH_TYPES.has(frame.node.type)) {
+      mayExit.add(frame.node.id);
     }
   }
   return mayExit;

@@ -190,7 +190,7 @@ function lookupOwnedControllerMethods(
     .filter((def) => def.type === 'Method' && def.ownerId === controllerDef.nodeId);
 }
 
-/** Unique case-insensitive Method of the controller class (for providers with `caseInsensitiveRouteMethods`, after exact miss or ambiguity). */
+/** Unique case-insensitive Method of the controller class (after exact miss or >1 exact defs). Returns undefined when more than one owned method folds to the same name. */
 function routeHandlerMethodCaseInsensitiveFallback(
   symbols: SymbolTableReader,
   controllerDef: SymbolDefinition,

@@ -68,11 +68,12 @@ const compareBindingPosition = (
  * may load. A bare require contributes the empty context, so a file loaded
  * both bare and inside a group keeps both. When the host is itself a route
  * file that is required somewhere, each of its contexts wraps the binding's
- * own (transitive requires). The only edge dropped is one PHP provably skips:
- * a `require_once` in the same host after an earlier unguarded require of the
- * same target. Hosts never suppress each other, and the result does not
- * depend on the order bindings arrive in. Files whose only context is the
- * empty one are omitted: their routes are unchanged.
+ * own (transitive requires). A `require_once` is dropped only when an earlier
+ * unguarded require already loaded that file in the same entry walk (later in
+ * that host, or inside a file the host unguardedly required first). Separate
+ * entry files do not share include state. The result does not depend on the
+ * order bindings arrive in. Files whose only context is the empty one are
+ * omitted: their routes are unchanged.
  */
 export function resolvePhpRouterRequireBindings(
   files: Iterable<string>,
@@ -91,19 +92,52 @@ export function resolvePhpRouterRequireBindings(
   type Edge = { host: string; target: string; binding: ExtractedRouteRequireBinding };
   const edges: Edge[] = [];
   const required = new Set<string>();
-  /** PHP `require_once` skip state is process-wide, not per host file. */
-  const loadedForOnce = new Set<string>();
-  for (const host of [...byHost.keys()].sort()) {
-    /** Routes file definitely loaded by an earlier unguarded require in this host. */
-    const included = new Set<string>();
+  const bindingTarget = (binding: ExtractedRouteRequireBinding): string | null => {
+    const target = binding.requiredPath.replace(/\\/g, '/');
+    if (!fileSet.has(target) || !isPhpRouteFile(target)) return null;
+    return target;
+  };
+  /**
+   * Hosts another file unguardedly requires. Those run inside the requirer's
+   * `require_once` state, not as a separate entry with a fresh include set.
+   */
+  const inlinedHosts = new Set<string>();
+  for (const list of byHost.values()) {
+    for (const binding of list) {
+      if (!binding.unguarded) continue;
+      const target = bindingTarget(binding);
+      if (target && byHost.has(target)) inlinedHosts.add(target);
+    }
+  }
+  const skipped = new Set<ExtractedRouteRequireBinding>();
+  const visited = new Set<string>();
+  const walkHost = (host: string, loaded: Set<string>, stack: Set<string>) => {
+    if (stack.has(host) || visited.has(host)) return;
+    visited.add(host);
+    stack.add(host);
     for (const binding of byHost.get(host)!.sort(compareBindingPosition)) {
-      const target = binding.requiredPath.replace(/\\/g, '/');
-      if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
-      if (binding.once && (included.has(target) || loadedForOnce.has(target))) continue;
-      if (binding.unguarded) {
-        included.add(target);
-        loadedForOnce.add(target);
+      const target = bindingTarget(binding);
+      if (!target) continue;
+      if (binding.once && loaded.has(target)) {
+        skipped.add(binding);
+        continue;
       }
+      if (binding.unguarded) {
+        loaded.add(target);
+        if (byHost.has(target)) walkHost(target, loaded, stack);
+      }
+    }
+    stack.delete(host);
+  };
+  for (const host of [...byHost.keys()].sort()) {
+    if (inlinedHosts.has(host) || visited.has(host)) continue;
+    walkHost(host, new Set(), new Set());
+  }
+  for (const host of [...byHost.keys()].sort()) {
+    for (const binding of byHost.get(host)!.sort(compareBindingPosition)) {
+      if (skipped.has(binding)) continue;
+      const target = bindingTarget(binding);
+      if (!target) continue;
       edges.push({ host, target, binding });
       required.add(target);
     }
