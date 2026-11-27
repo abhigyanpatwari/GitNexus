@@ -92,7 +92,12 @@ async function successfulPR({ github, context, revision, tree, parent }) {
     per_page: 100,
   });
   for (const pr of prs) {
-    if (!pr.merged_at || pr.merge_commit_sha !== revision || pr.base.repo.full_name !== fullName)
+    if (
+      !pr.merged_at ||
+      pr.merge_commit_sha !== revision ||
+      pr.base.repo.full_name !== fullName ||
+      pr.head.repo?.full_name !== fullName
+    )
       continue;
     const { data } = await github.rest.actions.listWorkflowRuns({
       ...repo,
@@ -108,7 +113,6 @@ async function successfulPR({ github, context, revision, tree, parent }) {
         run.event !== 'pull_request' ||
         run.conclusion !== 'success' ||
         run.head_sha !== pr.head.sha ||
-        !pr.head.repo ||
         run.head_repository?.id !== pr.head.repo.id
       )
         continue;

@@ -301,6 +301,7 @@ describe('release reuse', () => {
         Object.assign(api.ref, { path: 'org/repo/.github/workflows/ci-quality.yml@tested-merge' }),
     ],
     ['different fork', (api) => Object.assign(api.run.head_repository, { id: 10 })],
+    ['merged fork PR', (api) => Object.assign(api.pr.head.repo, { full_name: 'fork/repo' })],
     ['failed CI', (api) => Object.assign(api.run, { conclusion: 'failure' })],
     ['missing gate', (api) => Object.assign(api.jobs[0], { conclusion: 'skipped' })],
     ['API failure', (api) => api.rest.git.getCommit.mockRejectedValue(new Error('unavailable'))],
