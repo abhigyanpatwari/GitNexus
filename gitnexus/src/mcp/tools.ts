@@ -172,6 +172,26 @@ specify the "repo" parameter explicitly.`,
     },
   },
   {
+    name: 'repo_overview',
+    description: `Get a bounded orientation overview of one indexed repository: modules, sampled hubs, workflows, cross-module boundaries, stats and completeness.
+
+WHEN TO USE: First orientation step after list_repos, before query()/context().
+AFTER THIS: use query for a concept or context for a sampled hub.
+
+Hubs/boundaries are SAMPLED CANDIDATES, not globally ranked. Neighbor selection is nondeterministic; sorting is presentation only. Responsibilities are INFERRED from sampled CALLS evidence. Results include structured sections, markdown, completeness, warnings and query-budget metadata. No group mode or maxTokens.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: `Indexed repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'query',
     description: `Find execution flows for a concept.
 Join processes[].id to process_symbols[].process_id; in array mode also match _repo.
@@ -1195,6 +1215,7 @@ export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename', 're
 export const REPO_SCOPED_TOOLS = new Set([
   'read_file',
   'grep',
+  'repo_overview',
   'query',
   'cypher',
   'context',

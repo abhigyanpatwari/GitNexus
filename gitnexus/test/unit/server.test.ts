@@ -311,6 +311,13 @@ describe('getNextStepHint (via tool call response)', () => {
     );
   });
 
+  it('repo_overview hint points at focused query/context and complete cluster list', () => {
+    const hint = getNextStepHint('repo_overview', { repo: 'demo' });
+    expect(hint).toContain('query({search_query: "<concept>", repo: "demo"})');
+    expect(hint).toContain('context({name: "<symbol>", repo: "demo"})');
+    expect(hint).toContain('gitnexus://repo/demo/clusters');
+  });
+
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
     const backend = createMockBackend({
       callTool: vi

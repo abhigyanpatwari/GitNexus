@@ -96,6 +96,9 @@ export function getNextStepHint(
     case 'list_repos':
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness. If pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset to fetch the rest.`;
 
+    case 'repo_overview':
+      return `Use query({search_query: "<concept>"${repoParam}}) to find a relevant flow, or context({name: "<symbol>"${repoParam}}) to inspect a sampled hub. READ gitnexus://repo/${repoPath}/clusters for the complete module list.`;
+
     case 'query':
       return `Use context({uid: "<id>"${repoParam}}) for a symbol's references and processes.${args?.include_content === true ? ` Source previews marked content_truncated are incomplete; use context({uid: "<id>", include_content: true${repoParam}}) or read_file with a bounded line range for more.` : ''}`;
 

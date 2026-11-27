@@ -83,6 +83,20 @@ describe('assertKnownMcpToolArguments (#3261)', () => {
     ).not.toThrow(/Did you mean "query"/);
   });
 
+  it('validates repo_overview and rejects unsupported arguments', () => {
+    const properties = GITNEXUS_TOOLS.find((tool) => tool.name === 'repo_overview')!.inputSchema
+      .properties;
+    expect(() =>
+      assertKnownMcpToolArguments('repo_overview', { repo: 'demo', branch: 'main' }, properties),
+    ).not.toThrow();
+    expect(() =>
+      assertKnownMcpToolArguments('repo_overview', { maxTokens: 100 }, properties),
+    ).toThrow(/Unknown argument "maxTokens" for tool "repo_overview"/);
+    expect(() =>
+      assertKnownMcpToolArguments('repo_overview', { max_files: 10 }, properties),
+    ).toThrow(/Unknown argument "max_files" for tool "repo_overview"/);
+  });
+
   it('skips tools that have no advertised schema', () => {
     expect(() =>
       assertKnownMcpToolArguments('overview', { showClusters: true, extra: 1 }),
