@@ -94,6 +94,7 @@ const typeReferencePatterns = [
   'array_type',
   'union_type',
   'intersection_type',
+  'index_type_query',
   'tuple_type',
   'parenthesized_type',
   'satisfies_expression',

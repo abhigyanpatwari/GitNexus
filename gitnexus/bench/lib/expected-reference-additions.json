@@ -53,7 +53,7 @@
     }
   },
   "checkout-sha256:8e8d7f1a9d6bd534bc129f95ccd29bd3a9e5adeb5c08dd6317162ac1ab48b796": {
-    "_note": "On the #4084 corpus at 9543a356, TypeScript confirms three relocated ExtractedDecoratorRoute uses and the new collectInheritedRoutes parameter relative to 9d0d65a4. Interface field bindings resolve 275 further property accesses and 114 calls at compiler-verified sites, owners and targets. The 59 dropped interface-dispatch reads pointed to erased MutableSemanticModel signatures. Each read retains its compiler-selected SemanticModel target.",
+    "_note": "On the #4084 corpus at 9543a356, TypeScript confirms three relocated ExtractedDecoratorRoute uses and the new collectInheritedRoutes parameter relative to 9d0d65a4. Interface field bindings resolve 275 further property accesses and 114 calls at compiler-verified sites, owners and targets. The 59 dropped interface-dispatch reads pointed to erased MutableSemanticModel signatures. Each read retains its compiler-selected SemanticModel target. TypeScript resolves five further keyof operands to ParseWorkerResult and AnalyzerIdentityTraversalLimits twice each and QueryLanguageHooks once.",
     "declarationPositions": {
       "baseline": {
         "count": 27096,
@@ -65,8 +65,8 @@
       }
     },
     "additions": {
-      "count": 4559,
-      "sha256": "aaf07c825a157efbad263701a6b6fa3a034dcf715207083a448f9d7810db2505"
+      "count": 4564,
+      "sha256": "bfbdee8b2f324c3f997115e7c4f2271bcef564da91b350b562a0bfbcd704e221"
     },
     "removals": {
       "count": 276,
@@ -90,8 +90,8 @@
       }
     },
     "additions": {
-      "count": 4561,
-      "sha256": "86146e3b9b48e668a7281c87e276f349756b302e730f075d38ef566c8fdf37d4"
+      "count": 4566,
+      "sha256": "5cc3bf11297815fd4b132dafa4bd8b67477fde1e35126eb6ae9fc0241652f876"
     },
     "removals": {
       "count": 277,

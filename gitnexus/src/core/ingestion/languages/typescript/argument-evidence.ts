@@ -2,6 +2,7 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
 import {
   canonicalTypeScriptName,
+  literalMethodName,
   numericLiteralValue,
   signedNumericLiteral,
 } from './identifiers.js';
@@ -26,6 +27,10 @@ export function argumentEvidence(
     return { spread: value?.type === 'identifier' ? canonicalTypeScriptName(value.text) : null };
   }
   if (['string', 'number', 'true', 'false'].includes(arg.type)) return arg.text;
+  if (arg.type === 'template_string') {
+    const value = literalMethodName(arg);
+    return value === undefined ? null : JSON.stringify(value);
+  }
   if (arg.type === 'unary_expression') return signedNumericLiteral(arg) ?? null;
   if (arg.type === 'object') {
     const fields: [string, string][] = [];

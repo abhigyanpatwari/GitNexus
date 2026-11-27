@@ -16,7 +16,15 @@
  */
 
 import fs from 'fs/promises';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
 import path from 'path';
 import { createRequire } from 'node:module';
 import type Parser from 'tree-sitter';
@@ -79,9 +87,22 @@ const formatsBeyondScan = new WeakMap<NodeWorkspacePackages, PackageFormatFronti
 function readUnscannedPackageFormat(repoRoot: string, directory: string): boolean | null {
   const manifest = path.join(repoRoot, directory, 'package.json');
   try {
-    if (realpathSync.native(manifest) !== manifest || !lstatSync(manifest).isFile()) return null;
-    const contents = JSON.parse(readFileSync(manifest, 'utf8'));
-    return contents && typeof contents === 'object' ? contents.type === 'module' : null;
+    const fd = openSync(
+      manifest,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || realpathSync.native(manifest) !== manifest) return null;
+      // Match the canonical directory entry to the opened file, including on Windows
+      // where O_NOFOLLOW is unavailable. Read through that same descriptor.
+      const entry = lstatSync(manifest, { bigint: true });
+      if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino) return null;
+      const contents = JSON.parse(readFileSync(fd, 'utf8'));
+      return contents && typeof contents === 'object' ? contents.type === 'module' : null;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }

@@ -2,6 +2,49 @@
   "schemaVersion": 1,
   "graphExpectations": [
     {
+      "_note": "#4084. Relative to the preceding reviewed candidate graph, all five phases add nine type references. TypeScript confirms each keyof operand, its full identifier range, its enclosing function or type alias, and its resolved declaration.",
+      "baselineSourceTrees": [
+        "d074cc6b389fb3afba9334994b53437a450c2a30",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "b18cc998333834e114115f4fbc085f2da7c19439",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
+      "sourceFiles": 1205,
+      "baseline": {
+        "cold": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "warm": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "edit": ["fc7bf6b824e5d5b9305591085ce5aff197d212eb1ca4abde2761a053ea2690a0", 38044, 107998],
+        "two-edits": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ],
+        "repack": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ]
+      },
+      "candidate": {
+        "cold": ["74a86d73451436e07d6760772f9997a8a5e18ac75ca3ce7d46592307dba7db63", 38050, 113582],
+        "warm": ["74a86d73451436e07d6760772f9997a8a5e18ac75ca3ce7d46592307dba7db63", 38050, 113582],
+        "edit": ["ff920efbdf74657227f687a0cd3d2a5ce694c7dbc628bd8a2549546a9e08e532", 38051, 113583],
+        "two-edits": [
+          "d20b3aeec8f5a57fd87cd4266fa97e10d68734a8fc8d22cd3168cb8a0fa1325a",
+          38053,
+          113585
+        ],
+        "repack": [
+          "d20b3aeec8f5a57fd87cd4266fa97e10d68734a8fc8d22cd3168cb8a0fa1325a",
+          38053,
+          113585
+        ]
+      }
+    },
+    {
       "_note": "#4084. On this frozen main corpus the TypeScript compiler verified declaration positions and type-reference targets. Interface field types restore 57 chained reads. Additional dispatch edges retain the primary signature and point to declared concrete implementations. The 65 previous runtime-dispatch reads targeting erased subinterfaces are absent.",
       "baselineSourceTrees": [
         "d074cc6b389fb3afba9334994b53437a450c2a30",

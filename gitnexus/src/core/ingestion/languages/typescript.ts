@@ -161,6 +161,16 @@ const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
   return null;
 };
 
+// Graph method metadata uses the same literal keys as the definition query.
+const tsJsMethodNames = {
+  extractLiteralName: (node: SyntaxNode, filePath?: string) =>
+    literalMethodName(node.childForFieldName('name'), filePath),
+  extractName(node: SyntaxNode) {
+    const key = node.childForFieldName('name');
+    return key?.type === 'computed_property_name' ? undefined : key?.text;
+  },
+};
+
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
  * anonymous AST nodes — they take their name from the surrounding
@@ -536,7 +546,7 @@ export const typescriptProvider = defineLanguage({
   methodExtractor: withMergedInterfaceMethodIds(
     createMethodExtractor({
       ...typescriptMethodConfig,
-      extractLiteralName: (node) => literalMethodName(node.childForFieldName('name')),
+      ...tsJsMethodNames,
       extractFunctionName: tsExtractFunctionName,
     }),
   ),
@@ -642,7 +652,7 @@ export const javascriptProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
     ...javascriptMethodConfig,
-    extractLiteralName: (node) => literalMethodName(node.childForFieldName('name')),
+    ...tsJsMethodNames,
     extractFunctionName: tsExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),

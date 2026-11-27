@@ -1,5 +1,6 @@
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { heritageTypeArgumentsKey } from './scope-resolution/utils/generic-instantiation.js';
+import { syntaxOffsets } from './utils/type-parameters.js';
 
 type Bindings = ReadonlyMap<string, string | null>;
 // Budget each expanded spelling independently so unrelated signatures still resolve.
@@ -10,6 +11,21 @@ const maxExpandedTypeLength = 32 * 1024;
 const compositeType = /^[\p{ID_Continue}$\s.<>,\[\]()|&]+$/u;
 const namedType =
   /[$_\p{ID_Start}][$\p{ID_Continue}]*(?:\s*\.\s*[$_\p{ID_Start}][$\p{ID_Continue}]*)*/gu;
+
+/** A prefix type operator needs parentheses around a compound operand at the outermost level. */
+function needsPrefixGrouping(type: string): boolean {
+  if (!/[|&]|=>/.test(type)) return false;
+  let depth = 0;
+  for (const i of syntaxOffsets(type)) {
+    const token = type[i]!;
+    if ('<([{'.includes(token)) depth++;
+    else if ('>)]}'.includes(token)) {
+      depth--;
+      if (depth === 0 && token === ')' && /^\s*=>/.test(type.slice(i + 1))) return true;
+    } else if (depth === 0 && (token === '|' || token === '&')) return true;
+  }
+  return false;
+}
 
 function specializeType(
   type: string,
@@ -35,10 +51,12 @@ function specializeType(
     let right = offset + name.length;
     while (left >= 0 && /\s/u.test(type[left]!)) left--;
     while (right < type.length && /\s/u.test(type[right]!)) right++;
+    const prefix = left >= 0 && /[\p{ID_Continue}$]/u.test(type[left]!);
     const postfix = type[right] === '[';
     const intersection = type[left] === '&' || type[right] === '&';
     const union = type[left] === '|' || type[right] === '|';
     const group =
+      (prefix && needsPrefixGrouping(actual)) ||
       (postfix && /[|&]|=>/.test(actual)) ||
       (intersection && /\||=>/.test(actual)) ||
       (union && actual.includes('=>'));

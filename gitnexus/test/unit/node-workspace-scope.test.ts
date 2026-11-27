@@ -65,6 +65,28 @@ describe('workspace boundary', () => {
     expect(nodePackageIsEsm('outside/x.js', packages)).toBe(false);
   });
 
+  it('skips a linked package directory beyond the discovery depth', async () => {
+    const deep = Array.from({ length: 25 }, () => 'level').join('/');
+    const root = repo({ [`${deep}/ordinary/package.json`]: '{"type":"module"}' });
+    const other = repo({ 'package.json': '{"type":"module"}' });
+    fs.symlinkSync(other, path.join(root, deep, 'linked'), 'junction');
+    const packages = await loadNodeWorkspacePackages(root);
+    expect(nodePackageIsEsm(`${deep}/ordinary/x.js`, packages)).toBe(true);
+    expect(nodePackageIsEsm(`${deep}/missing/x.js`, packages)).toBe(false);
+    expect(nodePackageIsEsm(`${deep}/linked/x.js`, packages)).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'skips a linked manifest beyond the discovery depth',
+    async () => {
+      const deep = Array.from({ length: 25 }, () => 'level').join('/');
+      const root = repo({ [`${deep}/target.json`]: '{"type":"module"}' });
+      fs.symlinkSync('target.json', path.join(root, deep, 'package.json'));
+      const packages = await loadNodeWorkspacePackages(root);
+      expect(nodePackageIsEsm(`${deep}/x.js`, packages)).toBe(false);
+    },
+  );
+
   it('captures only governing input formats and observes edits on a fresh capture', async () => {
     const deep = Array.from({ length: 25 }, () => 'level').join('/');
     const root = repo({

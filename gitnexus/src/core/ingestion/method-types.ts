@@ -96,7 +96,7 @@ export interface MethodExtractionConfig {
   bodyNodeTypes: string[];
   extractName: (node: SyntaxNode) => string | undefined;
   /** A decoded literal key may be empty. Undefined falls back to the ordinary name. */
-  extractLiteralName?: (node: SyntaxNode) => string | undefined;
+  extractLiteralName?: (node: SyntaxNode, filePath?: string) => string | undefined;
   extractReturnType: (node: SyntaxNode) => string | undefined;
   /** The optional `filePath` (the extractor context's) is passed to
    *  `extractParameters`, `isStatic` and `extractReceiverType` for languages
