@@ -1443,6 +1443,27 @@ interface IndexedFormal {
   readonly ownerDef?: SymbolDefinition;
 }
 
+interface FormalOwnerIndex {
+  readonly byPosition: ReadonlyMap<string, readonly Target[]>;
+  /** A null entry means multiple definitions share the graph id. */
+  readonly uniqueByGraphId: ReadonlyMap<string, Target | null>;
+}
+
+function indexFormalOwners(targets: readonly Target[]): FormalOwnerIndex {
+  const byPosition = new Map<string, Target[]>();
+  const uniqueByGraphId = new Map<string, Target | null>();
+  for (const target of targets) {
+    const position = definitionPosition(target.def);
+    if (position !== undefined) {
+      const bucket = byPosition.get(position);
+      if (bucket === undefined) byPosition.set(position, [target]);
+      else bucket.push(target);
+    }
+    uniqueByGraphId.set(target.id, uniqueByGraphId.has(target.id) ? null : target);
+  }
+  return { byPosition, uniqueByGraphId };
+}
+
 function indexFormalsByGraphId(
   parsedFiles: readonly ParsedFile[],
   scopes: ScopeResolutionIndexes,
@@ -1452,6 +1473,7 @@ function indexFormalsByGraphId(
 ): ReadonlyMap<string, ReadonlyMap<number, readonly IndexedFormal[]>> {
   const building = new Map<string, Map<number, IndexedFormal[]>>();
   for (const parsed of parsedFiles) {
+    let ownerIndexes: Map<string, FormalOwnerIndex> | undefined;
     for (const site of parsed.callableFlowSites ?? []) {
       if (site.kind !== 'formal') continue;
       const resolvedCaller = resolveCallerGraphId(
@@ -1465,18 +1487,35 @@ function indexFormalsByGraphId(
       // defs as a fallback (important for function-reference parameters).
       const fallbackTargets =
         targetIndexes.byFileAndName.get(`${parsed.filePath}\0${site.ownerName}`) ?? [];
-      const anchoredFallbacks = fallbackTargets.filter(
-        (target) =>
-          target.def.filePath === parsed.filePath &&
-          definitionStartsAt(target.def, site.ownerRange.startLine, site.ownerRange.startCol),
-      );
-      const resolvedFallbacks = fallbackTargets.filter((target) => target.id === resolvedCaller);
-      const ownerTargets =
-        anchoredFallbacks.length > 0
-          ? anchoredFallbacks
-          : resolvedFallbacks.length === 1
-            ? resolvedFallbacks
-            : [];
+      const { startLine, startCol } = site.ownerRange;
+      let ownerTargets = fallbackTargets;
+      if (fallbackTargets.length === 1) {
+        const [target] = fallbackTargets;
+        if (
+          target.id !== resolvedCaller &&
+          (target.def.filePath !== parsed.filePath ||
+            !definitionStartsAt(target.def, startLine, startCol))
+        ) {
+          ownerTargets = [];
+        }
+      } else if (fallbackTargets.length > 1) {
+        // Same-named methods can share a file. Index a colliding bucket once
+        // so joining each formal does not scan all of the possible owners.
+        ownerIndexes ??= new Map();
+        let index = ownerIndexes.get(site.ownerName);
+        if (index === undefined) {
+          index = indexFormalOwners(fallbackTargets);
+          ownerIndexes.set(site.ownerName, index);
+        }
+        const anchored = index.byPosition.get(`${parsed.filePath}\0${startLine}\0${startCol}`);
+        if (anchored !== undefined) {
+          ownerTargets = anchored;
+        } else {
+          const resolved =
+            resolvedCaller === undefined ? undefined : index.uniqueByGraphId.get(resolvedCaller);
+          ownerTargets = resolved == null ? [] : [resolved];
+        }
+      }
       const indexFormal = (graphId: string, ownerDef?: SymbolDefinition): void => {
         let byIndex = building.get(graphId);
         if (byIndex === undefined) {
