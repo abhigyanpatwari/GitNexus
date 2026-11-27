@@ -1,5 +1,6 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { positionQualifiedCallableName } from '../../workers/callable-id.js';
+import { ARRAY_METHOD_HOC_BLOCKLIST_SET } from '../../ts-js-hoc-utils.js';
 
 const callableKinds = ['arrow_function', 'function_expression', 'generator_function'];
 const moduleBoundaries = new Set([
@@ -14,6 +15,29 @@ const moduleBoundaries = new Set([
 ]);
 const repeatedBindings = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
 
+/** Mirror the callable initializers captured by the JS and TS definition queries. */
+function callableInitializer(declaration: SyntaxNode): SyntaxNode | undefined {
+  const value = declaration.childForFieldName('value');
+  if (!value) return undefined;
+  if (callableKinds.includes(value.type)) return value;
+  if (value.type !== 'call_expression') return undefined;
+  const callee = value.childForFieldName('function');
+  if (callee?.type !== 'identifier') {
+    const property = callee?.childForFieldName('property');
+    if (
+      callee?.type !== 'member_expression' ||
+      property?.type !== 'property_identifier' ||
+      ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+    )
+      return undefined;
+  }
+  return value
+    .childForFieldName('arguments')
+    ?.namedChildren.find(
+      (arg) => arg.type === 'arrow_function' || arg.type === 'function_expression',
+    );
+}
+
 function moduleBindingScope(declaration: SyntaxNode): 'module' | 'block' | undefined {
   // A let/const initializer belongs to the for loop, outside its body block.
   let block =
@@ -27,16 +51,14 @@ function moduleBindingScope(declaration: SyntaxNode): 'module' | 'block' | undef
 }
 
 /** A file-level block may declare a second callable with the same module-relative graph name. */
-export function blockCallableIdentity(node: SyntaxNode, name: string): string | undefined {
-  const declaration = node.parent;
+export function blockCallableIdentity(declaration: SyntaxNode, name: string): string | undefined {
   if (
-    !declaration ||
     declaration.type !== 'variable_declarator' ||
     declaration.parent?.type !== 'lexical_declaration' ||
     moduleBindingScope(declaration) !== 'block'
   )
     return;
-  const tree = node.tree;
+  const tree = declaration.tree;
   if (!tree) return;
   let repeated = repeatedBindings.get(tree);
   if (!repeated) {
@@ -47,11 +69,7 @@ export function blockCallableIdentity(node: SyntaxNode, name: string): string | 
       'function_declaration',
       'generator_function_declaration',
     ])) {
-      if (
-        other.type === 'variable_declarator' &&
-        !callableKinds.includes(other.childForFieldName('value')?.type ?? '')
-      )
-        continue;
+      if (other.type === 'variable_declarator' && !callableInitializer(other)) continue;
       const spelling = other.childForFieldName('name')?.text;
       if (!spelling || !moduleBindingScope(other)) continue;
       if (seen.has(spelling)) duplicates.add(spelling);
@@ -60,7 +78,10 @@ export function blockCallableIdentity(node: SyntaxNode, name: string): string | 
     repeatedBindings.set(tree, duplicates);
     repeated = duplicates;
   }
-  return repeated.has(name) ? positionQualifiedCallableName(name, node.startPosition) : undefined;
+  if (!repeated.has(name)) return undefined;
+  // One lexical binding has one identity even when a wrapper takes multiple callbacks.
+  const initializer = callableInitializer(declaration);
+  return initializer && positionQualifiedCallableName(name, initializer.startPosition);
 }
 
 /** Bare callback/return expressions have a function identity, but no outer binding. */

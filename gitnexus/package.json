@@ -87,6 +87,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
+    "@babel/parser": "^8.0.0",
     "@eagleoutice/tree-sitter-r": "1.1.2",
     "@ladybugdb/core": "0.22.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -144,7 +145,6 @@
   ],
   "devDependencies": {
     "@babel/generator": "^8.0.0",
-    "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
     "@mermaid-js/tiny": "12.3.0",

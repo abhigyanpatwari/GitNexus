@@ -1,7 +1,9 @@
+import { createRequire } from 'node:module';
 import { compileFunction } from 'node:vm';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { javascriptFileAllowsLegacyNumericKeys } from './parse-context.js';
 
+const require = createRequire(import.meta.url);
 const validCommonJs = new WeakMap<SyntaxNode['tree'], boolean>();
 
 /** Only reached for a leading-zero spelling outside the standard numeric grammar. */
@@ -15,8 +17,16 @@ export function legacyNumericPropertyValue(
   if (valid === undefined) {
     try {
       const root = node.tree.rootNode;
-      // Check directives and CommonJS syntax without running the source.
-      compileFunction(root.text, ['exports', 'require', 'module', '__filename', '__dirname']);
+      if (
+        filePath.endsWith('.jsx') &&
+        root.descendantsOfType(['jsx_element', 'jsx_self_closing_element']).length
+      ) {
+        // JSX needs its own grammar. The CommonJS goal still enforces strict directives and class bodies.
+        const { parse } = require('@babel/parser') as typeof import('@babel/parser');
+        parse(root.text, { sourceType: 'commonjs', plugins: ['jsx'] });
+      } else {
+        compileFunction(root.text, ['exports', 'require', 'module', '__filename', '__dirname']);
+      }
       // Node 22 accepts legacy numerics in computed class keys and heritage.
       // ECMAScript makes the entire class declaration or expression strict.
       valid = !root

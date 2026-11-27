@@ -15,39 +15,54 @@ import { initGitRepo } from '../helpers/temp-git-repo.js';
 import { gitCommitAll } from '../helpers/incremental-test-repo.js';
 
 const legacySource = 'const obj = { [077]() {} }; function use() { obj[077](); }';
+const jsxSource = 'const obj = { [077]() { return <i />; } }; function use() { obj[077](); }';
 const ordinarySource = 'const timestamp2026 = 1000 + .005;';
 
-it('uses package format when scope resolution re-extracts a file without worker facts', () => {
-  const packages = (esm: boolean) => ({
-    nodeWorkspacePackages: { byName: new Map(), packageModules: new Map([['', esm]]) },
-  });
-  expect(javascriptParseContext('script.js', ordinarySource, packages(false))).toBeUndefined();
-  for (const source of ['obj[+077]()', '({077() {}})', 'obj[/* comment */ 077]()']) {
-    expect(javascriptParseContext('script.js', source, packages(false))).toBeDefined();
-  }
-  for (const esm of [false, true, false]) {
-    let sites: string[] | undefined;
-    runScopeResolution(
-      {
-        graph: createKnowledgeGraph(),
-        model: createSemanticModel(),
-        files: [{ path: 'script.js', content: legacySource }],
-        resolutionConfig: packages(esm),
-        onResolved({ parsedFiles }) {
-          sites = parsedFiles[0]?.referenceSites.map((site) => site.name);
+it.each([
+  ['script.js', legacySource],
+  ['script.jsx', jsxSource],
+])(
+  'uses package format when scope resolution re-extracts %s without worker facts',
+  (file, source) => {
+    const packages = (esm: boolean) => ({
+      nodeWorkspacePackages: { byName: new Map(), packageModules: new Map([['', esm]]) },
+    });
+    expect(javascriptParseContext(file, ordinarySource, packages(false))).toBeUndefined();
+    for (const literal of ['obj[+077]()', '({077() {}})', 'obj[/* comment */ 077]()']) {
+      expect(javascriptParseContext(file, literal, packages(false))).toBeDefined();
+    }
+    for (const esm of [false, true, false]) {
+      let sites: string[] | undefined;
+      runScopeResolution(
+        {
+          graph: createKnowledgeGraph(),
+          model: createSemanticModel(),
+          files: [{ path: file, content: source }],
+          resolutionConfig: packages(esm),
+          onResolved({ parsedFiles }) {
+            sites = parsedFiles[0]?.referenceSites.map((site) => site.name);
+          },
         },
-      },
-      javascriptScopeResolver,
-    );
-    expect(sites?.includes('63')).toBe(!esm);
-  }
-});
+        javascriptScopeResolver,
+      );
+      expect(sites?.includes('63')).toBe(!esm);
+    }
+  },
+);
 
 it('changes only format-sensitive parse results on a package-only edit', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'gitnexus-property-package-'));
   try {
     const fixture = await createFileResultsFixture(root, {
       'script.js': legacySource,
+      'script.jsx': jsxSource,
+      'explicit/plain.jsx': legacySource,
+      'nested/component.jsx': jsxSource,
+      'syntax.jsx': jsxSource + '\nexport {};',
+      'strict.jsx': '"use strict"; ' + jsxSource,
+      'class.jsx': 'class C { [077]() {} } ' + jsxSource,
+      'invalid.jsx': 'const bad = <A></B>; ' + jsxSource,
+      'view.tsx': jsxSource,
       'explicit/package.json': '{"type":"commonjs"}',
       'explicit/script.js': legacySource,
       'nested/package.json': '{"type":"module"}',
@@ -61,7 +76,9 @@ it('changes only format-sensitive parse results on a package-only edit', async (
       const run = await fixture.run(format ? 'reuse' : 'cold');
       const target = (file: string) => 'Method:' + file + ':obj.63#0';
       const files =
-        format === 'module' ? ['explicit/script.js'] : ['explicit/script.js', 'script.js'];
+        format === 'module'
+          ? ['explicit/plain.jsx', 'explicit/script.js']
+          : ['explicit/plain.jsx', 'explicit/script.js', 'script.js', 'script.jsx'];
       const methods = [...run.graph.iterNodes()]
         .filter((node) => node.label === 'Method')
         .map((node) => node.id)
@@ -74,7 +91,7 @@ it('changes only format-sensitive parse results on a package-only edit', async (
       expect(graphIdentity(run.graph)).toEqual(graphIdentity((await fixture.run('none')).graph));
       const warm = await fixture.run('reuse');
       expect(warm.reparsedFileCount).toBe(0);
-      expect(warm.parseCacheHitFileCount).toBe(5);
+      expect(warm.parseCacheHitFileCount).toBe(13);
       if (format) expect(run.parseCacheHitFileCount).toBeGreaterThanOrEqual(3);
     }
   } finally {

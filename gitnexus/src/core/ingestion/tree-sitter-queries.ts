@@ -14,6 +14,7 @@
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+  lexicalHocDefinitionQuery,
 } from './ts-js-hoc-utils.js';
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
 import { literalPropertyKeyQuery } from './languages/typescript/identifiers.js';
@@ -404,41 +405,7 @@ ${unboundCallableQuery('definition.function')}
 ; being classified as a Function when it's actually a Const holding an array.
 ; Direct identifier calls and member expressions on non-array-methods (like
 ; React.memo) are still matched.
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (arrow_function))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (function_expression))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (arrow_function))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (function_expression))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+${lexicalHocDefinitionQuery}
 
 (export_statement
   declaration: (lexical_declaration
@@ -1180,41 +1147,7 @@ ${unboundCallableQuery('definition.function')}
 ; are mirrored so JS code that uses \`var\` (or transpiler output) gets the
 ; same attribution as the registry-primary path.
 ; Excludes common array methods (map, filter, reduce, etc.) to avoid false positives.
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (arrow_function))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (function_expression))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (arrow_function))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (function_expression))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+${lexicalHocDefinitionQuery}
 
 (export_statement
   declaration: (lexical_declaration

@@ -6,3 +6,6 @@ class NullableReturn : Mid<() -> String>() { override fun accept(value: () -> St
 class EscapedMismatch : Mid<List<`Element With Spaces`>>() {
     override fun accept(value: List<ElementWithSpaces>?) {}
 }
+class WrongVariance : Mid<Slot<in String>>() { override fun accept(value: Slot<out String>?) {} }
+class WrongStar : Mid<Slot<*>>() { override fun accept(value: Slot<String>?) {} }
+class WrongName : Mid<Slot<out String>>() { override fun accept(value: Slot<outString>?) {} }

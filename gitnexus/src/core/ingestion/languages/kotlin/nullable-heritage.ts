@@ -7,10 +7,23 @@ export function kotlinNominalType(spelling: string): string | null {
   let depth = 0;
   let needsName = true;
   let previous = '';
-  const tokens: string[] = [];
-  for (const [token] of spelling.matchAll(typeToken)) {
+  const tokens = spelling.match(typeToken) ?? [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    const next = tokens[i + 1] ?? '';
     if (needsName) {
-      if (!nameStart.test(token) || token === '`') return null;
+      const argument = previous === '<' || previous === ',';
+      // 'out' is also a legal name. It is a modifier only before an argument type.
+      if (argument && (token === 'in' || token === 'out') && nameStart.test(next)) {
+        tokens[i] = token + ' ';
+        previous = token;
+        continue;
+      }
+      if (token === '*') {
+        if (!argument || (next !== '>' && next !== ',')) return null;
+      } else if (!nameStart.test(token) || token === '`' || token === 'in') {
+        return null;
+      }
       needsName = false;
     } else if (token === '<') {
       if (previous === '?' || previous === '>') return null;
@@ -25,7 +38,6 @@ export function kotlinNominalType(spelling: string): string | null {
     } else if (token !== '?' || previous === '?') {
       return null;
     }
-    tokens.push(token);
     previous = token;
   }
   return needsName || depth !== 0 ? null : tokens.join('');

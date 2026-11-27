@@ -3185,3 +3185,31 @@ it('resolves qualified nullable C# arguments by their declaring namespace and fo
     ['Class:Types.cs:RootRight', target],
   ]);
 });
+
+it('compares qualified scalar parameter types by CLR identity and preserves nullable value types', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/scalar-csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const base = 'Method:Types.cs:Base.M#1';
+  expect(overrides).toEqual([
+    ['Class:Alias.cs:AliasPositive', base],
+    ['Class:Common.cs:Ordinary', 'Method:Common.cs:OrdinaryBase.Direct#1'],
+    ['Class:Common.cs:Standard', 'Method:Common.cs:Open.Qualified#1'],
+    ['Class:Common.cs:Standard', 'Method:Common.cs:Open.Rooted#1'],
+    ['Class:Common.cs:Standard', 'Method:Common.cs:Open.Same#1'],
+    ['Class:Types.cs:ByRef', 'Method:Types.cs:ByRefBase.R#1'],
+    ['Class:Types.cs:FromGlobal', base],
+    ['Class:Types.cs:FromRelative', base],
+    ['Class:Types.cs:Grounded', 'Method:Types.cs:Generic.F#1'],
+    ['Class:Types.cs:StructFrom', base],
+    ['Class:Types.cs:StructTo', base],
+    ['Class:Types.cs:ToGlobal', base],
+    ['Class:Types.cs:ToRelative', base],
+    ['Class:Types.cs:Unmarked', base],
+    ['Class:Types.cs:ValueThroughHop', base],
+  ]);
+});

@@ -68,7 +68,7 @@ export function extractParsedFile(
     const captures = provider.emitScopeCaptures(parseText, filePath, cachedTree, {
       ...(typeof source === 'string'
         ? { sourceKind: source }
-        : { sourceKind: 'full-file', ...source }),
+        : { ...source, sourceKind: source.sourceKind ?? 'full-file' }),
       ...(scriptLanguage !== undefined ? { scriptLanguage } : {}),
       ...(notebookSegments ? { notebookSegments } : {}),
       ...(lineOffset !== undefined ? { lineOffset } : {}),

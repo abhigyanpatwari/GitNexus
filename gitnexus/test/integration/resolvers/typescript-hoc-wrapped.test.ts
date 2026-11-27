@@ -55,6 +55,46 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-hoc-wrapped'), () => {});
   }, 60000);
 
+  it('keeps each block binding and its incoming and outgoing calls together', () => {
+    const file = 'src/block-callables.ts';
+    const prefix = `Function:${file}:`;
+    const functions = [...result.graph.iterNodes()].filter(
+      (node) => node.label === 'Function' && node.properties.filePath === file,
+    );
+    const calls = [...result.graph.iterRelationshipsByType('CALLS')];
+    const named = (name: string) =>
+      functions
+        .filter((node) => node.properties.name === name)
+        .sort((a, b) => Number(a.properties.startLine) - Number(b.properties.startLine));
+    const targets = (id: string) =>
+      calls.filter((edge) => edge.sourceId === id).map((edge) => edge.targetId);
+    const branch = named('branchTask');
+    expect(branch).toHaveLength(2);
+    expect(branch.map((node) => targets(node.id))).toEqual([[prefix + 'left'], [prefix + 'right']]);
+    const moduleTasks = named('moduleTask');
+    expect(moduleTasks).toHaveLength(2);
+    expect(moduleTasks[0].id).toBe(prefix + 'moduleTask');
+    expect(moduleTasks.map((node) => targets(node.id))).toEqual([
+      [prefix + 'left'],
+      [prefix + 'right'],
+    ]);
+    const unique = named('uniqueTask');
+    expect(unique.map((node) => node.id)).toEqual([prefix + 'uniqueTask']);
+    const grouped = named('grouped');
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((node) => targets(node.id).sort())).toEqual([
+      [prefix + 'left', prefix + 'leftExtra'],
+      [prefix + 'right', prefix + 'rightExtra'],
+    ]);
+    const moduleGroup = named('moduleGroup');
+    expect(moduleGroup.map((node) => node.id)).toEqual([prefix + 'moduleGroup']);
+    expect(targets(moduleGroup[0].id).sort()).toEqual([prefix + 'left', prefix + 'right']);
+    const fileTargets = targets(`File:${file}`);
+    for (const node of [...branch, ...moduleTasks, ...unique, ...grouped, ...moduleGroup]) {
+      expect(fileTargets).toContain(node.id);
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────
   // Positive: each HOC-wrapped const becomes a named Function whose
   // body's calls attribute to it (not File).

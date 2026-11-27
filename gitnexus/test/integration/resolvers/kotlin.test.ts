@@ -3191,8 +3191,13 @@ it('matches nullable generic method parameters across inheritance', async () => 
       'Direct',
       'EscapedConcrete',
       'Generic',
+      'InProjected',
       'ListConcrete',
+      'NamedOut',
       'NestedConcrete',
+      'NestedProjected',
+      'OutProjected',
+      'StarProjected',
     ].map((owner) => [`Class:Types.kt:${owner}`, 'Method:Types.kt:Base.accept#1']),
   );
 });

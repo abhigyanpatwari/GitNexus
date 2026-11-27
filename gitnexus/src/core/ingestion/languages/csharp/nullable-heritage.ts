@@ -10,12 +10,21 @@ import { bindsTypeParameter, lookupNameClaim } from '../../scope-resolution/scop
 import { isStableCsharpTypeName } from './qualified-type-names.js';
 import { typeApplicationArguments } from '../../utils/template-arguments.js';
 
+export const csharpParameterMode = /^(?:ref|out|in|this)\s+/u;
+
 interface NominalName {
   name: string;
   reference?: boolean;
 }
 const nominalType =
   /^((?:global\s*::\s*)?@?[_\p{ID_Start}][_\p{ID_Continue}]*(?:\s*\.\s*@?[_\p{ID_Start}][_\p{ID_Continue}]*)*)(?:\s*(<[\s\S]*>))?\s*(\?)?$/u;
+
+// A scalar may still be namespace-qualified or carry a nullable suffix.
+export function csharpScalarType(type: string): { name: string; nullable: boolean } | undefined {
+  if (type.includes('<')) return undefined;
+  const match = nominalType.exec(type.trim());
+  return match ? { name: match[1]!.replace(/\s+/gu, ''), nullable: Boolean(match[3]) } : undefined;
+}
 
 /** Preserve the arguments and outer suffix of a named C# type application. */
 export function csharpConstructedType(
@@ -94,18 +103,11 @@ export function specializeCsharpNullableFormal(
     if (reference) return stable.replace(/\?$/u, '');
     return stable.endsWith('?') ? stable : stable + '?';
   }
-  if (constraints?.referenceParameters?.includes(formal)) {
-    // This fully qualified operand identifies the same reference type in both signatures.
-    // An unresolved local spelling might bind to different types in each declaration.
-    if (
-      /^global::(?:@?[_\p{ID_Start}][_\p{ID_Continue}]*\.)*@?[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(
-        actual,
-      )
-    )
-      return actual;
-    return specializeNamedNullableOperand(actual);
-  }
-  if (constraints?.valueParameters?.includes(formal)) {
+  const reference = constraints?.referenceParameters?.includes(formal);
+  const value = constraints?.valueParameters?.includes(formal);
+  if (reference || value) {
+    const rooted = actual.startsWith('global::') && csharpScalarType(actual);
+    if (rooted) return reference ? rooted.name : rooted.name + '?';
     return specializeNamedNullableOperand(actual);
   }
   // Other parts of a partial declaration can supply the missing constraint.
@@ -218,10 +220,28 @@ export const normalizeCsharpNullableSignature: NonNullable<
     }
     return identity;
   };
+  const mode = csharpParameterMode.exec(builtin)?.[0] ?? '';
+  const operand = builtin.slice(mode.length);
+  const scalar = csharpScalarType(operand);
+  if (scalar) {
+    const resolved = resolveName(scalar.name, true);
+    if (resolved) return mode + resolved.name + (scalar.nullable && !resolved.reference ? '?' : '');
+    if (
+      scalar.name.startsWith('global::') ||
+      bindsTypeParameter(scope, canonicalName(scalar.name), indexes)
+    )
+      return builtin;
+    // Keep the ordinary spelling comparison for types outside the index. A
+    // claimed name whose identity could not be established (e.g. an unresolved
+    // alias) must not match the same spelling in another declaration.
+    const head = canonicalName(scalar.name.split('.')[0]!);
+    return lookupNameClaim(scope, head, indexes, { purpose: 'type' }).status === 'absent'
+      ? builtin
+      : null;
+  }
   if (builtin.includes('<')) {
-    const mode = /^(?:ref|out|in|this)\s+/u.exec(builtin)?.[0] ?? '';
     let grounded = true;
-    const constructed = csharpConstructedType(builtin.slice(mode.length), (name) => {
+    const constructed = csharpConstructedType(operand, (name) => {
       const resolved = resolveName(name, true);
       if (resolved) return resolved;
       if (

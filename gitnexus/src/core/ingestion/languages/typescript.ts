@@ -234,7 +234,7 @@ const tsExtractFunctionName = (
       }
     }
     const funcName = nameNode?.text ?? null;
-    const identityName = funcName ? blockCallableIdentity(node, funcName) : undefined;
+    const identityName = funcName ? blockCallableIdentity(parent, funcName) : undefined;
     return { funcName, label: 'Function', ...(identityName && { identityName }) };
   }
 
@@ -282,7 +282,9 @@ const tsExtractFunctionName = (
     if (declarator?.type === 'variable_declarator') {
       const nameNode = declarator.childForFieldName?.('name');
       if (nameNode?.type === 'identifier') {
-        return { funcName: nameNode.text, label: 'Function' };
+        const funcName = nameNode.text;
+        const identityName = blockCallableIdentity(declarator, funcName);
+        return { funcName, label: 'Function', ...(identityName && { identityName }) };
       }
       return { funcName: null, label: 'Function' };
     }

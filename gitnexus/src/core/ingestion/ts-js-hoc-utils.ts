@@ -90,6 +90,23 @@ export const ARRAY_METHOD_NOT_ANY_OF_PREDICATE = buildNotAnyOfPredicate(
   ARRAY_METHOD_HOC_BLOCKLIST,
 );
 
+// Keep the graph declaration on its binding and the identity on the wrapped callable.
+export const lexicalHocDefinitionQuery = `
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments [(arrow_function) (function_expression)] @callable)))) @definition.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      function: (member_expression property: (property_identifier) @callee)
+      arguments: (arguments [(arrow_function) (function_expression)] @callable)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function`;
+
 // `#not-any-of?` cannot share a query with another `#not-any-of?` on a
 // different capture: the earlier predicate is ignored. Pair-HOC rules already
 // use `#not-any-of? @callee`, so the identifier blocklist is `#not-eq?`

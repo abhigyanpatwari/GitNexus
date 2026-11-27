@@ -12,7 +12,7 @@ export function javascriptParseContext(
   source: string,
   config: unknown,
 ): string | undefined {
-  if (!filePath.endsWith('.js') || !possibleLegacyNumber.test(source) || !config) return undefined;
+  if (!/\.jsx?$/.test(filePath) || !possibleLegacyNumber.test(source) || !config) return undefined;
   const { nodeWorkspacePackages } = config as {
     nodeWorkspacePackages: NodeWorkspacePackages | null;
   };

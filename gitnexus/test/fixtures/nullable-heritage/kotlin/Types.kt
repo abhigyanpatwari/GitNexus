@@ -15,3 +15,13 @@ class ElementWithSpaces
 class EscapedConcrete : Mid<List<`Element With Spaces`>>() {
     override fun accept(value: List<`Element With Spaces`>?) {}
 }
+class Slot<T>
+class out
+class outString
+class NamedOut : Mid<Slot<out>>() { override fun accept(value: Slot<out>?) {} }
+class OutProjected : Mid<List<out String>>() { override fun accept(value: List<out String>?) {} }
+class InProjected : Mid<Slot<in String>>() { override fun accept(value: Slot<in String>?) {} }
+class StarProjected : Mid<Slot<*>>() { override fun accept(value: Slot<*>?) {} }
+class NestedProjected : Mid<Map<String, Slot<out Number?>>>() {
+    override fun accept(value: Map<String, Slot<out Number?>>?) {}
+}

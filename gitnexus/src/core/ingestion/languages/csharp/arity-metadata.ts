@@ -22,7 +22,11 @@ import { csharpMethodConfig } from '../../method-extractors/configs/csharp.js';
 import { withoutTypeComments } from '../../utils/type-parameters.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
-import { csharpConstructedType } from './nullable-heritage.js';
+import {
+  csharpConstructedType,
+  csharpParameterMode,
+  csharpScalarType,
+} from './nullable-heritage.js';
 
 interface CsharpArityMetadata {
   readonly declaredParameterTypes?: readonly string[];
@@ -37,30 +41,25 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
   let hasVariadic = false;
   let optionalCount = 0;
   let types = declarationParameterTypes(params);
-  // The call matcher unwraps simple nullable types. Preserve their declaration
-  // spelling for inherited signatures, including ref/out/in and the params marker.
+  // The call matcher erases qualifications, generic arguments and nullability.
+  // Keep the declared spelling and passing mode for inherited signatures.
   let declaredParameterTypes: string[] | undefined;
   let typeIndex = 0;
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
     if (p.type === null) continue;
-    const constructed =
-      fnNode.type === 'method_declaration' && p.rawType?.includes('<')
-        ? csharpConstructedType(withoutTypeComments(p.rawType))
-        : undefined;
-    if (constructed && p.rawType !== p.type) {
-      declaredParameterTypes ??= [...types];
-      const mode = /^(?:ref|out|in|this)\s+/u.exec(p.type)?.[0] ?? '';
-      declaredParameterTypes[typeIndex] = mode + constructed;
-    } else if (
-      fnNode.type === 'method_declaration' &&
-      p.rawType?.endsWith('?') &&
-      !p.type.endsWith('?') &&
-      /^@?[_\p{ID_Start}][_\p{ID_Continue}]*\s*\?$/u.test(withoutTypeComments(p.rawType))
-    ) {
-      declaredParameterTypes ??= [...types];
-      declaredParameterTypes[typeIndex] = p.type + '?';
+    if (fnNode.type === 'method_declaration' && p.rawType && /[<.?:]/u.test(p.rawType)) {
+      const raw = withoutTypeComments(p.rawType);
+      const scalar = csharpScalarType(raw);
+      const spelling = scalar
+        ? scalar.name + (scalar.nullable ? '?' : '')
+        : csharpConstructedType(raw);
+      const mode = csharpParameterMode.exec(p.type)?.[0] ?? '';
+      if (spelling && mode + spelling !== p.type) {
+        declaredParameterTypes ??= [...types];
+        declaredParameterTypes[typeIndex] = mode + spelling;
+      }
     }
     typeIndex++;
   }

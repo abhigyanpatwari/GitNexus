@@ -41,7 +41,7 @@ function synthesizedCaptureFingerprint() {
 test('the ordered captures retain the namespace on the four qualified heritage references', () => {
   assert.equal(
     synthesizedCaptureFingerprint(),
-    '66b550779d8e857b836650cf70129588b5a598323c813388f58ec0afe4444975',
+    '05f338426fee4a7a73102be48cdb3495bafbf164c030835009f9cd1f422a571e',
   );
 });
 
