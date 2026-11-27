@@ -378,6 +378,27 @@ function findSelfOrAncestorOfTypes(
   return null;
 }
 
+/**
+ * Unwraps transparent receiver wrappers in TypeScript:
+ * non-null assertions (`s!`) and parenthesized expressions (`(s)`).
+ * Peels up to 3 levels to reveal the underlying operand (#4233).
+ */
+function unwrapTsTransparentReceiver(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  for (let i = 0; i < 3; i++) {
+    if (
+      current.type !== 'non_null_expression' &&
+      current.type !== 'parenthesized_expression'
+    ) {
+      break;
+    }
+    const inner = current.namedChildren.find((c) => c !== null);
+    if (!inner) break;
+    current = inner;
+  }
+  return current;
+}
+
 export function emitTsScopeCaptures(
   sourceText: string,
   filePath: string,
@@ -732,6 +753,21 @@ export function emitTsScopeCaptures(
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
     addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
+    // #4233: A receiver wrapped in non-null assertions (`s!.run()`) or parentheses
+    // (`(s).run()`) preserves the wrapper in raw text, causing symbol lookup for `s!`
+    // to fail. Since the receiver chain encoder refuses an empty chain, unwrap the
+    // operand's text for @reference.receiver so the scope resolver finds the base binding.
+    const receiverNode = groupedNodes['@reference.receiver'];
+    if (receiverNode !== undefined && receiverNode !== null) {
+      const unwrapped = unwrapTsTransparentReceiver(receiverNode);
+      if (unwrapped !== receiverNode && grouped['@reference.receiver'] !== undefined) {
+        grouped['@reference.receiver'] = syntheticCapture(
+          '@reference.receiver',
+          receiverNode,
+          unwrapped.text,
+        );
+      }
+    }
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 

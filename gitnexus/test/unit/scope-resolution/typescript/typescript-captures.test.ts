@@ -857,3 +857,35 @@ export async function run() {
     ).toEqual(['pending']);
   });
 });
+
+describe('emitTsScopeCaptures — #4233 non-null and parenthesized receivers', () => {
+  it('unwraps non-null assertion receiver (s!.run()) to base identifier', () => {
+    const src = `export function f(s: any) { return s!.run(); }`;
+    const match = findMatch(src, (t) => t.includes('@reference.call.member'));
+    expect(match).toBeDefined();
+    expect(match!['@reference.name'].text).toBe('run');
+    expect(match!['@reference.receiver'].text).toBe('s');
+  });
+
+  it('unwraps parenthesized receiver ((s).run()) to base identifier', () => {
+    const src = `export function f(s: any) { return (s).run(); }`;
+    const match = findMatch(src, (t) => t.includes('@reference.call.member'));
+    expect(match).toBeDefined();
+    expect(match!['@reference.name'].text).toBe('run');
+    expect(match!['@reference.receiver'].text).toBe('s');
+  });
+
+  it('unwraps nested combinations ((s)!.run(), ((s)!).run()) to base identifier', () => {
+    const src1 = `export function f(s: any) { return (s)!.run(); }`;
+    const match1 = findMatch(src1, (t) => t.includes('@reference.call.member'));
+    expect(match1).toBeDefined();
+    expect(match1!['@reference.name'].text).toBe('run');
+    expect(match1!['@reference.receiver'].text).toBe('s');
+
+    const src2 = `export function f(s: any) { return ((s)!).run(); }`;
+    const match2 = findMatch(src2, (t) => t.includes('@reference.call.member'));
+    expect(match2).toBeDefined();
+    expect(match2!['@reference.name'].text).toBe('run');
+    expect(match2!['@reference.receiver'].text).toBe('s');
+  });
+});

@@ -3885,3 +3885,59 @@ export function Other() {
     expect(callsFrom('useRoute', 'src/route.ts').length).toBeGreaterThan(0);
   });
 });
+
+describe('TypeScript non-null and parenthesized receivers (#4233)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-nonnull-receiver-'));
+    writeFixtureRepo(repoDir, {
+      'src/svc.ts': `export class Svc {
+  run(): number { return 1; }
+}`,
+      'src/app.ts': `import { Svc } from './svc';
+
+export function viaNonNull(s: Svc | null): number {
+  return s!.run();
+}
+
+export function viaParens(s: Svc): number {
+  return (s).run();
+}
+
+export function viaNested(s: Svc | null): number {
+  return ((s)!).run();
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    try {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it('resolves s!.run() to Svc.run', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaNonNull' && c.target === 'run');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/svc.ts');
+  });
+
+  it('resolves (s).run() to Svc.run', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaParens' && c.target === 'run');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/svc.ts');
+  });
+
+  it('resolves ((s)!).run() to Svc.run', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaNested' && c.target === 'run');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/svc.ts');
+  });
+});
