@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   getRelationships,
+  getResolutionOutcomes,
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
@@ -102,6 +103,15 @@ namespace MyGame
 
   it('refuses a bare type from a namespace the caller never imports', () => {
     expect(callTargetsFrom(plain, 'Paint', 'App/Unrelated.cs')).toEqual([]);
+    expect(getResolutionOutcomes(plain)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'fallback-refused',
+          filePath: 'App/Unrelated.cs',
+          name: 'Color',
+        }),
+      ]),
+    );
   });
 
   it('refuses the guess from a caller in the global namespace', () => {
