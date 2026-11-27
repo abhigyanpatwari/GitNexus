@@ -77,7 +77,8 @@ export function getNextStepHint(
   toolResult?: unknown,
 ): string {
   const repo = args?.repo;
-  const repoParam = repo ? `, repo: "${repo}"` : '';
+  const repoArg = typeof repo === 'string' && repo ? `repo: ${JSON.stringify(repo)}` : '';
+  const repoParam = repoArg ? `, ${repoArg}` : '';
   const repoPath = repo || '{name}';
 
   if ((toolName === 'query' || toolName === 'search') && Array.isArray(repo)) {
@@ -128,7 +129,7 @@ export function getNextStepHint(
           return '\n\n---\n**Next:** Reconcile landed changes, failed_files and unattempted_files, then re-analyze and review a fresh preview before applying again. The operation was partial.';
         if (result?.applied !== true)
           return '\n\n---\n**Next:** No successful apply was confirmed. Inspect code and error, then request and review a fresh rename preview and use its plan_token to apply.';
-        return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
+        return `\n\n---\n**Next:** Run detect_changes(${repoArg ? `{${repoArg}}` : ''}) to verify no unexpected side effects from the rename.`;
       }
       if (readOnly) {
         return `\n\n---\n**Next:** This is a preview; MCP read-only mode cannot apply it. To apply, request and review a fresh preview from a server that permits writes, then use that server's plan_token.`;

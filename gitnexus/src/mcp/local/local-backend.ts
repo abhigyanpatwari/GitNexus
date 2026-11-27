@@ -1971,9 +1971,26 @@ export class LocalBackend {
     return `${repo.lbugPath}\u0000${createHash('sha256').update(publication).digest('hex')}\u0000${createHash('sha256').update(subject).digest('hex')}`;
   }
 
+  /**
+   * Stats rendered by `repo_overview` must describe the graph being queried.
+   * `ensureInitialized()` refreshes `lastObservedPoolState.metadata` for a new
+   * publication before this runs; `readToolMetadata()` applies the same
+   * graph-generation guard for a handle resolved but not yet bound. When that
+   * generation is unknown, or no metadata describes it, omit stats rather than
+   * pairing a stale registry snapshot with current Cypher rows.
+   */
+  private async repoOverviewStats(repo: RepoHandle): Promise<RepoOverviewRepoInput['stats']> {
+    if (repo.generationUnknown) return undefined;
+    const state = this.lastObservedPoolState.get(repo.lbugPath);
+    const meta = state?.metadata ?? (await this.readToolMetadata(repo));
+    if (repo.generationUnknown || !meta) return undefined;
+    return meta.stats ?? repo.stats;
+  }
+
   /** Generate once per publication; concurrent callers share one promise. */
   private async repoOverview(repo: RepoHandle): Promise<unknown> {
     await this.ensureInitialized(repo);
+    const stats = await this.repoOverviewStats(repo);
     const key = await this.repoOverviewCacheKey(repo);
     const cached = this.repoOverviewCache.get(key);
     if (cached) return cached;
@@ -1983,7 +2000,7 @@ export class LocalBackend {
         id: repo.id,
         name: repo.name,
         repoPath: repo.repoPath,
-        stats: repo.stats,
+        stats,
       };
       const overview = await generateRepoOverview(input, {
         executeParameterized: (cypher, params) =>

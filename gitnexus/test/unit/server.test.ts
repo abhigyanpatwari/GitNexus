@@ -327,6 +327,36 @@ describe('getNextStepHint (via tool call response)', () => {
     expect(hint).not.toContain('gitnexus://repo//tmp/my project/clusters');
   });
 
+  it.each(['a"b', 'C:\\Users\\rpatn', 'a"b\\c'])(
+    'serializes repository identifiers safely in hints (%s)',
+    (repo) => {
+      const serialized = JSON.stringify(repo);
+      const overviewHint = getNextStepHint('repo_overview', { repo });
+      expect(overviewHint).toContain(`query({search_query: "<concept>", repo: ${serialized}})`);
+      expect(overviewHint).toContain(`context({name: "<symbol>", repo: ${serialized}})`);
+      expect(overviewHint).toContain(`gitnexus://repo/${encodeURIComponent(repo)}/clusters`);
+
+      const queryHint = getNextStepHint('query', { repo, include_content: true });
+      expect(queryHint).toContain(`context({uid: "<id>", repo: ${serialized}})`);
+      expect(queryHint).toContain(
+        `context({uid: "<id>", include_content: true, repo: ${serialized}})`,
+      );
+
+      const contextHint = getNextStepHint('context', { name: 'Sym', repo });
+      expect(contextHint).toContain(
+        `impact({target: "Sym", direction: "upstream", repo: ${serialized}})`,
+      );
+
+      const renameHint = getNextStepHint(
+        'rename',
+        { new_name: 'go', repo, dry_run: false },
+        false,
+        { status: 'success', applied: true },
+      );
+      expect(renameHint).toContain(`detect_changes({repo: ${serialized}})`);
+    },
+  );
+
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
     const backend = createMockBackend({
       callTool: vi

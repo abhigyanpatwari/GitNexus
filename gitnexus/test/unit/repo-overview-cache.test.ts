@@ -105,7 +105,7 @@ function makeIndexedRepo(indexedAt = '2026-01-01T00:00:00Z') {
     lastCommit: 'abc1234567890',
     stats: { files: 10, nodes: 50, edges: 100, communities: 2, processes: 3 },
   };
-  const writeMeta = (stamp: string): void => {
+  const writeMeta = (stamp: string, stats = entry.stats): void => {
     writeFileSync(
       path.join(storagePath, 'gitnexus.json'),
       JSON.stringify({
@@ -113,7 +113,7 @@ function makeIndexedRepo(indexedAt = '2026-01-01T00:00:00Z') {
         storagePath,
         lastCommit: entry.lastCommit,
         indexedAt: stamp,
-        stats: entry.stats,
+        stats,
       }),
     );
   };
@@ -250,6 +250,45 @@ describe('repo_overview backend cache and dispatch', () => {
     writeMeta('2026-02-02T00:00:00Z');
     (executeParameterized as any).mockClear();
     await backend.callTool('repo_overview', {});
+    expect((executeParameterized as any).mock.calls.length).toBe(EMPTY_GRAPH_QUERY_COUNT);
+  });
+
+  it('uses fresh metadata stats after a publication with the same cached handle', async () => {
+    const { entry, writeMeta } = makeIndexedRepo();
+    await initBackend(entry);
+
+    const first = await backend.callTool('repo_overview', { repo: 'demo' });
+    expect(first).toMatchObject({
+      nodeCount: 50,
+      edgeCount: 100,
+      stats: { files: 10, nodes: 50, edges: 100 },
+    });
+
+    // Out-of-process analyze republishes the graph and its metadata, while the
+    // registry mock deliberately keeps the old entry. An explicit repo id must
+    // reuse the existing handle instead of refreshing the registry.
+    writeMeta('2026-02-02T00:00:00Z', {
+      files: 12,
+      nodes: 60,
+      edges: 130,
+      communities: 2,
+      processes: 3,
+    });
+    (executeParameterized as any).mockClear();
+
+    const second = await backend.callTool('repo_overview', { repo: 'demo' });
+    expect(second).toMatchObject({
+      nodeCount: 60,
+      edgeCount: 130,
+      stats: {
+        files: 12,
+        nodes: 60,
+        edges: 130,
+        communities: 2,
+        processes: 3,
+      },
+    });
+    expect(listRegisteredRepos).toHaveBeenCalledTimes(1);
     expect((executeParameterized as any).mock.calls.length).toBe(EMPTY_GRAPH_QUERY_COUNT);
   });
 
