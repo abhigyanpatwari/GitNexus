@@ -18,65 +18,66 @@ const checks = {
 };
 const lanes = Object.keys(checks);
 
+function cliLanes(file) {
+  const selected = ['quality', 'cli'];
+  const install = /^package(?:-lock)?\.json$/.test(file);
+  if (
+    install ||
+    /^(src\/|tools\/compiler-conformance\/java\/|test\/.*\bjava(?:\b|[A-Z])|scripts\/|vendor\/)/.test(
+      file,
+    )
+  )
+    selected.push('java');
+  if (
+    install ||
+    /^(vendor\/|scripts\/|src\/core\/tree-sitter|.*(?:parser-loader|grpc-extractor))/.test(file)
+  )
+    selected.push('abi');
+  if (file === 'package-lock.json' || file === '.npmrc') selected.push('eval');
+  if (install || /^scripts\/(execution-reporter|test-completeness)\.ts$/.test(file))
+    selected.push('web');
+  if (
+    install ||
+    /^(src\/(server\/|mcp\/|cli\/(?:index|serve)\.ts$)|test\/fixtures\/mini-repo\/)/.test(file)
+  )
+    selected.push('browser');
+  return selected;
+}
+
+function lanesForPath(path) {
+  if (path === 'AGENTS.md' || path === 'CLAUDE.md') return ['quality', 'cli'];
+  // The skill-sync workflow checks changes to the shipped Markdown copies.
+  if (
+    /^(docs\/|Documentation\/|[^/]+\.md$|LICENSE$|\.github\/PULL_REQUEST_TEMPLATE\.md$)/.test(
+      path,
+    ) ||
+    /(?:^|\/)README\.md$/.test(path) ||
+    /^\.claude\/skills\/gitnexus(?:-|\/).*\.md$/.test(path)
+  )
+    return [];
+  if (path.startsWith('gitnexus-web/')) {
+    const selected = ['quality', 'web', 'browser'];
+    if (
+      /^gitnexus-web\/(src\/lib\/upload-filter\.ts|vercel\.json|tsconfig[^/]*\.json)$/.test(path)
+    ) {
+      selected.push('cli');
+    }
+    return selected;
+  }
+  if (path.startsWith('gitnexus-shared/')) return ['quality', 'cli', 'web', 'browser', 'java'];
+  if (path.startsWith('eval/')) return ['quality', 'eval'];
+  if (path === 'Dockerfile.cli') return ['quality', 'docker', 'cli'];
+  if (/^(docker-server(?:\.test)?\.mjs|Dockerfile\..+|docker-compose\.yaml)$/.test(path)) {
+    return ['quality', 'docker'];
+  }
+  if (path.startsWith('gitnexus/')) return cliLanes(path.slice('gitnexus/'.length));
+  return lanes;
+}
+
 function affected(paths) {
   const selected = new Set();
   for (const path of paths) {
-    if (path === 'AGENTS.md' || path === 'CLAUDE.md') {
-      selected.add('quality');
-      selected.add('cli');
-      continue;
-    }
-    // The skill-sync workflow checks changes to the shipped Markdown copies.
-    if (
-      /^(docs\/|Documentation\/|[^/]+\.md$|LICENSE$|\.github\/PULL_REQUEST_TEMPLATE\.md$)/.test(
-        path,
-      ) ||
-      /(?:^|\/)README\.md$/.test(path) ||
-      /^\.claude\/skills\/gitnexus(?:-|\/).*\.md$/.test(path)
-    )
-      continue;
-    selected.add('quality');
-    if (path.startsWith('gitnexus-web/')) {
-      selected.add('web');
-      selected.add('browser');
-      if (
-        /^gitnexus-web\/(src\/lib\/upload-filter\.ts|vercel\.json|tsconfig[^/]*\.json)$/.test(path)
-      )
-        selected.add('cli');
-    } else if (path.startsWith('gitnexus-shared/')) {
-      for (const lane of ['cli', 'web', 'browser', 'java']) selected.add(lane);
-    } else if (path.startsWith('eval/')) {
-      selected.add('eval');
-    } else if (/^(docker-server(?:\.test)?\.mjs|Dockerfile\..+|docker-compose\.yaml)$/.test(path)) {
-      selected.add('docker');
-      if (path === 'Dockerfile.cli') selected.add('cli');
-    } else if (path.startsWith('gitnexus/')) {
-      const file = path.slice('gitnexus/'.length);
-      selected.add('cli');
-      const install = /^package(?:-lock)?\.json$/.test(file);
-      if (
-        install ||
-        /^(src\/|tools\/compiler-conformance\/java\/|test\/.*\bjava(?:\b|[A-Z])|scripts\/|vendor\/)/.test(
-          file,
-        )
-      )
-        selected.add('java');
-      if (
-        install ||
-        /^(vendor\/|scripts\/|src\/core\/tree-sitter|.*(?:parser-loader|grpc-extractor))/.test(file)
-      )
-        selected.add('abi');
-      if (file === 'package-lock.json' || file === '.npmrc') selected.add('eval');
-      if (install || /^scripts\/(execution-reporter|test-completeness)\.ts$/.test(file))
-        selected.add('web');
-      if (
-        install ||
-        /^(src\/(server\/|mcp\/|cli\/(?:index|serve)\.ts$)|test\/fixtures\/mini-repo\/)/.test(file)
-      )
-        selected.add('browser');
-    } else {
-      for (const lane of lanes) selected.add(lane);
-    }
+    for (const lane of lanesForPath(path)) selected.add(lane);
   }
   return selected;
 }
