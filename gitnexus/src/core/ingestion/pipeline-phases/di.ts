@@ -84,9 +84,31 @@ function addIndexedName(index: NameIndex, node: GraphNode): void {
   index.bySimpleName.set(simpleName, index.bySimpleName.has(simpleName) ? AMBIGUOUS : node.id);
 }
 
+function isQualifiedTypeName(name: string): boolean {
+  return name.includes('.') || name.includes('\\');
+}
+
+function typeNameSimple(name: string): string {
+  if (name.includes('\\')) return name.slice(name.lastIndexOf('\\') + 1);
+  if (name.includes('.')) return name.slice(name.lastIndexOf('.') + 1);
+  return name;
+}
+
 function resolveIndexedName(index: NameIndex | undefined, name: string) {
   if (index === undefined) return undefined;
-  return name.includes('.') ? index.byQualifiedName.get(name) : index.bySimpleName.get(name);
+  return isQualifiedTypeName(name)
+    ? index.byQualifiedName.get(name)
+    : index.bySimpleName.get(name);
+}
+
+function preferenceAppliesToType(provider: DiProviderMatch, targetTypeName: string): boolean {
+  if (provider.preferenceReason === undefined) return false;
+  const scoped = provider.preferredForTypeNames;
+  if (scoped === undefined || scoped.length === 0) return true;
+  const targetSimple = typeNameSimple(targetTypeName);
+  return scoped.some((typeName) => {
+    return typeName === targetTypeName || typeName === targetSimple || typeNameSimple(typeName) === targetSimple;
+  });
 }
 
 function providerCandidates(
@@ -402,8 +424,13 @@ export const diPhase: PipelinePhase<DIOutput> = {
       }
 
       const preferred = viable.flatMap((id) => {
-        const reason = providers.get(id)?.preferenceReason;
-        return reason === undefined ? [] : [{ id, reason }];
+        const provider = providers.get(id);
+        if (provider === undefined || !preferenceAppliesToType(provider, candidate.targetTypeName)) {
+          return [];
+        }
+        const reason = provider.preferenceReason;
+        if (reason === undefined) return [];
+        return [{ id, reason }];
       });
       if (!usedNamedSelection && preferred.length === 1) {
         const selected = preferred[0];

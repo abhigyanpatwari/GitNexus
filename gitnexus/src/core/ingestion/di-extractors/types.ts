@@ -52,6 +52,10 @@ export interface DiProviderMatch {
   /** Present when the framework marks this as its preferred candidate. The
    *  value is appended to the emitted edge reason when it disambiguates. */
   preferenceReason?: string;
+  /** When set, `preferenceReason` only applies to these injection type names
+   *  (simple or qualified). Omitted ⇒ preference applies to every type the
+   *  provider can satisfy (e.g. Spring `@Primary`). */
+  preferredForTypeNames?: readonly string[];
 }
 
 /** Per-language DI behavior. Matchers receive whole nodes so the shared phase

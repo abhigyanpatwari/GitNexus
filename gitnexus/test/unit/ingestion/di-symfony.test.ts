@@ -71,12 +71,25 @@ function addHasMethod(graph: KnowledgeGraph, classId: string, methodId: string):
   });
 }
 
-function stampSymfonyProvider(graph: KnowledgeGraph, classId: string, preferenceReason?: string): void {
+function stampSymfonyProvider(
+  graph: KnowledgeGraph,
+  classId: string,
+  options?: { preferenceReason?: string; preferredForTypeNames?: readonly string[] },
+): void {
   const node = graph.getNode(classId)!;
   const base = defaultSymfonyProvider(node);
   if (base === null) return;
-  node.properties[SYMFONY_DI_PROVIDER_PROPERTY] =
-    preferenceReason === undefined ? base : { ...base, preferenceReason };
+  if (options === undefined) {
+    node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = base;
+    return;
+  }
+  node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
+    ...base,
+    ...(options.preferenceReason !== undefined ? { preferenceReason: options.preferenceReason } : {}),
+    ...(options.preferredForTypeNames !== undefined
+      ? { preferredForTypeNames: options.preferredForTypeNames }
+      : {}),
+  };
 }
 
 describe('normalizeSymfonyInjectionType', () => {
@@ -177,6 +190,24 @@ services:
     expect(aliases).toHaveLength(1);
     expect(aliases[0].implementationName).toBe('App\\Log\\FileLogger');
   });
+
+  it('keeps aliases when the file uses Symfony YAML tags', () => {
+    const yaml = `
+services:
+  App\\Log\\Logger: '@App\\Log\\FileLogger'
+  app.handlers:
+    class: App\\Handler\\Composite
+    arguments:
+      \$handlers: !tagged_iterator app.handler
+`;
+    const aliases = parseSymfonyServicesYaml(yaml, 'config/services.yaml');
+    expect(aliases).toEqual([
+      expect.objectContaining({
+        interfaceName: 'App\\Log\\Logger',
+        implementationName: 'App\\Log\\FileLogger',
+      }),
+    ]);
+  });
 });
 
 describe('di phase — Symfony constructor autowiring (#1857)', () => {
@@ -246,11 +277,10 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     addImplements(graph, fileLoggerId, loggerId);
     addImplements(graph, syslogId, loggerId);
     stampSymfonyProvider(graph, syslogId);
-    stampSymfonyProvider(
-      graph,
-      fileLoggerId,
-      'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
-    );
+    stampSymfonyProvider(graph, fileLoggerId, {
+      preferenceReason: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      preferredForTypeNames: ['App\\Log\\Logger', 'Logger'],
+    });
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
       name: '__construct',
@@ -270,5 +300,79 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     expect(preferred.length).toBe(1);
     expect(preferred[0].confidence).toBeGreaterThanOrEqual(0.9);
     expect(preferred[0].reason).toMatch(/services\.yaml alias/i);
+  });
+
+  it('resolves FQCN constructor type hints via qualifiedName index', async () => {
+    const graph = createKnowledgeGraph();
+    const orderId = addNode(graph, 'Class', 'OrderService');
+    const loggerId = addNode(graph, 'Interface', 'Logger', {
+      qualifiedName: 'App\\Log\\Logger',
+    });
+    const fileLoggerId = addNode(graph, 'Class', 'FileLogger', {
+      qualifiedName: 'App\\Log\\FileLogger',
+    });
+    addImplements(graph, fileLoggerId, loggerId);
+    stampSymfonyProvider(graph, fileLoggerId);
+
+    const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
+      name: '__construct',
+      parameterTypes: ['\\App\\Log\\Logger'],
+      parameterCount: 1,
+      filePath: 'src/OrderService.php',
+      [SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY]: true,
+    });
+    addHasMethod(graph, orderId, ctorId);
+
+    await diPhase.execute(makeCtx(graph), new Map());
+    const injects = [...graph.iterRelationshipsByType('INJECTS')];
+    expect(injects.some((e) => e.sourceId === orderId && e.targetId === fileLoggerId)).toBe(true);
+  });
+
+  it('does not apply a Logger alias preference to an unrelated Clock injection', async () => {
+    const graph = createKnowledgeGraph();
+    const orderId = addNode(graph, 'Class', 'OrderService');
+    const loggerId = addNode(graph, 'Interface', 'Logger', {
+      qualifiedName: 'App\\Log\\Logger',
+    });
+    const clockId = addNode(graph, 'Interface', 'Clock', {
+      qualifiedName: 'App\\Time\\Clock',
+    });
+    const fileLoggerId = addNode(graph, 'Class', 'FileLogger', {
+      qualifiedName: 'App\\Log\\FileLogger',
+    });
+    const systemClockId = addNode(graph, 'Class', 'SystemClock', {
+      qualifiedName: 'App\\Time\\SystemClock',
+    });
+    const otherClockId = addNode(graph, 'Class', 'FrozenClock', {
+      qualifiedName: 'App\\Time\\FrozenClock',
+    });
+    addImplements(graph, fileLoggerId, loggerId);
+    addImplements(graph, fileLoggerId, clockId);
+    addImplements(graph, systemClockId, clockId);
+    addImplements(graph, otherClockId, clockId);
+    stampSymfonyProvider(graph, systemClockId);
+    stampSymfonyProvider(graph, otherClockId);
+    stampSymfonyProvider(graph, fileLoggerId, {
+      preferenceReason: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      preferredForTypeNames: ['App\\Log\\Logger', 'Logger'],
+    });
+
+    const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
+      name: '__construct',
+      parameterTypes: ['Clock'],
+      parameterCount: 1,
+      filePath: 'src/OrderService.php',
+      [SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY]: true,
+    });
+    addHasMethod(graph, orderId, ctorId);
+
+    await diPhase.execute(makeCtx(graph), new Map());
+    const injects = [...graph.iterRelationshipsByType('INJECTS')].filter(
+      (e) => e.sourceId === orderId,
+    );
+    const preferred = injects.filter(
+      (e) => e.targetId === fileLoggerId && e.confidence >= 0.9,
+    );
+    expect(preferred).toHaveLength(0);
   });
 });

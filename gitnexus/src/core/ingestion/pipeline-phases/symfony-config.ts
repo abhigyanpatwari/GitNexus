@@ -25,6 +25,44 @@ import {
 const require = createRequire(import.meta.url);
 const yaml = require('js-yaml') as typeof import('js-yaml');
 
+const SYMFONY_UNKNOWN_SCALAR_TAG = yaml.defineScalarTag('!', {
+  matchByTagPrefix: true,
+  resolve: (source: string) => source,
+  identify: () => false,
+});
+const SYMFONY_UNKNOWN_SEQUENCE_TAG = yaml.defineSequenceTag('!', {
+  matchByTagPrefix: true,
+  create: () => [] as unknown[],
+  addItem: (carrier: unknown[], item: unknown) => {
+    carrier.push(item);
+  },
+  identify: () => false,
+});
+const SYMFONY_UNKNOWN_MAPPING_TAG = yaml.defineMappingTag('!', {
+  matchByTagPrefix: true,
+  create: () => ({}) as Record<string, unknown>,
+  addPair: (carrier: Record<string, unknown>, key: unknown, value: unknown) => {
+    carrier[String(key)] = value;
+    return '';
+  },
+  has: (carrier: Record<string, unknown>, key: unknown) =>
+    Object.prototype.hasOwnProperty.call(carrier, String(key)),
+  keys: (result: Record<string, unknown>) => Object.keys(result),
+  get: (result: Record<string, unknown>, key: unknown) => result[String(key)],
+  identify: () => false,
+});
+const SYMFONY_YAML_SCHEMA = yaml.CORE_SCHEMA.withTags(
+  yaml.mergeTag,
+  yaml.timestampTag,
+  yaml.binaryTag,
+  yaml.omapTag,
+  yaml.pairsTag,
+  yaml.setTag,
+  SYMFONY_UNKNOWN_SCALAR_TAG,
+  SYMFONY_UNKNOWN_SEQUENCE_TAG,
+  SYMFONY_UNKNOWN_MAPPING_TAG,
+);
+
 export interface SymfonyConfigOutput {
   /** Number of Interface → Impl aliases applied to Class providers. */
   aliasesApplied: number;
@@ -106,7 +144,7 @@ export function parseSymfonyServicesYaml(
 ): SymfonyServiceAlias[] {
   let doc: unknown;
   try {
-    doc = yaml.load(content);
+    doc = yaml.load(content, { schema: SYMFONY_YAML_SCHEMA });
   } catch {
     return [];
   }
@@ -221,8 +259,19 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
         }
         const base = defaultSymfonyProvider(node);
         if (base === null) return;
+        const existing = node.properties[SYMFONY_DI_PROVIDER_PROPERTY];
+        const priorTypes =
+          existing !== null &&
+          typeof existing === 'object' &&
+          Array.isArray((existing as { preferredForTypeNames?: unknown }).preferredForTypeNames)
+            ? ((existing as { preferredForTypeNames: string[] }).preferredForTypeNames)
+            : [];
+        const preferredForTypeNames = [
+          ...new Set([...priorTypes, alias.interfaceName, simpleName(alias.interfaceName)]),
+        ];
         node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
           ...base,
+          preferredForTypeNames,
           preferenceReason: `Symfony services.yaml alias ${alias.interfaceName} → ${alias.implementationName}`,
         };
         aliasesApplied++;

@@ -59,7 +59,10 @@ function isProviderMatch(value: unknown): value is DiProviderMatch {
     provider.names.every((name) => typeof name === 'string') &&
     (provider.providedTypeName === undefined || typeof provider.providedTypeName === 'string') &&
     (provider.declaredByNodeId === undefined || typeof provider.declaredByNodeId === 'string') &&
-    (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string')
+    (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string') &&
+    (provider.preferredForTypeNames === undefined ||
+      (Array.isArray(provider.preferredForTypeNames) &&
+        provider.preferredForTypeNames.every((name) => typeof name === 'string')))
   );
 }
 
