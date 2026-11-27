@@ -190,6 +190,117 @@ describe('CLI trace command', () => {
     expect(callTool).toHaveBeenCalledWith('trace', expect.objectContaining({ includeTests: true }));
   });
 
+  it('forwards a from-name with only --to-uid', async () => {
+    await traceCommand('A', undefined, { toUid: 'Function:route.ts:gamma' });
+
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({ from: 'A', to_uid: 'Function:route.ts:gamma' }),
+    );
+  });
+
+  it('forwards a to-name with only --from-uid', async () => {
+    await traceCommand(undefined, 'B', { fromUid: 'Function:route.ts:alpha' });
+
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({ from_uid: 'Function:route.ts:alpha', to: 'B' }),
+    );
+  });
+
+  it('exits with usage when to is missing and no to_uid', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(traceCommand('A', undefined, {})).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
+  it('exits with usage when to is missing and only from_uid is given', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(
+      traceCommand('A', undefined, { fromUid: 'Function:route.ts:alpha' }),
+    ).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
+  it('exits with usage when from is missing and only to_uid is given', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(
+      traceCommand(undefined, 'B', { toUid: 'Function:route.ts:gamma' }),
+    ).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
+  it('accepts UID-only endpoints through the real CLI dispatcher (#4124)', async () => {
+    const originalArgv = process.argv;
+    process.argv = [
+      'node',
+      'gitnexus',
+      'trace',
+      '--from-uid',
+      'Function:route.ts:alpha',
+      '--to-uid',
+      'Function:route.ts:gamma',
+    ];
+    try {
+      vi.resetModules();
+      await import('../../src/cli/index.js');
+      await vi.waitFor(() => {
+        expect(callTool).toHaveBeenCalledWith(
+          'trace',
+          expect.objectContaining({
+            from_uid: 'Function:route.ts:alpha',
+            to_uid: 'Function:route.ts:gamma',
+          }),
+        );
+      });
+    } finally {
+      process.argv = originalArgv;
+    }
+  });
+
+  it('exits with usage through the real CLI dispatcher when an endpoint is missing', async () => {
+    // Record-only exit mock: a throwing mock would surface as an unhandled
+    // rejection because program.parse does not await async actions. The action
+    // keeps running after the no-op exit, so callTool is out of scope here.
+    // The stderr assertions pin the layer: on base, Commander prints
+    // 'error: missing required argument' and calls exit(1) before the handler,
+    // which would satisfy a bare exit-code assertion for the wrong reason.
+    // Here the handler itself must be what requests exit(1) and prints usage.
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    let stderr = '';
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderr += String(chunk);
+      return true;
+    });
+    const originalArgv = process.argv;
+    process.argv = ['node', 'gitnexus', 'trace', 'A'];
+    try {
+      vi.resetModules();
+      await import('../../src/cli/index.js');
+      await vi.waitFor(() => {
+        expect(exitSpy).toHaveBeenCalledWith(1);
+      });
+      expect(stderr).toContain('Usage: gitnexus trace');
+      expect(stderr).not.toContain('missing required argument');
+    } finally {
+      process.argv = originalArgv;
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
   it('parses -f through the real CLI dispatcher', async () => {
     const originalArgv = process.argv;
     process.argv = ['node', 'gitnexus', 'trace', 'A', 'B', '-f', 'src/a.ts'];
