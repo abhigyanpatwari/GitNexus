@@ -6,6 +6,7 @@ import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 const kotlinPackageSiblingVisibility = createJvmPackageSiblingVisibility({
   languageLabel: 'kotlin',
   getPackageFact: getKotlinPackageFact,
+  includeTopLevelFunctions: true,
 });
 
 export const populateKotlinPackageSiblings: typeof kotlinPackageSiblingVisibility.populateNamespaceSiblings =
