@@ -9,7 +9,6 @@ name: CodeQL
 on:
   pull_request:
     branches: [main]
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   push:
     branches: [main]
   schedule:
@@ -44,10 +43,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           # Don't leave GITHUB_TOKEN in .git/config for downstream steps to read.
           persist-credentials: false
 
+      # Keep both required check names on documentation PRs. A failed diff
+      # leaves the output unset so both scans still run.
+      - name: Check for documentation-only PR
+        id: changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          changed="$RUNNER_TEMP/codeql-changed-paths"
+          if git diff --name-only --no-renames -z HEAD^1 HEAD > "$changed"; then
+            while IFS= read -r -d '' file; do
+              case "$file" in
+                *.md|docs/*|LICENSE) ;;
+                *) exit 0 ;;
+              esac
+            done < "$changed"
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Initialize CodeQL
+        if: steps.changes.outputs.docs_only != 'true'
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
@@ -91,6 +110,7 @@ jobs:
               - '.github/scripts/fetch-lbug-fts-artifacts.mjs'
 
       - name: Perform CodeQL Analysis
+        if: steps.changes.outputs.docs_only != 'true'
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: '/language:${{ matrix.language }}'
