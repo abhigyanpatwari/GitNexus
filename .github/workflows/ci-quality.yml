@@ -37,6 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -44,6 +45,17 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - run: npx eslint .
+      # CLI coverage already executes this guard against the same first parent.
+      - uses: ./.github/actions/setup-gitnexus
+        if: github.event_name == 'pull_request' && !fromJSON(inputs.plan).run.cli
+        with:
+          lifecycle-scripts: 'false'
+      - name: Check shared language boundaries
+        if: github.event_name == 'pull_request' && !fromJSON(inputs.plan).run.cli
+        working-directory: gitnexus
+        env:
+          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
+        run: npx vitest run test/unit/shared-tool-language-boundary.test.ts
 
   typecheck:
     if: fromJSON(inputs.plan).run.cli
