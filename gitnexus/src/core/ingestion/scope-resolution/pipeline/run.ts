@@ -1968,8 +1968,13 @@ export function runScopeResolution(
           ? undefined
           : (sourceFile) => {
               const parsed = importSources?.get(sourceFile);
-              return parsed === undefined ? undefined : onDemandImportTargets(parsed, indexes);
+              return parsed === undefined
+                ? undefined
+                : onDemandImportTargets(parsed, indexes, (file) => importSources?.get(file));
             },
+        provider.onDemandImportEdgeKinds === undefined
+          ? undefined
+          : new Set(provider.onDemandImportEdgeKinds),
       );
   probeEmit('imports-end', `emitted=${importsEmitted}`);
 

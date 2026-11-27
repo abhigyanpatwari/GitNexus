@@ -290,6 +290,7 @@ import type {
   CallResultAssignmentSite,
   Callsite,
   ConstraintContext,
+  ImportEdge,
   ParsedFile,
   ParsedImport,
   ReferenceSite,
@@ -407,24 +408,40 @@ export interface ScopeResolver {
   readonly importEdgeReason: string;
 
   /** Name the files that supply what a source file takes through its on-demand
-   * (wildcard) imports. Only languages whose wildcards do not execute their
-   * targets may opt in. The finalizer's imports remain intact for lookup; this
-   * narrows persisted File→File edges only.
+   * imports: a wildcard, or a module or package import that makes every file
+   * of the module visible without binding a name per file. Only languages
+   * whose on-demand imports do not execute their targets may opt in. The
+   * finalizer's imports remain intact for lookup; this narrows persisted
+   * File→File edges only.
    *
-   * The answer governs EVERY `wildcard-expanded` import edge of the file,
-   * whatever statement produced it: an edge whose target is absent from the
-   * returned set is not persisted, so an empty set drops them all. A provider
-   * that cannot decide one kind of wildcard must put that wildcard's targets
-   * in the set. Return undefined when capture or binding evidence is
-   * incomplete; every edge of the file is then kept.
+   * The answer governs EVERY import edge of the file whose kind is listed in
+   * `onDemandImportEdgeKinds`, whatever statement produced it: an edge whose
+   * target is absent from the returned set is not persisted, so an empty set
+   * drops them all. A provider that cannot decide one such import must put
+   * that import's targets in the set, and so must it for a target whose own
+   * evidence is missing or incomplete (facts that met a form they do not
+   * model, or failed to gather). Return undefined when the source file's
+   * capture or binding evidence is incomplete; every edge of the file is then
+   * kept.
+   * `parsedFileOf` returns the parsed file of a target in the same pass, so
+   * a provider can read facts the target recorded about itself
+   * (`graph-bridge/on-demand-targets.ts` selects targets by such a predicate).
    *
    * Facts must survive ParsedFile hydration. The hook receives no source text,
-   * must never reparse a cached file, and must not read `parsed.scopes`: the
-   * emit phase may already have released them to disk. */
+   * must never reparse a cached file, and must not read `scopes` of any parsed
+   * file: the emit phase may already have released them to disk. */
   readonly onDemandImportTargets?: (
     parsed: ParsedFile,
     indexes: ScopeResolutionIndexes,
+    parsedFileOf: (filePath: string) => ParsedFile | undefined,
   ) => ReadonlySet<string> | undefined;
+
+  /** Finalized import-edge kinds whose persisted File→File edges
+   * `onDemandImportTargets` governs. Default `['wildcard-expanded']`. A
+   * language whose ordinary import makes every declaration of a multi-file
+   * module or package visible, without binding names per file, lists the kind
+   * its edges carry. Edges of any other kind are always persisted. */
+  readonly onDemandImportEdgeKinds?: readonly ImportEdge['kind'][];
 
   /** Store a wildcard import that `resolveImportTarget` answers with a list
    * of files as ONE group over that list, instead of one import edge per
