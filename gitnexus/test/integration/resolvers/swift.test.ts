@@ -23,6 +23,11 @@ import {
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { MODULE_MEMBERSHIP_REASON } from '../../../src/core/graph/edge-reasons.js';
+import { swiftScopeResolver } from '../../../src/core/ingestion/languages/swift/scope-resolver.js';
+import { loadSwiftWorkspaceConfig } from '../../../src/core/ingestion/languages/swift/workspace-config.js';
+import { runScopeResolution } from '../../../src/core/ingestion/scope-resolution/pipeline/run.js';
+import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
+import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
 
@@ -1201,17 +1206,73 @@ describe.skipIf(!swiftAvailable)('Swift nested packages (no root Package.swift)'
     }
   });
 
-  it('resolves `import Net` by module name, not by a folder that happens to be named Net', () => {
-    const imported = getRelationships(result, 'IMPORTS')
-      .filter((c) => c.sourceFilePath === `${login}/Connect.swift` && c.targetLabel === 'File')
-      .map((c) => c.targetFilePath)
-      .sort();
-    expect(imported).toEqual([
+  it('resolves `import Net` by module name, not by a folder that happens to be named Net', async () => {
+    const fixtureRoot = path.join(FIXTURES, 'swift-nested-packages');
+    const allFilePaths = new Set(
+      (fs.readdirSync(fixtureRoot, { recursive: true }) as string[])
+        .map((file) => file.split(path.sep).join('/'))
+        .filter((file) => file.endsWith('.swift')),
+    );
+    const resolved = swiftScopeResolver.resolveImportTarget(
+      'Net',
+      `${login}/Connect.swift`,
+      allFilePaths,
+      await loadSwiftWorkspaceConfig(fixtureRoot),
+      { parsedFiles: [] },
+    );
+    expect([resolved ?? []].flat().sort()).toEqual([
       `${coreNet}/Client.swift`,
       `${coreNet}/Session.swift`,
       `${otherNet}/Config.swift`,
       `${otherNet}/Use.swift`,
     ]);
+  });
+
+  it('keeps both Net modules in the finalized import of Connect.swift', async () => {
+    const fixtureRoot = path.join(FIXTURES, 'swift-nested-packages');
+    const files = (fs.readdirSync(fixtureRoot, { recursive: true }) as string[])
+      .map((file) => file.split(path.sep).join('/'))
+      .filter((file) => file.endsWith('.swift'))
+      .map((file) => ({
+        path: file,
+        content: fs.readFileSync(path.join(fixtureRoot, file), 'utf8'),
+      }));
+    let reached: string[] = [];
+    runScopeResolution(
+      {
+        graph: createKnowledgeGraph(),
+        files,
+        model: createSemanticModel(),
+        resolutionConfig: await loadSwiftWorkspaceConfig(fixtureRoot),
+        onResolved: (resolved) => {
+          const connect = resolved.parsedFiles.find(
+            (parsed) => parsed.filePath === `${login}/Connect.swift`,
+          )!;
+          resolved.indexes.imports.forEachTarget(connect.moduleScope, (target) =>
+            reached.push(target),
+          );
+        },
+      },
+      swiftScopeResolver,
+    );
+    reached = [...new Set(reached)].sort();
+    expect(reached).toEqual([
+      `${coreNet}/Client.swift`,
+      `${coreNet}/Session.swift`,
+      `${otherNet}/Config.swift`,
+      `${otherNet}/Use.swift`,
+    ]);
+  });
+
+  it('persists `import Net` only to the files Connect.swift reaches', () => {
+    // The finalized import keeps both Net modules (above); the persisted edge
+    // narrows to the file declaring `Client`. The folder named Net stays out.
+    const imported = getRelationships(result, 'IMPORTS')
+      .filter((c) => c.sourceFilePath === `${login}/Connect.swift` && c.targetLabel === 'File')
+      .map((c) => c.targetFilePath)
+      .sort();
+    expect(imported).toEqual([`${coreNet}/Client.swift`]);
+    expect(imported).not.toContain('Docs/Net/Snippet.swift');
   });
 
   it("resolves Config() to the caller's own package", () => {
