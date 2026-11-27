@@ -112,3 +112,48 @@ export function declaredBase(value: Base) {
     value.run();
   }
 }
+
+export function chained(repo: Key | Other | Value) {
+  if (repo instanceof Key) repo.save();
+  else if (repo instanceof Other) repo.save();
+  else repo.save();
+}
+export function independent(repo: Key | Other | Value, other: Key | Other | Value) {
+  if (other instanceof Key) return;
+  else if (repo instanceof Other) return;
+  else repo.save();
+}
+export function shadowedChain(repo: Key | Other | Value) {
+  if (repo instanceof Key) return;
+  else if (repo instanceof Other) return;
+  else { const repo: Key = new Key(); repo.save(); }
+}
+class Last { save() {} }
+export function longChain(repo: Key | Other | Value | Last) {
+  if (repo instanceof Key) return;
+  else if (repo instanceof Other) return;
+  else if (repo instanceof Value) return;
+  else repo.save();
+}
+export function mixedGuard(repo: Key | Other | Value, other: Key | Other | Value) {
+  if (repo instanceof Key) return;
+  else if (other instanceof Value) { repo.save(); return; }
+  else if (repo instanceof Other) return;
+  else repo.save();
+}
+export function shadowedCtor(repo: Key | Other | Value) {
+  {
+    const Key = Other;
+    if (repo instanceof Key) return;
+    else if (repo instanceof Other) return;
+    else repo.save();
+  }
+}
+export function resetChain(repo: Key | Other | Value, replacement: Key | Other | Value) {
+  if (repo instanceof Key) return;
+  else {
+    repo = replacement;
+    if (repo instanceof Other) return;
+    else repo.save();
+  }
+}

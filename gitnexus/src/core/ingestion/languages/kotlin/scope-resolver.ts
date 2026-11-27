@@ -1,4 +1,4 @@
-import { specializeNamedNullableOperand } from '../../heritage-substitutions.js';
+import { kotlinNominalType } from './nullable-heritage.js';
 import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
@@ -76,8 +76,11 @@ import { attachKotlinSpringDynamicLookup } from './spring-dynamic-lookup.js';
  * its issue ref and rationale.
  */
 export const kotlinScopeResolver: ScopeResolver = {
-  specializeNullableHeritageFormal: (_owner, _formal, actual) =>
-    specializeNamedNullableOperand(actual),
+  specializeNullableHeritageFormal: (_owner, _formal, actual) => {
+    const type = kotlinNominalType(actual);
+    return type === null || type.endsWith('?') ? type : type + '?';
+  },
+  normalizeNullableHeritageSignature: (type) => kotlinNominalType(type) ?? type,
   moduleExports: (parsed) => canonicalModuleExports(parsed, canonicalName),
   populateWorkspaceReferences: (parsedFiles) =>
     canonicalizeWorkspaceBindings(parsedFiles, canonicalName),

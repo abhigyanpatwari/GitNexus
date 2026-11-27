@@ -10,6 +10,7 @@
  * constructor resolver can break a same-tail collision (`new B.Foo()` with both
  * `A.Foo` and `B.Foo`) by matching the explicit qualifier against the sidecar.
  */
+import { isCsharpReservedTypeKeyword } from './identifiers.js';
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 
@@ -63,4 +64,34 @@ export function populateCsharpNamespacePrefixes(parsed: ParsedFile): void {
       def.namespacePrefix = prefix;
     }
   }
+}
+
+const globalQualifier = /(?<![.\p{ID_Continue}])global\s*::/gu;
+const qualifiedNames =
+  /[_\p{ID_Start}][\p{ID_Continue}]*(?:\s*(?:\.|::)\s*[_\p{ID_Start}][\p{ID_Continue}]*)*/gu;
+const namedComposite = /^[\p{ID_Continue}\s.<>,\[\]()]+$/u;
+
+// A rooted constructor can still contain a file-local alias. Check both the
+// original type and each argument before comparing names across declarations.
+function stableType(
+  type: string,
+  bindings?: ReadonlyMap<string, string | null>,
+  shadowed?: ReadonlySet<string>,
+): boolean {
+  if (!namedComposite.test(type.replace(globalQualifier, '.'))) return false;
+  for (const [name] of type.matchAll(qualifiedNames)) {
+    if (/^global\s*::/u.test(name) || isCsharpReservedTypeKeyword(name)) continue;
+    const actual = shadowed?.has(name) ? undefined : bindings?.get(name);
+    if (actual === undefined || (actual !== null && !stableType(actual))) return false;
+  }
+  return true;
+}
+
+/** In a global-qualified signature, keep every qualified name as one token. */
+export function csharpQualifiedHeritageTypePattern(
+  type: string,
+  bindings: ReadonlyMap<string, string | null>,
+  shadowed?: ReadonlySet<string>,
+): RegExp | undefined {
+  return type.includes('::') && stableType(type, bindings, shadowed) ? qualifiedNames : undefined;
 }

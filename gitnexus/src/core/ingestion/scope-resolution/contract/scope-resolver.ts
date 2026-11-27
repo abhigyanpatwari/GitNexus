@@ -2033,6 +2033,15 @@ export interface ScopeResolver {
     },
   ) => void;
 
+  /** Global token pattern for a provider-validated type expression. A match
+   * spans a complete name, including qualifiers, so only free formals bind.
+   * Decline when the argument or expression lacks stable declaration identity. */
+  readonly qualifiedHeritageTypePattern?: (
+    type: string,
+    bindings: ReadonlyMap<string, string | null>,
+    shadowed?: ReadonlySet<string>,
+  ) => RegExp | undefined;
+
   /** Specialize an outer nullable formal according to its declaration's constraints. */
   readonly specializeNullableHeritageFormal?: (
     owner: SymbolDefinition,
@@ -2040,7 +2049,10 @@ export interface ScopeResolver {
     actual: string,
   ) => string | null;
   /** Canonical comparison spelling when nullable annotations do not change a method signature. */
-  readonly normalizeNullableHeritageSignature?: (type: string) => string;
+  readonly normalizeNullableHeritageSignature?: (
+    type: string,
+    declaration?: { scope: ScopeId; indexes: ScopeResolutionIndexes },
+  ) => string;
 
   /**
    * Optional fallback for an UNQUALIFIED inheritance base that the shared

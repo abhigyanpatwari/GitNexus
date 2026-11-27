@@ -267,9 +267,17 @@ function localCallableFirstUse(root: SyntaxNode) {
 function wrapperWriteExecution(
   write: SyntaxNode,
   firstUse: (fn: SyntaxNode) => number,
+  afterLastExportStore: (at: number) => boolean,
 ): { when: WrapperValue; conditional: boolean } | { deferredAt: number } | undefined {
   let when = WrapperValue.Unknown;
   let conditional = false;
+  let deferredCall: number | undefined;
+  // If a later export could use either wrapper, an earlier one is not a proven final default.
+  const deferred = (at: number) => {
+    if (at === Infinity) return undefined;
+    if (deferredCall === undefined) return { deferredAt: at };
+    return afterLastExportStore(at) ? undefined : { deferredAt: 0 };
+  };
   for (let child = write, parent = write.parent; parent; child = parent, parent = parent.parent) {
     if (FUNCTION_NODE_TYPES.has(parent.type) || parent.type === 'generator_function') {
       let callee = parent;
@@ -281,16 +289,19 @@ function wrapperWriteExecution(
         if (
           parent.type === 'generator_function' ||
           parent.children.some((token) => token.type === 'async')
-        )
-          return { deferredAt: 0 };
+        ) {
+          // Even an async prefix or an immediately resumed generator must reach this call first.
+          // An enclosing indirect function may itself have run before its declaration.
+          deferredCall = evaluationPosition(callee.parent, callee.parent.startIndex);
+        }
         continue;
       }
       const at = firstUse(parent);
-      return at === Infinity ? undefined : { deferredAt: at };
+      return deferred(at);
     }
     switch (parent.type) {
       case 'program':
-        return { when, conditional };
+        return deferredCall === undefined ? { when, conditional } : deferred(deferredCall);
       case 'parenthesized_expression':
       case 'sequence_expression':
       case 'expression_statement':
@@ -375,8 +386,41 @@ function wrapperAtExport(
   if (!hasWrapperBinding(root, captures)) return () => false;
   const events: WrapperEvent[] = [];
   const firstUse = localCallableFirstUse(root);
+  let lastExportStore: number | undefined;
+  const afterLastExportStore = (at: number) => {
+    if (lastExportStore === undefined) {
+      lastExportStore = -1;
+      for (const write of root.descendantsOfType([
+        'assignment_expression',
+        'augmented_assignment_expression',
+        'update_expression',
+        'unary_expression',
+      ])) {
+        const op = write.childForFieldName('operator')?.type;
+        if (write.type === 'unary_expression' && op !== 'delete') continue;
+        const target = ungroup(
+          write.childForFieldName('left') ?? write.childForFieldName('argument'),
+        );
+        if (
+          target?.type !== 'subscript_expression' &&
+          target?.type !== 'object_pattern' &&
+          target?.type !== 'array_pattern' &&
+          (target?.type !== 'member_expression' ||
+            canonicalTypeScriptName(target.childForFieldName('property')?.text ?? '') !== 'exports')
+        )
+          continue;
+        // A nested callable can make the store after its position in the source.
+        if (write.closest([...FUNCTION_NODE_TYPES, 'generator_function'])) {
+          lastExportStore = Infinity;
+          break;
+        }
+        lastExportStore = Math.max(lastExportStore, write.endIndex);
+      }
+    }
+    return at > lastExportStore;
+  };
   for (const { node, savedAt, globalUndefined } of writes) {
-    const execution = wrapperWriteExecution(node, firstUse);
+    const execution = wrapperWriteExecution(node, firstUse, afterLastExportStore);
     if (!execution) continue;
     const declarator = node.type === 'variable_declarator';
     const direct = isModuleIdentifier(node.childForFieldName(declarator ? 'name' : 'left'));

@@ -31,9 +31,10 @@ import type {
   ReferenceSite,
   RegistryProviders,
   Scope,
+  ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
-import type { TypeRef } from 'gitnexus-shared';
+import { makeScopeId, type TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { GraphReferenceIntegrityError } from '../../../graph/relationship-integrity.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -462,6 +463,15 @@ function explicitInheritanceBase(
   return member && isClassLike(member.def.type) ? member.def : undefined;
 }
 
+interface ScopedHeritageEdge {
+  child: string;
+  base: string;
+  childDef: string;
+  baseDef: string;
+  scope: ScopeId;
+  nullable: boolean;
+}
+
 /**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
@@ -489,6 +499,7 @@ function preEmitInheritanceEdges(
   provider: ScopeResolver,
   recordSourceBinding?: SourceBindingRecorder,
   substitutions?: HeritageSubstitutions,
+  scopedEdges?: ScopedHeritageEdge[],
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -572,6 +583,16 @@ function preEmitInheritanceEdges(
       callerClass,
       provider,
     );
+    if (scopedEdges && site.typeArguments?.length && targetDef.typeParameters?.length) {
+      scopedEdges.push({
+        child: callerGraphId,
+        base: targetGraphId,
+        childDef: callerClass.nodeId,
+        baseDef: targetDef.nodeId,
+        scope: site.inScope,
+        nullable: site.typeArguments.some((arg) => arg.includes('?')),
+      });
+    }
   }
 
   return handledSites;
@@ -1239,6 +1260,10 @@ export function runScopeResolution(
     if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, typeArguments);
   };
   const unresolvedInheritanceByClass = new Set<string>();
+  const scopedEdges =
+    provider.normalizeNullableHeritageSignature && input.heritageSubstitutions
+      ? ([] as ScopedHeritageEdge[])
+      : undefined;
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
     : preEmitInheritanceEdges(
@@ -1250,18 +1275,8 @@ export function runScopeResolution(
         provider,
         recordSourceBinding,
         input.heritageSubstitutions,
+        scopedEdges,
       );
-  if (input.heritageSubstitutions?.hasBindings) {
-    const nullableBindings =
-      input.heritageSubstitutions.hasNullableBindings &&
-      provider.specializeNullableHeritageFormal !== undefined;
-    for (const def of finalized.defs.byId.values()) {
-      const useDeclaredTypes = nullableBindings && def.declaredParameterTypes !== undefined;
-      if (def.type !== 'Method' || (!def.typeParameters?.length && !useDeclaredTypes)) continue;
-      const id = resolveDefGraphId(def.filePath, def, nodeLookup);
-      if (id) input.heritageSubstitutions.registerMethod(id, def, useDeclaredTypes);
-    }
-  }
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -1359,6 +1374,70 @@ export function runScopeResolution(
       treeCache,
       resolutionConfig,
     });
+  }
+
+  if (input.heritageSubstitutions?.hasBindings) {
+    const nullableBindings =
+      input.heritageSubstitutions.hasNullableBindings &&
+      provider.specializeNullableHeritageFormal !== undefined;
+    // Only a nullable chain's ancestors and descendants need source-backed method types.
+    const nullableChildren = new Set<string>();
+    const nullableAncestors = new Set<string>();
+    for (const edge of scopedEdges ?? []) {
+      if (!edge.nullable) continue;
+      nullableChildren.add(edge.childDef);
+      nullableAncestors.add(edge.baseDef);
+      for (const ancestor of mroByClassDefId.get(edge.baseDef) ?? [])
+        nullableAncestors.add(ancestor);
+    }
+    const participation = new Map<string, boolean>();
+    const participates = (owner: string) => {
+      const known = participation.get(owner);
+      if (known !== undefined) return known;
+      const reachesNullable =
+        nullableAncestors.has(owner) ||
+        nullableChildren.has(owner) ||
+        mroByClassDefId.get(owner)?.some((ancestor) => nullableChildren.has(ancestor)) === true;
+      participation.set(owner, reachesNullable);
+      return reachesNullable;
+    };
+    const normalize = nullableChildren.size > 0 && provider.normalizeNullableHeritageSignature;
+    if (normalize) {
+      for (const edge of scopedEdges ?? []) {
+        if (!participates(edge.childDef)) continue;
+        input.heritageSubstitutions.normalizeBase(edge.child, edge.base, (type) =>
+          normalize(type, { scope: edge.scope, indexes }),
+        );
+      }
+    }
+    for (const def of finalized.defs.byId.values()) {
+      if (def.type !== 'Method') continue;
+      const useDeclaredTypes = nullableBindings && def.declaredParameterTypes !== undefined;
+      const declared = def.declaredParameterTypes ?? def.parameterTypes;
+      let scopedTypes: string[] | undefined;
+      if (
+        normalize &&
+        declared &&
+        def.declarationRange &&
+        def.ownerId &&
+        participates(def.ownerId)
+      ) {
+        const scope = makeScopeId({
+          filePath: def.filePath,
+          range: def.declarationRange,
+          kind: 'Function',
+        });
+        if (finalized.scopeTree.has(scope)) {
+          for (const [i, type] of declared.entries()) {
+            const normalized = normalize(type, { scope, indexes });
+            if (normalized !== type) (scopedTypes ??= [...declared])[i] = normalized;
+          }
+        }
+      }
+      if (!def.typeParameters?.length && !useDeclaredTypes && !scopedTypes) continue;
+      const id = resolveDefGraphId(def.filePath, def, nodeLookup);
+      if (id) input.heritageSubstitutions.registerMethod(id, def, useDeclaredTypes, scopedTypes);
+    }
   }
 
   const tFinalize = PROF ? process.hrtime.bigint() : 0n;

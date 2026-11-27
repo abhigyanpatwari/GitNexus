@@ -3,6 +3,9 @@ import { specializeNamedNullableOperand } from '../../heritage-substitutions.js'
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { canonicalName, isCsharpReservedTypeKeyword } from './identifiers.js';
 
+import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { bindsTypeParameter, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
+
 interface NullableConstraints {
   valueParameters?: string[];
   referenceParameters?: string[];
@@ -36,10 +39,18 @@ export function specializeCsharpNullableFormal(
   actual: string,
 ): string | null {
   const constraints = owner.templateConstraints as NullableConstraints | undefined;
-  if (
-    constraints?.valueParameters?.includes(formal) ||
-    constraints?.referenceParameters?.includes(formal)
-  ) {
+  if (constraints?.referenceParameters?.includes(formal)) {
+    // This fully qualified operand identifies the same reference type in both signatures.
+    // An unresolved local spelling might bind to different types in each declaration.
+    if (
+      /^global::(?:@?[_\p{ID_Start}][_\p{ID_Continue}]*\.)*@?[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(
+        actual,
+      )
+    )
+      return actual;
+    return specializeNamedNullableOperand(actual);
+  }
+  if (constraints?.valueParameters?.includes(formal)) {
     return specializeNamedNullableOperand(actual);
   }
   // Other parts of a partial declaration can supply the missing constraint.
@@ -50,7 +61,33 @@ export function specializeCsharpNullableFormal(
   return actual !== 'void' && isCsharpReservedTypeKeyword(actual) ? actual : null;
 }
 
-/** Built-in reference annotations do not participate in a CLR method signature. */
-export function normalizeCsharpNullableSignature(type: string): string {
-  return type.replace(/(?<![\p{ID_Continue}.@])\b(string|object)\s*\?/gu, '$1');
-}
+/** Compare a reference type by its CLR identity in the declaration that wrote it. */
+export const normalizeCsharpNullableSignature: NonNullable<
+  ScopeResolver['normalizeNullableHeritageSignature']
+> = (type, declaration) => {
+  const builtin = type.replace(/(?<![\p{ID_Continue}.@:])\b(string|object)\s*\?/gu, '$1');
+  if (!declaration) return builtin;
+  const { scope, indexes } = declaration;
+  return builtin.replace(
+    /(?<![\p{ID_Continue}.@:])(@?[_\p{ID_Start}][_\p{ID_Continue}]*)(?![\p{ID_Continue}.:])(?:\s*\?)?/gu,
+    (source, spelling: string) => {
+      if (isCsharpReservedTypeKeyword(spelling)) return source;
+      const name = canonicalName(spelling);
+      if (bindsTypeParameter(scope, name, indexes)) return source;
+      const claim = lookupNameClaim(scope, name, indexes, { purpose: 'type' });
+      if (claim.status !== 'resolved' || !claim.bindings.length) return source;
+      let identity: string | undefined;
+      for (const { def } of claim.bindings) {
+        // The Record label also includes record structs, whose suffix is significant.
+        if ((def.type !== 'Class' && def.type !== 'Interface') || !def.qualifiedName) return source;
+        const qualified =
+          def.namespacePrefix && !def.qualifiedName.startsWith(def.namespacePrefix + '.')
+            ? def.namespacePrefix + '.' + def.qualifiedName
+            : def.qualifiedName;
+        if (identity !== undefined && identity !== qualified) return source;
+        identity = qualified;
+      }
+      return 'global::' + identity;
+    },
+  );
+};

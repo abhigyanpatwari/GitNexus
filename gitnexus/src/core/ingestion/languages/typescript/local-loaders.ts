@@ -43,8 +43,10 @@ interface LocatedNode {
   readonly node: SyntaxNode;
   readonly scope: LexicalScope;
 }
+type InstanceofChain = Map<string, Map<string, InstanceofGuard>>;
 interface InstanceofGuard {
   readonly alternative?: boolean;
+  chain?: InstanceofChain;
   readonly name: string;
   readonly type: SyntaxNode;
   readonly consequence: SyntaxNode;
@@ -439,7 +441,18 @@ function emitInstanceofNarrowings(
         bindingOwner(scope, excluded, escapedNames) !== bindingOwner(owner, excluded, escapedNames)
       )
         continue;
-      remaining = arms.filter((arm) => arm !== excluded).join(' | ');
+      const firstTests = guard.chain?.get(name);
+      remaining = arms
+        .filter((arm) => {
+          if (arm === excluded) return false;
+          const first = firstTests?.get(arm);
+          return (
+            !first ||
+            first.type.startIndex >= type.startIndex ||
+            bindingOwner(first.scope, arm, escapedNames) !== bindingOwner(owner, arm, escapedNames)
+          );
+        })
+        .join(' | ');
       if (!remaining) continue;
     }
     for (const { node, scope: atUse, receiver } of guard.uses) {
@@ -512,6 +525,17 @@ function indexEscapedNames(scopes: Iterable<LexicalScope>) {
   return escapedNames;
 }
 
+function recordFirstTest(guard: InstanceofGuard, chain: InstanceofChain): void {
+  guard.chain = chain;
+  let tests = chain.get(guard.name);
+  if (!tests) {
+    tests = new Map();
+    chain.set(guard.name, tests);
+  }
+  const type = canonicalTypeScriptName(guard.type.text);
+  if (!tests.has(type)) tests.set(type, guard);
+}
+
 /** Observe narrowing events during the same tree walk as loader discovery. */
 function createInstanceofNarrowingCollector() {
   const writes: WriteSite[] = [];
@@ -543,12 +567,20 @@ function createInstanceofNarrowingCollector() {
           pending.set(guard.consequence.id, guard);
           const alternative = node.childForFieldName('alternative')?.lastNamedChild;
           if (alternative) {
+            const outer = active.at(-1)?.guard;
             const opposite: InstanceofGuard = {
               ...guard,
               consequence: alternative,
               alternative: true,
               uses: [],
             };
+            // Direct else-if tests have no intervening receiver write or lexical declaration.
+            // Keep only the first test of each constructor on each receiver in this chain.
+            if (outer?.alternative && outer.consequence.id === node.id) {
+              const chain = outer.chain ?? new Map();
+              if (!outer.chain) recordFirstTest(outer, chain);
+              recordFirstTest(opposite, chain);
+            }
             guards.push(opposite);
             pending.set(alternative.id, opposite);
           }

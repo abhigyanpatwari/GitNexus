@@ -1,3 +1,4 @@
+import { kotlinNominalType } from './nullable-heritage.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { kotlinMethodConfig } from '../../method-extractors/configs/jvm.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
@@ -21,8 +22,8 @@ export function computeKotlinArityMetadata(fnNode: SyntaxNode): KotlinArityMetad
   const required = params.filter((p) => !p.isOptional && !p.isVariadic).length;
   const declaredParameterTypes =
     !hasVararg &&
-    params.some((p) => p.type && p.rawType === p.type + '?') &&
-    params.every((p) => p.type && (p.rawType === p.type || p.rawType === p.type + '?'))
+    params.some((p) => p.rawType?.endsWith('?')) &&
+    params.every((p) => p.rawType && kotlinNominalType(p.rawType) !== null)
       ? params.map((p) => p.rawType!)
       : undefined;
   return {

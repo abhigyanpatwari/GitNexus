@@ -14,7 +14,10 @@ import {
   resolveSameNamespaceInheritanceBase,
   lookupNameClaim,
 } from '../../scope-resolution/scope/walkers.js';
-import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
+import {
+  csharpQualifiedHeritageTypePattern,
+  populateCsharpNamespacePrefixes,
+} from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import {
   canonicalizeWorkspaceBindings,
@@ -105,6 +108,7 @@ const csharpScopeResolver: ScopeResolver = {
   // contract is (callsite, def).
   arityCompatibility: (callsite, def) => csharpArityCompatibility(def, callsite),
 
+  qualifiedHeritageTypePattern: csharpQualifiedHeritageTypePattern,
   specializeNullableHeritageFormal: specializeCsharpNullableFormal,
   normalizeNullableHeritageSignature: normalizeCsharpNullableSignature,
 

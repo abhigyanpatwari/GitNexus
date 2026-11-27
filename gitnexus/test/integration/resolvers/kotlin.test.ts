@@ -3185,9 +3185,14 @@ it('matches nullable generic method parameters across inheritance', async () => 
   );
   const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')];
   expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual(
-    ['BoundedGeneric', 'Concrete', 'Direct', 'Generic'].map((owner) => [
-      `Class:Types.kt:${owner}`,
-      'Method:Types.kt:Base.accept#1',
-    ]),
+    [
+      'BoundedGeneric',
+      'Concrete',
+      'Direct',
+      'EscapedConcrete',
+      'Generic',
+      'ListConcrete',
+      'NestedConcrete',
+    ].map((owner) => [`Class:Types.kt:${owner}`, 'Method:Types.kt:Base.accept#1']),
   );
 });

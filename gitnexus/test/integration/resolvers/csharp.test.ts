@@ -14,6 +14,7 @@ import {
   getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -96,6 +97,50 @@ describe('C# heritage resolution', () => {
       expect(target).toBeDefined();
       expect(target!.label).not.toBe('Property');
     }
+  });
+});
+
+describe('C# global-qualified inherited signatures', () => {
+  const result = useFixture('csharp-global-qualified-heritage', {
+    'Base.cs': `using Pack = Real;
+using Item = Real.T;
+class Wrapper<X> {}
+namespace Real { public class Wrapper<X> {} public class T {} }
+namespace Other { public class Wrapper<X> {} public class T {} }
+class Base<T> {
+  public virtual void Root(global::Wrapper<T> value) {}
+  public virtual void Pair((global::Real.T, T) value) {}
+  public virtual void Alias(Pack::Wrapper<T> value) {}
+  public virtual void Fixed((global::Wrapper<T>, Item) value) {}
+}
+class StoredShort : Base<Item> {}
+class StoredAlias : Base<Pack::T> {}
+class Child : Base<int> {
+  public override void Root(global::Wrapper<int> value) {}
+  public override void Pair((global::Real.T, int) value) {}
+}`,
+    'Decoy.cs': `using Pack = Other;
+using Item = Other.T;
+class Decoy : Base<int> {
+  public void Root(global::Wrapper<string> value) {}
+  public void Pair((global::Other.T, int) value) {}
+  public void Alias(Pack::Wrapper<int> value) {}
+  public void Fixed((global::Wrapper<int>, Item) value) {}
+}
+class ShortRebound : StoredShort {
+  public void Root(global::Wrapper<Item> value) {}
+}
+class Rebound : StoredAlias {
+  public void Root(global::Wrapper<Pack::T> value) {}
+}`,
+  });
+
+  it('substitutes free arguments and preserves the namespace and its qualified type names', () => {
+    const overrides = [...result().graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+    expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual([
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Pair#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Root#1'],
+    ]);
   });
 });
 
@@ -3074,4 +3119,26 @@ describe('C# global-namespace type precedence', () => {
     );
     expect(drops).toEqual([]);
   });
+});
+
+it('compares CLR reference identities in nullable generic override signatures', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-reference-heritage'),
+    () => {},
+  );
+  const edges = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const base = 'Method:Ref.cs:Base.M#1';
+  const open = 'Method:Ref.cs:Opaque.M#1';
+  expect(edges).toEqual([
+    ['Class:Ref.cs:Annotated', base],
+    ['Class:Ref.cs:DirectOpaque', open],
+    ['Class:Ref.cs:EscapedPositive', open],
+    ['Class:Ref.cs:Simple', base],
+    ['Class:Ref.cs:StructPositive', open],
+    ['Class:Ref.cs:TwoHop', base],
+    ['Class:Ref.cs:TwoHopMarked', base],
+    ['Class:Use.cs:AcrossFiles', 'Method:Controls.cs:Contract.Check#1'],
+  ]);
 });

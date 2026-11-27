@@ -562,6 +562,37 @@ describe('CommonJS callable default exports', () => {
     },
   );
 
+  it.each([
+    ['', '(async () => { await Promise.resolve(); module = {}; })();', 'candidate'],
+    ['', '(async () => { module = {}; await 0; })();', 'candidate'],
+    ['(async () => { module = {}; await 0; })();', '', undefined],
+    ['start();', 'function start() { (async () => { module = {}; })(); }', undefined],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); { module.exports = function other() {}; }',
+      undefined,
+    ],
+    [
+      '',
+      '(async (module) => { await 0; module = {}; module.exports = function other() {}; })({});',
+      'candidate',
+    ],
+    [
+      'module.exports = function earlier() {}; (async () => { if (globalThis.flag) await 0; module = {}; })();',
+      '',
+      undefined,
+    ],
+  ])('bounds an async IIFE wrapper write by its call in %s %s', (before, after, expected) => {
+    const source = `${before} module.exports = function candidate() {}; ${after}`;
+    for (const [emit, file, provider] of [
+      [emitJsScopeCaptures, 'x.cjs', javascriptProvider],
+      [emitTsScopeCaptures, 'x.cts', typescriptProvider],
+    ] as const) {
+      const exports = typescriptModuleExports(extract(emit(source, file), file, provider));
+      expect(exports.get('default')?.qualifiedName).toBe(expected);
+    }
+  });
+
   it.each(['var module = {};', 'module = {};'])('applies %s at its write position', (write) => {
     const file = 'x.cjs';
     const source = `module.exports = function visible() {};\n${write}\nmodule.exports = function privateFn() {};`;
