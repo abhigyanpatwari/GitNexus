@@ -1,5 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { loadParseCache, pruneCache, saveParseCache } from '../../src/storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../src/storage/parsedfile-store.js';
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 
 const fixture = fileURLToPath(new URL('../fixtures/fastapi-resource-lifetime/', import.meta.url));
@@ -58,3 +67,37 @@ describe('Python dependency resource lifetimes', () => {
     expect(targets('conditional_cleanup', 'OWNS_RESOURCE')).toEqual([]);
   });
 });
+
+it('recovers the same lifetime facts from the durable parse cache', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gitnexus-resource-lifetime-'));
+  try {
+    const identity = await runtimeParseIdentity();
+    const cache = await loadParseCache(dir, identity, dir);
+    const cold = await runPipelineFromRepo(fixture, () => {}, {
+      parseCache: cache,
+      workerPoolSize: 1,
+    });
+    expect(cold.usedWorkerPool).toBe(true);
+    pruneCache(cache, cache.usedKeys);
+    const keys = await saveParseCache(dir, cache);
+    await pruneAndSaveDurableParsedFileStore(
+      getDurableParsedFileDir(dir),
+      identity.base,
+      new Set(keys),
+    );
+    const warm = await runPipelineFromRepo(fixture, () => {}, {
+      parseCache: await loadParseCache(dir, identity, dir),
+      workerPoolSize: 1,
+    });
+    expect(warm.usedWorkerPool).toBe(false);
+    const facts = (result: typeof cold) =>
+      result.graph.relationships
+        .filter((r) => ['OWNS_RESOURCE', 'MANAGES_CONTEXT', 'CLEANUP_AT'].includes(r.type))
+        .map((r) => r.id)
+        .sort();
+    expect(facts(cold)).toHaveLength(4);
+    expect(facts(warm)).toEqual(facts(cold));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 120_000);
