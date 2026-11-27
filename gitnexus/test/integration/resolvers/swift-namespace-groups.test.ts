@@ -189,8 +189,18 @@ describe.skipIf(!swiftAvailable)('Swift module imports are stored as groups', ()
     const scopeImports = [...grouped.graph.iterRelationshipsByType('IMPORTS')].filter(
       (rel) => rel.id.startsWith('rel:imports:') && rel.reason === 'import namespace Mod0',
     );
-    // Six importers, four files of Mod0 each.
+    // Six importers, four files of Mod0 each. The graph keys relationships by
+    // id, and each file has its own module scope, so the ids differ by file.
     expect(scopeImports).toHaveLength(24);
+    const mod0Scopes = [0, 1, 2, 3].map((f) => grouped.scope(`Mod0/Model0_${f}.swift`));
+    expect(new Set(mod0Scopes).size).toBe(4);
+    for (let i = 0; i < 6; i++) {
+      const view = grouped.scope(`App/View${i}.swift`);
+      const targets = scopeImports
+        .filter((rel) => rel.sourceId === view)
+        .map((rel) => rel.targetId);
+      expect(targets.sort()).toEqual([...mod0Scopes].sort());
+    }
     vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', '1');
     expect(graphIdentity(resolve(moduleFixture(), true).graph)).toEqual(
       graphIdentity(grouped.graph),

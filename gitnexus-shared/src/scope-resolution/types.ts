@@ -541,9 +541,11 @@ export interface ImportEdge {
   readonly explicitAlias?: boolean;
   /**
    * Exporting file; `null` when the edge names no single file: a
-   * `dynamic-unresolved` import, an import whose target could not be
-   * resolved (`linkStatus: 'unresolved'`), or a grouped statement edge
-   * (`groupsFiles`, files from `ImportVisibility.groupTargets`).
+   * `dynamic-unresolved` import, an import whose target file could not be
+   * found (`resolveImportTarget` returned `null`; the edge is also
+   * `linkStatus: 'unresolved'`), or a grouped statement edge
+   * (`groupsFiles`, files from `ImportVisibility.groupTargets`). An edge
+   * whose file was found but whose name did not link keeps its file.
    */
   readonly targetFile: string | null;
   /** The module object a forwarded namespace denotes. The dependency still names targetFile. */
