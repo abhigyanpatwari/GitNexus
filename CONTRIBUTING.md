@@ -167,16 +167,15 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
   | Event                                    | `cancel-in-progress` | Why                              |
   | ---------------------------------------- | -------------------- | -------------------------------- |
   | `pull_request` CI run                    | `true`               | New push supersedes old run      |
-  | `push` to `main`                         | `false`              | Every main commit gets validated |
+  | Main-branch checks triggered by `push`   | `false`              | Preserve in-progress checks      |
   | Tag push (`v*` publish)                  | `false`              | Never cancel mid-publish         |
-  | `push` to `main` for release-candidate   | `false`              | Never cancel mid-RC publish      |
-  | `workflow_dispatch` (release/publish)    | `false`              | Manual runs are intentional      |
+  | `workflow_dispatch` (RC on `main`)       | `false`              | Never cancel mid-RC publish      |
   | `workflow_run` (sticky-comment reports)  | `false`              | Serialize, don't race            |
   | Per-PR bot workflows (`@claude`, review) | `false`              | Serialize comments per PR        |
   | PR-meta re-checks (pr-description-check) | `true`               | Cheap, latest wins               |
   | Single-slot utilities (triage sweep)     | `true`               | Latest dispatch supersedes       |
 
-- For workflows that serve multiple events at once (e.g. `ci.yml` handles `pull_request`, `push`, and `workflow_call`), make `cancel-in-progress` event-aware:
+- For workflows that serve multiple events at once (e.g. `ci.yml` handles `pull_request` and `workflow_call`), make `cancel-in-progress` event-aware:
 
   ```yaml
   concurrency:
@@ -271,8 +270,9 @@ routes between two modes based on the triggering event:
   suffix; RC tags are excluded at trigger via a negative glob). Publishes to
   the `latest` dist-tag with a changelog-backed GitHub release. Maintainers
   are expected to tag from `main` as a convention; the workflow itself does
-  not enforce branch reachability. No Docker build (RC-only). Before cutting a
-  stable release, keep `gitnexus/package.json`,
+  not enforce branch reachability. After npm and the GitHub release succeed,
+  Publish builds the stable Docker images from the same tagged commit. Before
+  cutting a stable release, keep `gitnexus/package.json`,
   `gitnexus-claude-plugin/.claude-plugin/plugin.json`,
   `.claude-plugin/marketplace.json`,
   `gitnexus-claude-plugin/.codex-plugin/plugin.json`,
@@ -284,16 +284,14 @@ routes between two modes based on the triggering event:
   passed, and push the tag within seven days. Without that evidence, npm and
   Docker publication fail. See `eval/workflow_bench/README.md` § Release
   evaluation.
-- **Release-candidate mode** — runs on every push to `main` (typically a
-  merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
-  via `paths-ignore`. Publishes to the `rc` dist-tag with version
-  `X.Y.Z-rc.N` and a GitHub prerelease, where:
-  - `X.Y.Z` is selected automatically. On push (and on dispatch with
-    `bump: auto`, the default) the workflow **continues the active rc cycle**:
-    if the registry already has `X.Y.Z-rc.*` versions with `X.Y.Z` > current
-    `latest`, it reuses the highest such base; otherwise it patch-bumps
-    from `latest`. Dispatching with `bump: patch|minor|major` **resets**
-    the cycle from `latest`.
+- **Release-candidate mode** — request an RC from the current `main` commit
+  with `gh workflow run publish.yml --ref main`, or choose **Actions → Publish →
+  Run workflow** and select `main`. Publish runs the release CI matrix before
+  publishing `X.Y.Z-rc.N` to npm's `rc` dist-tag and creating a GitHub prerelease.
+  - The default `bump: auto` continues the active RC cycle. It selects the
+    highest `X.Y.Z` above `latest` with `X.Y.Z-rc.*` versions in the registry.
+    If there is no active cycle, it patch-bumps from `latest`. An explicit
+    `bump: patch|minor|major` resets the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
     registry and `vX.Y.Z-rc.*` Git tags, so delayed npm visibility cannot
     reuse an allocated version. First rc for a given base is `rc.1`.
@@ -321,7 +319,6 @@ routes between two modes based on the triggering event:
 
   ```bash
   gh workflow run publish.yml --ref main -f force=true
-  # or push a new commit to main, which will cut a fresh RC
   ```
 
   If auto-cleanup didn't run (e.g. the cleanup step itself failed, or the
@@ -333,15 +330,11 @@ routes between two modes based on the triggering event:
   # then redispatch with force: true
   ```
 
-  **Release-PR-skip subject pattern.** The rc-guard job recognizes a
-  squash-merged release commit by matching the commit subject against
-  `^chore: release vX.Y.Z` (optionally followed by ` (#NNNN)` for the
-  squash-merge PR-number suffix). Match is case-insensitive — `Chore: Release v1.2.3`
-  works too. PRs that should suppress the RC build must either use this
-  subject shape, or carry the `release` label so the label-based fallback
-  fires. Other release-style subjects (`chore(release): v1.2.3`,
-  `release: v1.2.3`) will NOT trigger the skip — please name the release
-  PR exactly `chore: release vX.Y.Z` to keep the dedup deterministic.
+  **Release PRs.** By default, the RC guard skips a manual request when the
+  selected `main` commit has a subject such as `chore: release v1.2.3`
+  (case-insensitive, with an optional squash-merge ` (#NNNN)` suffix), or
+  its squash-merged PR carries the `release` label. The guard allows an
+  explicit `force: true` or `bump: patch|minor|major` request to proceed.
 
   **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags
   are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
@@ -353,9 +346,9 @@ routes between two modes based on the triggering event:
   gh run rerun <run-id> --failed
   ```
 
-  Find the run ID via `gh run list --workflow=publish.yml --branch main`.
-  `docker.yml` intentionally has no `workflow_dispatch` trigger (images are
-  tag-driven by design), so the gh-run-rerun path is the supported recovery.
+  Find the RC run ID via `gh run list --workflow=publish.yml --event workflow_dispatch --branch main`.
+  For a stable release, rerun the failed Docker job from the tag's Publish run.
+  A direct manual Docker dispatch performs a dry run.
 
   **GitHub Release transient failure** (npm publish succeeded, Release step
   failed): the npm artifact is live but no GitHub Release page exists.
