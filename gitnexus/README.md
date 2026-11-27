@@ -713,6 +713,61 @@ pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=t
 gitnexus serve
 ```
 
+### WSL: Windows native binary (invalid ELF header)
+
+When Linux Node.js under WSL attempts to load a Windows-built LadybugDB
+native binary (`lbugjs.node`), the load can fail with `invalid ELF header`.
+
+This can happen when WSL inherits Windows npm executable paths or when
+Windows and Linux share the same `node_modules` directory.
+
+A non-interactive WSL launch used by an MCP client may resolve a different
+executable than your interactive Linux shell.
+
+Inside WSL, check the selected executables and npm installation prefix:
+
+```bash
+command -v node
+node -p process.platform
+command -v npm
+npm config get prefix
+command -v gitnexus
+```
+
+From Windows PowerShell, you can also inspect non-interactive resolution:
+
+```powershell
+wsl.exe bash -lc 'command -v node; node -p process.platform; command -v npm; npm config get prefix; command -v gitnexus'
+```
+
+Use the same WSL distribution and user as your MCP configuration when
+comparing these results.
+
+If `command -v gitnexus` prints nothing, GitNexus is not available on
+that shell's `PATH`. The command exits with status 1.
+
+Ensure Node.js and npm belong to Linux and npm uses a Linux-owned
+installation prefix before installing GitNexus inside WSL:
+
+```bash
+npm install -g gitnexus
+hash -r
+command -v gitnexus
+```
+
+If GitNexus still resolves to a Windows installation, place the Linux npm
+global executable directory before Windows npm directories on `PATH`,
+or configure the MCP launch command to use the Linux installation explicitly.
+
+Do not attempt to repair the Windows native addon from Linux. Keep separate
+Windows and Linux installations and independently installed dependencies.
+Do not share `node_modules` between operating systems.
+
+A Windows-mounted path alone does not establish binary incompatibility,
+and `invalid ELF header` can also have other causes.
+
+See [#1220](https://github.com/abhigyanpatwari/GitNexus/issues/1220).
+
 ### Linux: `GLIBC_2.34' not found`
 
 ```
