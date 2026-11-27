@@ -986,12 +986,6 @@ export class WikiGenerator {
     if (totalTokens > this.maxTokensPerModule) {
       finalSourceCode = this.truncateSource(sourceCode, this.maxTokensPerModule);
     }
-    // Leave room in the window for the template, graph edges and completion.
-    finalSourceCode = clipToTokens(
-      finalSourceCode,
-      Math.floor(this.promptBudget(MODULE_SYSTEM_PROMPT) * 0.75),
-    );
-
     // Get graph data
     const [intraCalls, interCalls, processes] = await Promise.all([
       getIntraModuleCallEdges(filePaths),
@@ -999,20 +993,30 @@ export class WikiGenerator {
       getProcessesForFiles(filePaths, 5),
     ]);
 
-    const prompt = fillTemplate(MODULE_USER_PROMPT, {
+    const systemPrompt = this.buildSystemPrompt(MODULE_SYSTEM_PROMPT);
+    const budget = this.promptBudget(systemPrompt);
+    const fields = {
       MODULE_NAME: node.name,
-      SOURCE_CODE: finalSourceCode,
-      INTRA_CALLS: formatCallEdges(intraCalls),
-      OUTGOING_CALLS: formatCallEdges(interCalls.outgoing),
-      INCOMING_CALLS: formatCallEdges(interCalls.incoming),
-      PROCESSES: formatProcesses(processes),
-    });
-
-    const response = await this.invokeLLM(
-      prompt,
-      this.buildSystemPrompt(MODULE_SYSTEM_PROMPT),
-      this.streamOpts(node.name),
-    );
+      SOURCE_CODE: '',
+      INTRA_CALLS: '',
+      OUTGOING_CALLS: '',
+      INCOMING_CALLS: '',
+      PROCESSES: '',
+    };
+    const room = Math.max(0, budget - estimateTokensSafe(fillTemplate(MODULE_USER_PROMPT, fields)));
+    fields.SOURCE_CODE = clipToTokens(finalSourceCode, Math.floor(room * 0.75));
+    [fields.INTRA_CALLS, fields.OUTGOING_CALLS, fields.INCOMING_CALLS, fields.PROCESSES] =
+      fitSectionsToBudget(
+        [
+          formatCallEdges(intraCalls),
+          formatCallEdges(interCalls.outgoing),
+          formatCallEdges(interCalls.incoming),
+          formatProcesses(processes),
+        ],
+        room - estimateTokensSafe(fields.SOURCE_CODE),
+      );
+    const prompt = clipToTokens(fillTemplate(MODULE_USER_PROMPT, fields), budget);
+    const response = await this.invokeLLM(prompt, systemPrompt, this.streamOpts(node.name));
 
     // H1 uses the English module name (stable slug source); body is LLM-translated.
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
