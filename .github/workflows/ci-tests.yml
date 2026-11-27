@@ -29,6 +29,13 @@ jobs:
       # The live Move suite provisions the pinned release on the shard that
       # owns it and fails loudly if the compiler path is unavailable.
       GITNEXUS_REQUIRE_MOVE_FLOW: '1'
+      # #2663: anchor for the move-flow cache below. A restored cache is
+      # verified against this pinned SHA-256 of the genuine
+      # move-flow-v2.0.0-x86_64-unknown-linux-gnu binary, not against the
+      # self-attested release.json stored beside it in the cache, so a
+      # poisoned cache entry is rejected and re-provisioned from upstream.
+      # Update this hash when MOVE_FLOW_RELEASE.version changes.
+      GITNEXUS_MOVE_FLOW_BINARY_SHA256: '29c8e02de2f826a45fad4f29f82d569d39cc76c0d24a9f33977f9dd23d972274'
     steps:
       # persist-credentials: false — runs tests + uploads a blob artifact; the
       # default-persisted token must not be capturable through it (zizmor
@@ -41,8 +48,10 @@ jobs:
       # suite (GITNEXUS_REQUIRE_MOVE_FLOW=1 hard-fails on provisioning errors)
       # doesn't re-download the release every run and doesn't hard-fail on a
       # transient GitHub Releases outage. A restored cache is still verified
-      # (metadata + binary sha256 + version probe) before use. Keep the key
-      # tied to MOVE_FLOW_RELEASE.version in gitnexus/src/core/move/release.ts.
+      # (metadata + binary sha256 + version probe, plus the pinned upstream
+      # binary hash in GITNEXUS_MOVE_FLOW_BINARY_SHA256 above) before use.
+      # Keep the key tied to MOVE_FLOW_RELEASE.version in
+      # gitnexus/src/core/move/release.ts.
       - name: Cache move-flow binary
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
