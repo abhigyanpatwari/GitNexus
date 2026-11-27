@@ -1,6 +1,6 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { positionQualifiedCallableName } from '../../workers/callable-id.js';
-import { ARRAY_METHOD_HOC_BLOCKLIST_SET } from '../../ts-js-hoc-utils.js';
+import { ARRAY_METHOD_HOC_BLOCKLIST_SET, isRegistrationHandle } from '../../ts-js-hoc-utils.js';
 
 const callableKinds = ['arrow_function', 'function_expression', 'generator_function'];
 const moduleBoundaries = new Set([
@@ -20,7 +20,7 @@ function callableInitializer(declaration: SyntaxNode): SyntaxNode | undefined {
   const value = declaration.childForFieldName('value');
   if (!value) return undefined;
   if (callableKinds.includes(value.type)) return value;
-  if (value.type !== 'call_expression') return undefined;
+  if (value.type !== 'call_expression' || isRegistrationHandle(declaration)) return undefined;
   const callee = value.childForFieldName('function');
   if (callee?.type !== 'identifier') {
     const property = callee?.childForFieldName('property');

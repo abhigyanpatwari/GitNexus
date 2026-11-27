@@ -1141,7 +1141,13 @@ export function emitJsScopeCaptures(
   }
 
   // Post-query synthesis passes.
-  const localImports = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  const localImports = synthesizeTsLocalImports(
+    tree.rootNode,
+    filePath,
+    out,
+    undefined,
+    cachedTree,
+  );
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, localImports);
   synthesizeJsDocBindings(tree.rootNode, out);
   synthesizeConstructorFieldBindings(tree.rootNode, out);

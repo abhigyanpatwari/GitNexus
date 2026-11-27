@@ -7,9 +7,20 @@ import {
   type Range,
   type ScopeKind,
 } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeToCapture,
+  sourceRangeKey as rangeKey,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { canonicalTypeScriptName } from './identifiers.js';
+import {
+  clearRegistrationHandles,
+  omitRegistrationFunctions,
+  registrationGlobal,
+} from '../../ts-js-hoc-utils.js';
 
+const nodeTimerFunctions = new Set(['setTimeout', 'setInterval', 'setImmediate']);
 const FUNCTION_TYPES = new Set([
   'function_declaration',
   'generator_function_declaration',
@@ -59,8 +70,6 @@ type BindingWrite = LocatedNode & {
 };
 type WriteSite = LocatedNode & { readonly names: readonly SyntaxNode[] };
 
-const rangeKey = (range: Range) =>
-  `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
 const scopeKey = (range: Range, kind: ScopeKind) => `${kind}:${rangeKey(range)}`;
 const rangeOf = (node: SyntaxNode): Range => {
   const start = node.startPosition;
@@ -668,7 +677,9 @@ export function synthesizeTsLocalImports(
   filePath: string,
   out: CaptureMatch[],
   onModuleBindingWrite?: (name: string, write: SyntaxNode) => void,
+  cachedTree?: unknown,
 ): LocalImportFacts {
+  clearRegistrationHandles(root, cachedTree);
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
   const calls: LocatedNode[] = [];
@@ -858,6 +869,24 @@ export function synthesizeTsLocalImports(
     }
   }
 
+  type TimerImport = { scope: LexicalScope; namespace: boolean; availableAt?: number };
+  let timerImports: Map<string, TimerImport[]> | undefined;
+  const rememberTimerImport = (match: CaptureMatch, scope: LexicalScope, availableAt?: number) => {
+    const source = match['@import.source']?.text;
+    if ((source !== 'node:timers' && source !== 'timers') || match['@import.type-only']) return;
+    const kind = match['@import.kind']?.text;
+    const name = match['@import.name']?.text;
+    const namespace = kind === 'namespace' && availableAt === undefined;
+    if (!namespace && (!name || !nodeTimerFunctions.has(canonicalTypeScriptName(name)))) return;
+    const local = match['@import.alias']?.text ?? name;
+    if (!local) return;
+    timerImports ??= new Map();
+    const key = canonicalTypeScriptName(local);
+    const records = timerImports.get(key) ?? [];
+    records.push({ scope, namespace, availableAt });
+    timerImports.set(key, records);
+  };
+
   // Static imports establish loader identity before any require call is inspected.
   for (const match of out) {
     const anchor = match['@import.statement'];
@@ -874,6 +903,7 @@ export function synthesizeTsLocalImports(
     const scope = scopesAt.get(rangeKey(anchor.range));
     if (!name || !scope) continue;
     scope.names.add(name);
+    rememberTimerImport(match, scope);
     const claim: NameClaim = {
       name,
       range: anchor.range,
@@ -988,10 +1018,35 @@ export function synthesizeTsLocalImports(
         );
       else scope.claims.push(claim);
     }
+    // A destructured const retains the imported function, including an aliased property.
+    // A mutable CommonJS namespace object does not give that guarantee for later calls.
+    const loaderDeclaration = declarationByValue.get(at.id)?.node;
+    if (loaderDeclaration?.parent?.childForFieldName('kind')?.type === 'const') {
+      rememberTimerImport(match, scope, loaderDeclaration.endIndex);
+    }
     out.push(match);
+  };
+  let registrationHandles: Map<number, string> | undefined;
+  const recordRegistration = (call: SyntaxNode, declaration: SyntaxNode) => {
+    const name = declaration.childForFieldName('name');
+    if (
+      name?.type === 'identifier' &&
+      call
+        .childForFieldName('arguments')
+        ?.namedChildren.some(
+          (arg) => arg.type === 'arrow_function' || arg.type === 'function_expression',
+        )
+    )
+      (registrationHandles ??= new Map()).set(declaration.startIndex, rangeKey(rangeOf(name)));
   };
   for (const { node, scope } of calls) {
     const fn = node.childForFieldName('function');
+    const declarator = declarationByValue.get(node.id)?.node;
+    const globalName = declarator && registrationGlobal(fn);
+    if (globalName) {
+      escaped ??= indexEscapedNames(scopes.values());
+      if (!bindingOwner(scope, globalName, escaped)) recordRegistration(node, declarator);
+    }
     const requireCall = fn?.type === 'identifier' && fn.text === 'require';
     const importCall = fn?.type === 'import';
     if (!requireCall && !importCall) continue;
@@ -1064,6 +1119,40 @@ export function synthesizeTsLocalImports(
         undefined,
         typeOnly,
       );
+    }
+  }
+  if (timerImports) {
+    // A CommonJS import can appear below a function containing the call.
+    // Resolve only after both static and verified require imports have been collected.
+    for (const { node, scope } of calls) {
+      const declaration = declarationByValue.get(node.id)?.node;
+      if (!declaration) continue;
+      const fn = node.childForFieldName('function');
+      const member = fn?.type === 'member_expression';
+      const local = member ? fn.childForFieldName('object') : fn;
+      if (local?.type !== 'identifier') continue;
+      const localName = canonicalTypeScriptName(local.text);
+      const records = timerImports.get(localName);
+      if (!records) continue;
+      if (
+        member &&
+        !nodeTimerFunctions.has(
+          canonicalTypeScriptName(fn.childForFieldName('property')?.text ?? ''),
+        )
+      )
+        continue;
+      escaped ??= indexEscapedNames(scopes.values());
+      const owner = bindingOwner(scope, localName, escaped);
+      if (
+        records.some(
+          (record) =>
+            record.scope === owner &&
+            record.namespace === member &&
+            (record.availableAt === undefined || node.startIndex >= record.availableAt),
+        )
+      ) {
+        recordRegistration(node, declaration);
+      }
     }
   }
   // Writes invalidate an imported handle's module proof, including a var loader
@@ -1159,5 +1248,6 @@ export function synthesizeTsLocalImports(
       },
     };
   }
+  if (registrationHandles) omitRegistrationFunctions(root, registrationHandles, out, cachedTree);
   return { validRequireCalls, wrapperWrites };
 }

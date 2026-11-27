@@ -45,6 +45,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
 
@@ -397,4 +398,155 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
       ).toEqual([]);
     }
   });
+});
+
+describe('callback registrations and lexical HOC bindings', () => {
+  const registration = `
+    export function timerTask() {}
+    export function intervalTask() {}
+    export function microTask() {}
+    export function frameTask() {}
+    export function idleTask() {}
+    export function mappedTask() {}
+    export function innerTask() {}
+    export function wrappedTask() {}
+    const wrap = fn => fn;
+    export const timer = setTimeout(() => timerTask(), 0), wrapped = wrap(() => wrappedTask());
+    export let interval = setInterval(function () { intervalTask(); }, 10);
+    export var microtask = queueMicrotask(() => microTask());
+    export const frame = globalThis.requestAnimationFrame(() => frameTask());
+    export const idle = requestIdleCallback(() => idleTask());
+    const custom = { setTimeout: wrap };
+    export const member = custom.setTimeout(() => wrappedTask());
+    export const mapped = [1].map(() => mappedTask());
+    export function schedule() {
+      const nested = setTimeout(() => innerTask(), 0);
+      return nested;
+    }
+    export function configure(setTimeout) {
+      const shadow = setTimeout(() => wrappedTask());
+      return shadow;
+    }
+  `;
+  const result = useFixture('ts-js-hoc-registrations', {
+    'registrations.ts': registration,
+    'registrations.js': registration,
+    'Plain.vue': `<script>
+${registration}
+</script>`,
+    'Typed.vue': `<script lang="ts">
+${registration}
+</script>`,
+  });
+  it.each(['registrations.js', 'registrations.ts', 'Plain.vue', 'Typed.vue'])(
+    'keeps %s registration handles as values and callable wrappers as functions',
+    (file) => {
+      const nodes = [...result().graph.iterNodes()].filter(
+        (node) => node.properties.filePath === file,
+      );
+      const functions = nodes
+        .filter((node) => node.label === 'Function')
+        .map((node) => node.properties.name);
+      const values = nodes
+        .filter((node) => node.label === 'Const' || node.label === 'Variable')
+        .map((node) => node.properties.name);
+      const handles = ['timer', 'interval', 'microtask', 'frame', 'idle', 'mapped'];
+      expect(functions.filter((name) => handles.includes(name))).toEqual([]);
+      expect(values).toEqual(expect.arrayContaining(handles));
+      const calls = getRelationships(result(), 'CALLS').filter(
+        (edge) => edge.targetFilePath === file,
+      );
+      const fileTasks = [
+        'frameTask',
+        'idleTask',
+        'intervalTask',
+        'mappedTask',
+        'microTask',
+        'timerTask',
+      ];
+      expect(
+        calls
+          .filter((edge) => edge.sourceLabel === 'File' && fileTasks.includes(edge.target))
+          .map((edge) => edge.target)
+          .sort(),
+      ).toEqual(fileTasks);
+      expect(
+        calls.filter((edge) => edge.target === 'innerTask').map((edge) => edge.source),
+      ).toEqual(['schedule']);
+      const wrappers = ['wrapped', 'member', 'shadow'];
+      expect(functions).toEqual(expect.arrayContaining(wrappers));
+      expect(
+        calls
+          .filter((edge) => edge.target === 'wrappedTask')
+          .map((edge) => edge.source)
+          .sort(),
+      ).toEqual(wrappers.sort());
+    },
+  );
+});
+
+describe('Node timer imports in callback initializers', () => {
+  const esm = `
+    import { setTimeout as defer, setInterval } from 'node:timers';
+    import * as timers from 'timers';
+    import { setTimeout as userTimer } from './wrapper.js';
+    export function task() {}
+    export const delayed = defer(() => task(), 0);
+    export const recurring = setInterval(() => task(), 20);
+    export const immediate = timers.setImmediate(() => task());
+    export const custom = userTimer(() => task());
+    export function configure(defer) {
+      const local = defer(() => task());
+      return local;
+    }
+  `;
+  const commonjs = `
+    const { setTimeout: defer } = require('node:timers');
+    const { setInterval } = require('timers');
+    function task() {}
+    const delayed = defer(() => task(), 0), recurring = setInterval(() => task(), 20);
+    function configure(require) {
+      const { setTimeout: wrapper } = require('node:timers');
+      const local = wrapper(() => task());
+      return local;
+    }
+    let { setTimeout: reassigned } = require('node:timers');
+    reassigned = fn => fn;
+    const custom = reassigned(() => task());
+    module.exports = { delayed, recurring, configure, custom };
+  `;
+  const result = useFixture('explicit-node-timers', {
+    'wrapper.js': 'export function setTimeout(fn) { return fn; }',
+    'timers.mjs': esm,
+    'timers.mts': esm,
+    'timers.cjs': commonjs,
+  });
+  it.each(['timers.mjs', 'timers.mts', 'timers.cjs'])(
+    'distinguishes Node and local bindings in %s',
+    (file) => {
+      const nodes = [...result().graph.iterNodes()].filter(
+        (node) => node.properties.filePath === file,
+      );
+      const scheduling = file.endsWith('.cjs')
+        ? ['delayed', 'recurring']
+        : ['delayed', 'immediate', 'recurring'];
+      expect(
+        nodes
+          .filter((node) => scheduling.includes(node.properties.name))
+          .map((node) => [node.properties.name, node.label])
+          .sort(),
+      ).toEqual(scheduling.map((name) => [name, 'Const']));
+      expect(
+        nodes
+          .filter((node) => ['custom', 'local'].includes(node.properties.name))
+          .map((node) => node.label),
+      ).toEqual(['Function', 'Function']);
+      const refs = getRelationships(result(), 'CALLS').filter(
+        (edge) => edge.targetFilePath === file && edge.target === 'task',
+      );
+      expect(
+        refs.map((edge) => (edge.sourceLabel === 'File' ? 'module' : edge.source)).sort(),
+      ).toEqual(['custom', 'local', 'module']);
+    },
+  );
 });

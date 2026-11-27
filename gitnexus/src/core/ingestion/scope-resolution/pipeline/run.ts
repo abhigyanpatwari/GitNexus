@@ -480,15 +480,10 @@ interface ScopedHeritageEdge {
  *
  * @returns Site keys to seed the downstream handled-site skip set.
  *
- * The generic INSTANTIATION each heritage edge was written with (#2912) goes to
- * `recordTypeArguments` rather than out through the return, because the caller
- * shares that sink with the language heritage hook — see
- * `HeritageTypeArguments` in `utils/generic-instantiation.ts`. This pass is
- * where the pairing exists at all: the site carries the arguments and this is
- * the only code that resolves the site to a (subtype, supertype) pair, so
- * recording it here costs one map write per generic heritage edge, while
- * recovering it downstream would mean redoing the resolution against a graph
- * edge that no longer carries the spelling.
+ * Record heritage type arguments as written through the same sink as the
+ * language heritage hook (#2912). When MRO substitutions are requested,
+ * also register the arguments against the resolved base's formal parameters
+ * while both declarations and their source spellings are available.
  */
 function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
@@ -1243,12 +1238,9 @@ export function runScopeResolution(
       name: refused.name,
     });
   }
-  // One store and ONE writer rule for heritage instantiations (#2912), shared by
-  // the pre-pass below and by the language hook further down — a heritage shape
-  // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
-  // through the same sink. FIRST writer wins: a repeated (sub, super) pair is a
-  // partial declaration or a re-listed base, and letting a later entry overwrite
-  // the first would make dispatch depend on file order.
+  // The pre-pass and the language hook share this sink for type arguments as
+  // written (#2912), including Rust `impl T for S` and Dart `implements`.
+  // Keep the first arguments recorded for a partial declaration or re-listed base.
   const heritageTypeArguments = new Map<string, readonly string[]>();
   const recordHeritageTypeArguments: HeritageTypeArgumentSink = (
     subtypeGraphId,

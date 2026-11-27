@@ -1,6 +1,8 @@
 import path from 'node:path';
 
-import type { SyntaxNode } from './utils/ast-helpers.js';
+import type { CaptureMatch } from 'gitnexus-shared';
+import { sourceRangeKey, type SyntaxNode } from './utils/ast-helpers.js';
+import { decodeIdentifierEscapes } from './utils/ecmascript-literals.js';
 
 // Member-expression callees that should never classify a callback-wrapped
 // binding as a top-level Function. This covers callback-taking Array methods
@@ -64,6 +66,76 @@ export const DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST = [
 export const DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET: ReadonlySet<string> = new Set(
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST,
 );
+
+const globalReceivers = new Set(['globalThis', 'window', 'self', 'global']);
+const registrationHandles = new WeakMap<SyntaxNode['tree'], ReadonlySet<number>>();
+
+/** Which ambient binding would make this direct call a host callback registration? */
+export function registrationGlobal(callee: SyntaxNode | null): string | undefined {
+  if (callee?.type === 'identifier') {
+    const name = decodeIdentifierEscapes(callee.text);
+    if (DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(name)) return name;
+  }
+  if (callee?.type !== 'member_expression') return undefined;
+  const property = callee.childForFieldName('property');
+  if (
+    !property ||
+    !DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(decodeIdentifierEscapes(property.text))
+  )
+    return undefined;
+  const object = callee.childForFieldName('object');
+  if (object?.type !== 'identifier') return undefined;
+  const name = decodeIdentifierEscapes(object.text);
+  return globalReceivers.has(name) ? name : undefined;
+}
+
+/** Scope extraction may reparse a worker tree whose grammar differs (TS vs TSX). */
+function registrationStructureTree(
+  root: SyntaxNode,
+  cachedTree: unknown,
+): SyntaxNode['tree'] | undefined {
+  if (!cachedTree || root.tree === cachedTree) return undefined;
+  const other = (cachedTree as SyntaxNode['tree']).rootNode;
+  return other && other.startIndex === root.startIndex && other.text === root.text
+    ? other.tree
+    : undefined;
+}
+
+export function clearRegistrationHandles(root: SyntaxNode, cachedTree?: unknown): void {
+  registrationHandles.delete(root.tree);
+  if (cachedTree && registrationHandles.has(cachedTree as SyntaxNode['tree'])) {
+    const other = registrationStructureTree(root, cachedTree);
+    if (other) registrationHandles.delete(other);
+  }
+}
+
+/** Drop only the callable capture; the declaration's value and callback scopes remain. */
+export function omitRegistrationFunctions(
+  root: SyntaxNode,
+  handles: ReadonlyMap<number, string>,
+  captures: CaptureMatch[],
+  cachedTree?: unknown,
+): void {
+  const positions = new Set(handles.keys());
+  registrationHandles.set(root.tree, positions);
+  const other = registrationStructureTree(root, cachedTree);
+  if (other) registrationHandles.set(other, positions);
+  const ranges = new Set(handles.values());
+  let kept = 0;
+  for (const match of captures) {
+    const name = match['@declaration.name'];
+    if (match['@declaration.function'] && name && ranges.has(sourceRangeKey(name.range))) continue;
+    captures[kept++] = match;
+  }
+  captures.length = kept;
+}
+
+export function isRegistrationHandle(declarator: SyntaxNode | null | undefined): boolean {
+  return (
+    declarator?.type === 'variable_declarator' &&
+    registrationHandles.get(declarator.tree)?.has(declarator.startIndex) === true
+  );
+}
 
 export const ARRAY_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   'map',

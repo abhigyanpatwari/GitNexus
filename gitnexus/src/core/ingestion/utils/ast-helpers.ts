@@ -178,6 +178,8 @@ export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
  * concrete-typedef ranges the loop's separate typedef guard consumes.
  */
 export interface DefinitionPreScan {
+  /** Matches rejected by the provider cannot claim a name or emit a definition. */
+  readonly skippedMatches?: ReadonlySet<QueryMatchLike>;
   /**
    * Keys claimed by any non-value capture — consulted by `Const`/`Static`/
    * `Variable`. Includes `Property`, so an annotated Python attribute still
@@ -240,6 +242,7 @@ export const buildDefinitionPreScan = (
   matches: readonly QueryMatchLike[],
   provider: LanguageProvider,
 ): DefinitionPreScan => {
+  let skippedMatches: Set<QueryMatchLike> | undefined;
   const nonValue = new Set<string>();
   const callable = new Set<string>();
   const concreteTypedefRanges = new Set<string>();
@@ -259,21 +262,21 @@ export const buildDefinitionPreScan = (
       concreteTypedefRanges.add(nodeRangeKey(definitionNode));
     }
 
-    // No `@name` capture means nothing a lower-ranked capture could collide
-    // with — a value or property pattern always binds a name. Checked before
-    // `getLabelFromCaptures` so a nameless match never pays for label
-    // resolution (which can reach a provider's `labelOverride`).
     const nameNode = captureMap['name'];
-    if (nameNode === undefined) continue;
-
+    if (!nameNode && !provider.shouldSkipDefinitionCapture) continue;
     const label = getLabelFromCaptures(captureMap, provider);
-    if (label === null || isValueDefinitionLabel(label)) continue;
+    if (label === null) continue;
+    if (provider.shouldSkipDefinitionCapture?.(captureMap, label)) {
+      (skippedMatches ??= new Set()).add(match);
+      continue;
+    }
+    if (!nameNode || isValueDefinitionLabel(label)) continue;
 
     const key = `${definitionNode.startIndex}:${nameNode.text}`;
     nonValue.add(key);
     if (isOverloadableCallable(label)) callable.add(key);
   }
-  return { nonValue, callable, concreteTypedefRanges };
+  return { nonValue, callable, concreteTypedefRanges, skippedMatches };
 };
 
 /**

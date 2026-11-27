@@ -1681,13 +1681,6 @@ const processFileGroupFiles = (
     const classOwnersByNodeId = new Map<number, string>();
     const callableBindings = new Map<number, string>();
 
-    // #2687: ONE pass over `matches` yields both suppression sets — the
-    // definition-name claims by rank (callable > Property > value), so the dedup
-    // below cannot depend on tree-sitter's match order, and the concrete-typedef
-    // ranges the typedef guard consumes.
-    const definitionPreScan = buildDefinitionPreScan(matches, provider);
-    const concreteTypedefRanges = definitionPreScan.concreteTypedefRanges;
-
     // Produce the `ParsedFile` for the scope-resolution pipeline HERE, reusing
     // the tree we just parsed (no second tree-sitter parse). Scope-resolution
     // consumes these via the disk-backed parsedfile-store instead of
@@ -1713,6 +1706,14 @@ const processFileGroupFiles = (
       sourceLineMap,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
+    // Rank definition matches after scope extraction, when the provider has resolved local names.
+    // #2687: ONE pass over `matches` yields both suppression sets — the
+    // definition-name claims by rank (callable > Property > value), so the dedup
+    // below cannot depend on tree-sitter's match order, and the concrete-typedef
+    // ranges the typedef guard consumes.
+    const definitionPreScan = buildDefinitionPreScan(matches, provider);
+    const concreteTypedefRanges = definitionPreScan.concreteTypedefRanges;
+
     let requestScopeIndex: PositionIndex | undefined;
     // Native node ids can be reused by a later tree. Keep this memo in the
     // file's closure so isolation does not depend on clearing a global map.
@@ -2180,7 +2181,7 @@ const processFileGroupFiles = (
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
-      if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
+      if (definitionPreScan.skippedMatches?.has(match)) continue;
 
       // `{ timer: setTimeout(() => …, 100) }` registers a timer, not a
       // Function — the TSQ-path twin of the emit-side gate in

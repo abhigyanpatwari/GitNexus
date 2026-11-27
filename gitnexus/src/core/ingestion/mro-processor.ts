@@ -592,7 +592,7 @@ function emitMethodImplementsEdges(
 
     // Get this class's own methods
     const ownMethodIds = methodMap.get(classId) ?? [];
-    const specialize = substitutions?.forClass(classId, parentMap);
+    let specialize: ReturnType<HeritageSubstitutions['forClass']> | undefined;
 
     // Build a lookup: methodName → Array<{methodId, parameterTypes, parameterCount}> for own methods
     const ownMethodsByName = new Map<
@@ -649,6 +649,7 @@ function emitMethodImplementsEdges(
         const ancestorMethodNode = graph.getNode(ancestorMethodId);
         if (!ancestorMethodNode || ancestorMethodNode.label === 'Property') continue;
 
+        specialize ??= substitutions?.forClass(classId, parentMap);
         const ancestorName = ancestorMethodNode.properties.name as string;
         const declaredTypes =
           (ancestorMethodNode.properties.parameterTypes as string[] | undefined) ?? [];

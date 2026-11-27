@@ -13,7 +13,7 @@ import { blockCallableIdentity, unboundCallableName } from './typescript/unbound
 import { literalMethodName } from './typescript/identifiers.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
-import type { AstFrameworkPatternConfig } from '../language-provider.js';
+import type { AstFrameworkPatternConfig, LanguageProvider } from '../language-provider.js';
 import {
   typescriptClassConfig,
   javascriptClassConfig,
@@ -105,6 +105,7 @@ import {
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
   isBlockedCallbackRegistrationCall,
+  isRegistrationHandle,
 } from '../ts-js-hoc-utils.js';
 import {
   emitTsScopeCaptures,
@@ -280,6 +281,7 @@ const tsExtractFunctionName = (
 
     // Existing path: const X = HOC(arrow)
     if (declarator?.type === 'variable_declarator') {
+      if (isRegistrationHandle(declarator)) return { funcName: null, label: 'Function' };
       const nameNode = declarator.childForFieldName?.('name');
       if (nameNode?.type === 'identifier') {
         const funcName = nameNode.text;
@@ -329,6 +331,10 @@ const tsExtractFunctionName = (
 
   return { funcName: null, label: 'Function' };
 };
+
+const skipRegistrationHandleFunction: NonNullable<
+  LanguageProvider['shouldSkipDefinitionCapture']
+> = (captures, label) => label === 'Function' && isRegistrationHandle(captures.name?.parent);
 
 export const BUILT_INS: ReadonlySet<string> = new Set([
   'console',
@@ -553,6 +559,7 @@ export const typescriptProvider = defineLanguage({
     }),
   ),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
+  shouldSkipDefinitionCapture: skipRegistrationHandleFunction,
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(typescriptClassConfig),
   resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
@@ -658,6 +665,7 @@ export const javascriptProvider = defineLanguage({
     extractFunctionName: tsExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
+  shouldSkipDefinitionCapture: skipRegistrationHandleFunction,
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(javascriptClassConfig),
   resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,

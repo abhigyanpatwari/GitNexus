@@ -218,9 +218,15 @@ function* ungroupedOffsets(text: string, start = 0): Generator<number> {
   }
 }
 
+// A number starts at a token boundary, so the 8 in the character literal u8','
+// cannot consume its opening quote. Separators stay in the numeric spelling.
+const numericLiteral =
+  /\b(?:0x[\da-f.](?:'?[\da-f]|\.)*|0b[01](?:'?[01])*|\d(?:'?\d|\.)*)(?:[ep][+-]?\d(?:'?\d)*)?/iy;
+
 /** Comments and quoted strings are opaque even when they contain each other's delimiters. */
 function* opaqueSpans(text: string, start: number) {
   let lastCommentEnd = start;
+  const hasApostrophe = text.includes("'");
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
     const end = ch === '/' ? endOfComment(text, i) : undefined;
@@ -231,6 +237,9 @@ function* opaqueSpans(text: string, start: number) {
     } else if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
       yield { start: i, end: i + 2, comment: false };
       i++;
+    } else if (hasApostrophe && ch >= '0' && ch <= '9') {
+      numericLiteral.lastIndex = i;
+      if (numericLiteral.test(text)) i = numericLiteral.lastIndex - 1;
     } else if (ch === '"' || ch === "'" || ch === '`') {
       let end = i + 1;
       for (; end < text.length && text[end] !== ch; end++) {

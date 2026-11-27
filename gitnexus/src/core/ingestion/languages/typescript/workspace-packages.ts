@@ -341,9 +341,7 @@ function matchesDirOrAncestor(re: RegExp, dir: string): boolean {
  *
  * The subset npm, pnpm, yarn and lerna actually use in `workspaces` /
  * `packages`: `*` within a segment, `**` across segments, `?`, and a leading
- * `!` for exclusion (handled by the caller). Deliberately not a general glob
- * engine — the patterns are a documented, narrow dialect, and `minimatch` is
- * only present here transitively through `glob`.
+ * `!` for exclusion (handled by the caller). Other characters are literal.
  */
 function globToRegExp(pattern: string): RegExp {
   const normalized = pattern.replace(/^\.\//, '').replace(/\/$/, '');

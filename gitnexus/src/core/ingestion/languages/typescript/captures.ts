@@ -804,7 +804,7 @@ export function emitTsScopeCaptures(
               },
             };
             (awaitedCalls ??= new Map()).set(
-              JSON.stringify(callAnchor.range),
+              callRangeKey(callAnchor.range),
               grouped[callAnchor.name],
             );
           }
@@ -930,7 +930,7 @@ export function emitTsScopeCaptures(
       )
         continue;
       const site = match['@callable-flow.argument'] ?? match['@callable-flow.invoke'];
-      const call = site && awaitedCalls?.get(JSON.stringify(site.range));
+      const call = site && awaitedCalls?.get(callRangeKey(site.range));
       out.push(call ? { ...match, [site.name]: { ...call, name: site.name } } : match);
     }
   } else {
@@ -956,6 +956,7 @@ export function emitTsScopeCaptures(
           }
         }
       : undefined,
+    cachedTree,
   );
   if (returnedDefault && defaultDeclaration) {
     const { value } = returnedDefault;

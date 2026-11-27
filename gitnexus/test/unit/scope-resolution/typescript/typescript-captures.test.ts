@@ -14,6 +14,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
+import { getTsParser } from '../../../../src/core/ingestion/languages/typescript/query.js';
+import { synthesizeTsLocalImports } from '../../../../src/core/ingestion/languages/typescript/local-loaders.js';
+import { isRegistrationHandle } from '../../../../src/core/ingestion/ts-js-hoc-utils.js';
 import { emitTsScopeCaptures } from '../../../../src/core/ingestion/languages/typescript/captures.js';
 
 function tagsFor(src: string): string[][] {
@@ -852,4 +856,20 @@ export async function run() {
 `),
     ).toEqual(['pending']);
   });
+});
+
+it('shares registration facts across a same-source grammar fallback and clears them on scope re-extraction', () => {
+  const source = 'const timer = setTimeout(() => {}, 0);';
+  const workerTree = parseSourceSafe(getTsParser('fallback.tsx'), source);
+  const binding = workerTree.rootNode.descendantsOfType('variable_declarator')[0];
+  emitTsScopeCaptures(source, 'fallback.ts', workerTree);
+  expect(isRegistrationHandle(binding)).toBe(true);
+  const otherSource = 'const timer = wrapper(() => {}, 0);';
+  const unrelated = parseSourceSafe(getTsParser('fallback.tsx'), otherSource);
+  emitTsScopeCaptures(source, 'fallback.ts', unrelated);
+  expect(isRegistrationHandle(unrelated.rootNode.descendantsOfType('variable_declarator')[0])).toBe(
+    false,
+  );
+  synthesizeTsLocalImports(workerTree.rootNode, 'fallback.ts', []);
+  expect(isRegistrationHandle(binding)).toBe(false);
 });
