@@ -52,7 +52,7 @@ function lanesForPath(path) {
       path,
     ) ||
     /(?:^|\/)README\.md$/.test(path) ||
-    /^\.claude\/skills\/gitnexus(?:-|\/).*\.md$/.test(path)
+    /^\.claude\/skills\/gitnexus[-/].*\.md$/.test(path)
   )
     return [];
   if (path.startsWith('gitnexus-web/')) {
