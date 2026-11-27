@@ -104,18 +104,22 @@ async function successfulPR({ github, context, revision, tree, parent }) {
       workflow_id: 'ci.yml',
       event: 'pull_request',
       head_sha: pr.head.sha,
-      status: 'success',
+      status: 'completed',
       per_page: 100,
     });
-    for (const run of data.workflow_runs) {
+    // A rerun of an older workflow can finish after a newer workflow.
+    // With a truncated history we cannot establish which completion is latest.
+    if (data.total_count > data.workflow_runs.length) return;
+    for (const run of data.workflow_runs.sort((a, b) => b.updated_at.localeCompare(a.updated_at))) {
       if (
         run.path !== '.github/workflows/ci.yml' ||
         run.event !== 'pull_request' ||
-        run.conclusion !== 'success' ||
         run.head_sha !== pr.head.sha ||
         run.head_repository?.id !== pr.head.repo.id
       )
         continue;
+      // A failure can precede the reusable workflow and lack a merge reference.
+      if (run.conclusion !== 'success') return;
       const ref = run.referenced_workflows?.find(
         (w) =>
           w.ref === 'refs/pull/' + pr.number + '/merge' &&

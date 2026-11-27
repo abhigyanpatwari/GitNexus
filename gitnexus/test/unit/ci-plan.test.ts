@@ -154,6 +154,7 @@ describe('release reuse', () => {
     const run = {
       path: '.github/workflows/ci.yml',
       id: 123,
+      updated_at: '2026-01-01T00:00:00Z',
       conclusion: 'success',
       event: 'pull_request',
       head_sha: 'pr-head',
@@ -252,6 +253,7 @@ describe('release reuse', () => {
         ...repo,
         workflow_id: 'ci.yml',
         event: 'pull_request',
+        status: 'completed',
         head_sha: api.pr.head.sha,
       }),
     );
@@ -265,6 +267,37 @@ describe('release reuse', () => {
   });
 
   type Fixture = ReturnType<typeof fixture>;
+
+  it('reruns after a newer failure on the same tested merge', async () => {
+    const api = fixture();
+    api.rest.actions.listWorkflowRuns.mockResolvedValue({
+      data: {
+        workflow_runs: [
+          api.run,
+          { ...api.run, id: 122, updated_at: '2026-01-02T00:00:00Z', conclusion: 'failure' },
+        ],
+      },
+    });
+    const result = await api.select();
+    expect(result.reused).toEqual([]);
+    expect(Object.values(result.run).every(Boolean)).toBe(true);
+  });
+
+  it('ignores unrelated PRs, runs and workflow references before a valid match', async () => {
+    const api = fixture();
+    api.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue([
+      { ...api.pr, merged_at: '' },
+      api.pr,
+    ]);
+    api.run.referenced_workflows.unshift({ ...api.ref, path: 'unrelated' });
+    api.rest.actions.listWorkflowRuns.mockResolvedValue({
+      data: { workflow_runs: [{ ...api.run, id: 124, referenced_workflows: [] }, api.run] },
+    });
+    const result = await api.select();
+    expect(result.source).toBe('123');
+    expect(result.reused).toContain('web');
+  });
+
   const invalidEvidence: [string, (api: Fixture) => void][] = [
     [
       'direct push',
