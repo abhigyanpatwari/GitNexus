@@ -468,9 +468,16 @@ describe('Go scope-capture O(n^2) regression tripwire', () => {
  *
  * Creates `interfaceCount` interfaces (each with Find + Save methods) and
  * `structCount` structs that implement all of them (matching signatures).
+ * Like idiomatic Go, most structs use pointer receivers: every
+ * {@link VALUE_RECEIVER_EVERY}th struct uses value receivers, the rest `*T`.
+ * Without the stamp every method reads as a value receiver, MS(T) equals
+ * MS(*T), and the benchmark cannot see receiver-kind changes (#2835).
  * Also generates a few BadStruct entries with mismatched signatures to
  * verify they are correctly excluded (non-vacuous guard).
  */
+const VALUE_RECEIVER_EVERY = 5;
+const valueReceiverStructs = (structCount: number) => Math.ceil(structCount / VALUE_RECEIVER_EVERY);
+
 function generateSyntheticInterfaceData(interfaceCount: number, structCount: number): ParsedFile[] {
   const defs: SymbolDefinition[] = [];
 
@@ -512,6 +519,8 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
   // Structs — each implements all interfaces
   for (let s = 0; s < structCount; s++) {
     const structId = `struct:Impl${s}`;
+    // Sidecar stamped by method-owners.ts; not part of SymbolDefinition.
+    const goReceiverKind = s % VALUE_RECEIVER_EVERY === 0 ? 'value' : 'pointer';
     defs.push({
       nodeId: structId,
       filePath: 'repo.go',
@@ -528,7 +537,8 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       requiredParameterCount: 1,
       parameterTypes: ['string'],
       returnType: 'User',
-    });
+      goReceiverKind,
+    } as SymbolDefinition);
     defs.push({
       nodeId: `struct:Impl${s}.Save`,
       filePath: 'repo.go',
@@ -539,7 +549,8 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       requiredParameterCount: 1,
       parameterTypes: ['User'],
       returnType: 'error',
-    });
+      goReceiverKind,
+    } as SymbolDefinition);
   }
 
   // BadStructs — wrong Save signature (string instead of User), should NOT match
@@ -629,8 +640,13 @@ describe('Go structural interface detection O(n²) regression tripwire', () => {
 
     // Sanity: each interface should be implemented by all STRUCT_COUNT structs
     expect(result.implementations.size).toBe(IFACE_COUNT);
+    // Pointer-receiver structs implement only as `*T` (#2813); dropping them,
+    // or losing the value/pointer split, changes these counts.
     for (const [, impls] of result.implementations) {
       expect(impls).toHaveLength(STRUCT_COUNT);
+      expect(impls.filter((impl) => impl.receiverForm === 'value')).toHaveLength(
+        valueReceiverStructs(STRUCT_COUNT),
+      );
     }
     // Regression guard
     expect(elapsedMs).toBeLessThan(BUDGET_MS);
@@ -677,9 +693,9 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
       const parsed = generateSyntheticInterfaceData(n, n);
 
       for (let r = 0; r < REPS; r++) {
-        const start = Date.now();
+        const start = performance.now();
         const result = detectGoInterfaceImplementations(parsed, emptyIndexes, emptyModel);
-        const elapsed = Date.now() - start;
+        const elapsed = performance.now() - start;
         if (elapsed < bestMs) {
           bestMs = elapsed;
           implEdges = 0;
@@ -694,7 +710,9 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         elapsedMs: bestMs,
         implEdges,
       });
-      console.log(`  ${n}×${n} = ${n * n} pairs: ${bestMs}ms (${implEdges} IMPLEMENTS edges)`);
+      console.log(
+        `  ${n}×${n} = ${n * n} pairs: ${bestMs.toFixed(1)}ms (${implEdges} IMPLEMENTS edges)`,
+      );
     }
 
     // Print scaling table
@@ -704,7 +722,7 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
     console.log('├──────────┼──────────┼───────────┼───────────┤');
     for (const r of results) {
       console.log(
-        `│ ${String(`${r.ifaceCount}×${r.structCount}`).padStart(8)} │ ${String(r.totalPairs).padStart(8)} │ ${String(r.elapsedMs).padStart(9)} │ ${String(r.implEdges).padStart(9)} │`,
+        `│ ${String(`${r.ifaceCount}×${r.structCount}`).padStart(8)} │ ${String(r.totalPairs).padStart(8)} │ ${r.elapsedMs.toFixed(1).padStart(9)} │ ${String(r.implEdges).padStart(9)} │`,
       );
     }
     console.log('└──────────┴──────────┴───────────┴───────────┘');
@@ -719,7 +737,11 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         console.log(
           `  ${results[i - 1].totalPairs} → ${results[i].totalPairs}: ${scaling.toFixed(2)}x (${scaling < 1.5 ? 'linear' : scaling < 3 ? 'superlinear' : 'WARNING: quadratic'})`,
         );
-        expect(scaling).toBeLessThan(1.5);
+        // Output is one edge per pair, so linear-per-pair work stays near 1
+        // (measured 0.9–1.95 across hosts). A per-pair cost that grows with n
+        // lands near n's 4x step (an O(n) scan per pair measured 3.45). `< 1.5`
+        // sat inside host noise and was red on slower hosts (#2835).
+        expect(scaling).toBeLessThan(2.5);
       }
     }
   }, 300_000);
