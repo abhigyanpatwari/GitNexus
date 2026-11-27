@@ -46,9 +46,10 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
           sparse-checkout: .github/scripts
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         id: select
         with:
+          retries: 2
           script: await require('./.github/scripts/ci-plan.cjs').plan({ github, context, core })
 
   quality:
@@ -73,7 +74,7 @@ jobs:
     needs: [plan, tests]
     if: >-
       !cancelled() && github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository && fromJSON(needs.plan.outputs.checks).run.quality
+      github.event.pull_request.head.repo.full_name == github.repository && fromJSON(needs.plan.outputs.checks || '{}').run.quality
     uses: ./.github/workflows/sonarqube.yml
     with:
       packages: ${{ toJSON(fromJSON(needs.plan.outputs.checks).packages) }}
@@ -141,7 +142,7 @@ jobs:
           COUNTS: ${{ needs.tests.outputs.package-counts }}
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
-          E2E: ${{ needs.e2e.result == 'success' && !fromJSON(needs.plan.outputs.checks).run.browser && 'skipped' || needs.e2e.result }}
+          E2E: ${{ needs.e2e.result == 'success' && !fromJSON(needs.plan.outputs.checks || '{}').run.browser && 'skipped' || needs.e2e.result }}
         run: |
           mkdir -p pr-meta
           echo "$COUNTS" > pr-meta/package_counts
@@ -190,16 +191,21 @@ jobs:
           # so a resolver regression makes TESTS != success and blocks here.
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
-          E2E_REQUIRED: ${{ fromJSON(needs.plan.outputs.checks).run.browser }}
+          E2E_REQUIRED: ${{ fromJSON(needs.plan.outputs.checks || '{}').run.browser }}
           SONAR: ${{ needs.sonar.result }}
           PLAN_RESULT: ${{ needs.plan.result }}
-          QUALITY_REQUIRED: ${{ fromJSON(needs.plan.outputs.checks).run.quality || fromJSON(needs.plan.outputs.checks).run.cli || fromJSON(needs.plan.outputs.checks).run.web || fromJSON(needs.plan.outputs.checks).run.workflows }}
-          SONAR_REQUIRED: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(needs.plan.outputs.checks).run.quality }}
+          PLAN_AVAILABLE: ${{ needs.plan.outputs.checks != '' }}
+          QUALITY_REQUIRED: ${{ fromJSON(needs.plan.outputs.checks || '{}').run.quality || fromJSON(needs.plan.outputs.checks || '{}').run.cli || fromJSON(needs.plan.outputs.checks || '{}').run.web || fromJSON(needs.plan.outputs.checks || '{}').run.workflows }}
+          SONAR_REQUIRED: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(needs.plan.outputs.checks || '{}').run.quality }}
         run: |
           echo "Quality:        $QUALITY"
           echo "Tests:          $TESTS"
           echo "E2E:            $E2E"
           echo "SonarQube:      $SONAR"
+          if [[ "$PLAN_RESULT" != success || "$PLAN_AVAILABLE" != true ]]; then
+            echo "::error::Select CI checks finished with $PLAN_RESULT (plan available: $PLAN_AVAILABLE)."
+            exit 1
+          fi
           if [[ "$SONAR_REQUIRED" == true && "$SONAR" != success ]]; then
             echo "::error::SonarQube analysis was required and finished with $SONAR"
             exit 1
@@ -207,8 +213,7 @@ jobs:
           # A failed `abi-assert` job (#1922) inside the tests reusable
           # workflow makes TESTS != success, so this clause also blocks the
           # merge on a tree-sitter ABI mismatch.
-          if [[ "$PLAN_RESULT" != success ]] ||
-             [[ "$QUALITY" != success && ( "$QUALITY_REQUIRED" == true || "$QUALITY" != skipped ) ]] ||
+          if [[ "$QUALITY" != success && ( "$QUALITY_REQUIRED" == true || "$QUALITY" != skipped ) ]] ||
              [[ "$TESTS" != "success" ]]; then
             echo "::error::Quality or test jobs failed (includes the tree-sitter ABI gate, #1922)"
             exit 1

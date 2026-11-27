@@ -98,6 +98,7 @@ describe.skipIf(process.platform === 'win32')('SonarQube gate', () => {
           ...process.env,
           QUALITY: 'success',
           PLAN_RESULT: 'success',
+          PLAN_AVAILABLE: 'true',
           TESTS: 'success',
           E2E: 'skipped',
           SONAR: sonar,
@@ -116,6 +117,7 @@ describe.skipIf(process.platform === 'win32')('selected CI checks', () => {
 
   it('takes the required checks from the plan and the actual results from the jobs', () => {
     expect(gate.env?.PLAN_RESULT).toBe('${{ needs.plan.result }}');
+    expect(gate.env?.PLAN_AVAILABLE).toBe("${{ needs.plan.outputs.checks != '' }}");
     expect(gate.env?.E2E).toBe('${{ needs.e2e.result }}');
     expect(gate.env?.E2E_REQUIRED).toContain('.run.browser');
     expect(gate.env?.QUALITY).toBe('${{ needs.quality.result }}');
@@ -130,10 +132,12 @@ describe.skipIf(process.platform === 'win32')('selected CI checks', () => {
     ['required quality skipped', { QUALITY: 'skipped', QUALITY_REQUIRED: 'true' }, 1],
     ['optional quality skipped', { QUALITY: 'skipped', QUALITY_REQUIRED: 'false' }, 0],
     ['plan failed', { PLAN_RESULT: 'failure' }, 1],
+    ['missing plan output', { PLAN_AVAILABLE: 'false' }, 1],
   ] as const)('%s', (_description, env, expected) => {
     const result = spawnSync('bash', ['-eo', 'pipefail', '-c', gate.run!], {
       env: {
         PLAN_RESULT: 'success',
+        PLAN_AVAILABLE: 'true',
         E2E: 'success',
         QUALITY: 'success',
         TESTS: 'success',

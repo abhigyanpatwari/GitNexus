@@ -194,7 +194,11 @@ describe('release reuse', () => {
       warning: vi.fn(),
       summary: { addHeading: vi.fn(), addRaw: vi.fn(), addLink: vi.fn(), write: vi.fn() },
     };
+    type RequestOptions = { request?: { signal?: AbortSignal; retries?: number } };
+    const before = vi.fn<(event: string, hook: (options: RequestOptions) => void) => void>();
     return {
+      core,
+      before,
       pr,
       ref,
       run,
@@ -206,6 +210,7 @@ describe('release reuse', () => {
         await plan({
           github: {
             rest,
+            hook: { before },
             paginate: (fn: (params: object) => Promise<unknown>, params: object) => fn(params),
           },
           context: { eventName, repo: { owner: 'org', repo: 'repo' } },
@@ -348,7 +353,6 @@ describe('release reuse', () => {
     ['merged fork PR', (api) => Object.assign(api.pr.head.repo, { full_name: 'fork/repo' })],
     ['failed CI', (api) => Object.assign(api.run, { conclusion: 'failure' })],
     ['missing gate', (api) => Object.assign(api.jobs[0], { conclusion: 'skipped' })],
-    ['API failure', (api) => api.rest.git.getCommit.mockRejectedValue(new Error('unavailable'))],
   ];
   it.each(invalidEvidence)('falls back on %s', async (_reason, invalidate) => {
     const api = fixture();
@@ -356,6 +360,79 @@ describe('release reuse', () => {
     const result = await api.select();
     expect(result.reused).toEqual([]);
     expect(Object.values(result.run).every(Boolean)).toBe(true);
+  });
+
+  it('gives each API request the same deadline, including paginated requests', async () => {
+    const api = fixture();
+    await api.select();
+    expect(api.before).toHaveBeenCalledExactlyOnceWith('request', expect.any(Function));
+    const applyDeadline = api.before.mock.calls[0][1];
+    const first = { request: { retries: 2, signal: undefined } };
+    const nextPage = { request: { signal: undefined } };
+    applyDeadline(first);
+    applyDeadline(nextPage);
+    expect(first.request.signal).toBeInstanceOf(AbortSignal);
+    expect(nextPage.request.signal).toBe(first.request.signal);
+    expect(first.request.retries).toBe(2);
+  });
+
+  it('reports GitHub lookup failures and runs all checks', async () => {
+    const api = fixture();
+    api.rest.git.getCommit.mockRejectedValue(
+      Object.assign(new Error('unavailable'), { status: 503 }),
+    );
+    const result = await api.select();
+    expect(result.reused).toEqual([]);
+    expect(Object.values(result.run).every(Boolean)).toBe(true);
+    expect(api.core.summary.addRaw).toHaveBeenCalledWith(expect.stringContaining('HTTP 503'), true);
+  });
+
+  it('stops looking for evidence when the shared deadline expires', async () => {
+    const api = fixture();
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const expired = AbortSignal.abort(new DOMException('Timed out', 'TimeoutError'));
+    try {
+      timeout.mockReturnValueOnce(expired);
+      api.rest.repos.listPullRequestsAssociatedWithCommit.mockImplementation(async () => {
+        api.before.mock.calls[0][1]({});
+        return [];
+      });
+      const result = await api.select();
+      expect(result.reused).toEqual([]);
+      expect(Object.values(result.run).every(Boolean)).toBe(true);
+      expect(api.core.summary.addRaw).toHaveBeenCalledWith(
+        expect.stringContaining('timed out'),
+        true,
+      );
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it('falls back when Git cannot read the checked-out revision', async () => {
+    const api = fixture();
+    vi.stubEnv('GITHUB_WORKSPACE', path.join(cwd, 'absent'));
+    const result = await api.select('pull_request');
+    expect(Object.values(result.run).every(Boolean)).toBe(true);
+    expect(api.core.summary.addRaw).toHaveBeenCalledWith(
+      expect.stringContaining('Git could not read'),
+      true,
+    );
+  });
+
+  it('fails the planner on unexpected errors before exposing any skip decisions', async () => {
+    const api = fixture();
+    api.rest.git.getCommit.mockRejectedValue(new TypeError('invalid evidence handling'));
+    await expect(api.select()).rejects.toThrow('invalid evidence handling');
+    expect(api.core.setOutput).not.toHaveBeenCalled();
+  });
+
+  it('keeps a valid plan if the Actions summary cannot be written', async () => {
+    const api = fixture();
+    api.core.summary.write.mockRejectedValue(new Error('disk full'));
+    const result = await api.select('pull_request');
+    expect(result.packages).toEqual(['web']);
+    expect(api.core.warning).toHaveBeenCalledWith(expect.stringContaining('disk full'));
   });
 
   const hoursFromNow = (hours: number) =>

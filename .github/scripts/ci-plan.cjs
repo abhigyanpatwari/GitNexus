@@ -142,17 +142,26 @@ async function plan({ github, context, core }) {
       cwd: process.env.GITHUB_WORKSPACE,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      timeout: 15_000,
     });
   const release = context.eventName !== 'pull_request';
   let changed = new Set(lanes);
   let source = '';
+  let fallback = '';
   const reused = new Set();
+  const deadline = AbortSignal.timeout(60_000);
   try {
     const parent = git('rev-parse', '--verify', 'HEAD^1').trim();
     changed = affected(
       git('diff', '--name-only', '--no-renames', '-z', parent, 'HEAD').split('\0').filter(Boolean),
     );
     if (release) {
+      // The pagination plugin rebuilds each page request. Set the shared deadline
+      // at the transport so later pages and retries get the same remaining budget.
+      github.hook.before('request', (options) => {
+        deadline.throwIfAborted();
+        options.request = { ...options.request, signal: deadline };
+      });
       const run = await successfulPR({
         github,
         context,
@@ -195,10 +204,17 @@ async function plan({ github, context, core }) {
       }
     }
   } catch (error) {
+    if (deadline.aborted && (error === deadline.reason || error.status >= 400))
+      fallback = 'GitHub evidence lookup timed out.';
+    else if (Number.isInteger(error.status) && error.status >= 400)
+      fallback = `GitHub evidence lookup failed (HTTP ${error.status}).`;
+    else if (Object.hasOwn(error, 'stderr') || error.syscall === 'spawnSync git')
+      fallback = 'Git could not read the changes for this revision.';
+    else throw error;
     changed = new Set(lanes);
     reused.clear();
     source = '';
-    core.warning('Running all checks in this CI run: ' + error.message);
+    core.warning(fallback + ' Running all checks. ' + error.message);
   }
   const run = Object.fromEntries(
     lanes.map((lane) => [lane, release ? !reused.has(lane) : changed.has(lane)]),
@@ -216,6 +232,7 @@ async function plan({ github, context, core }) {
   core.setOutput('plan', JSON.stringify(result));
   const selected = lanes.filter((lane) => run[lane]);
   core.summary.addHeading(release ? 'Release checks' : 'PR checks', 2);
+  if (fallback) core.summary.addRaw(fallback + ' Running all checks.', true);
   core.summary.addRaw('Selected suites: ' + (selected.join(', ') || 'none') + '.', true);
   if (release) core.summary.addRaw('The full release matrix and execution audit also run.', true);
   if (reused.size) {
@@ -225,7 +242,11 @@ async function plan({ github, context, core }) {
       `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${source}`,
     );
   }
-  await core.summary.write();
+  try {
+    await core.summary.write();
+  } catch (error) {
+    core.warning('Could not write the CI planning summary: ' + error.message);
+  }
 }
 
 module.exports = { affected, plan };

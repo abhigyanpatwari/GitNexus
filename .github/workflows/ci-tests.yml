@@ -550,11 +550,13 @@ jobs:
           TESTS: ${{ needs.tests.result }}
           JAVA: ${{ needs.java-compiler-conformance.result }}
         run: |
-          if [[ "$RUN_CLI" == true ]]; then
-            [[ "$TESTS" == success ]]
+          if [[ "$RUN_CLI" == true && "$TESTS" != success ]]; then
+            echo "::error::CLI tests were selected and finished with $TESTS."
+            exit 1
           fi
-          if [[ "$RUN_JAVA" == true ]]; then
-            [[ "$JAVA" == success ]]
+          if [[ "$RUN_JAVA" == true && "$JAVA" != success ]]; then
+            echo "::error::Java conformance was selected and finished with $JAVA."
+            exit 1
           fi
       - name: Download verified PR package reports
         if: contains(fromJSON(inputs.plan).reused, 'cli') || contains(fromJSON(inputs.plan).reused, 'web')
@@ -2089,9 +2091,17 @@ jobs:
           RUN_EVAL: ${{ fromJSON(inputs.plan).run.eval }}
           RUN_ABI: ${{ fromJSON(inputs.plan).run.abi }}
         run: |
-          if [[ "$RUN_COVERAGE" == true ]]; then [[ "$COVERAGE" == success ]]; else [[ "$COVERAGE" == skipped ]]; fi
-          if [[ "$RUN_EVAL" == true ]]; then [[ "$EVAL" == success ]]; else [[ "$EVAL" == skipped ]]; fi
-          if [[ "$RUN_ABI" == true ]]; then [[ "$ABI" == success ]]; else [[ "$ABI" == skipped ]]; fi
+          check_result() {
+            local suite=$1 selected=$2 result=$3 expected=skipped
+            if [[ "$selected" == true ]]; then expected=success; fi
+            if [[ "$result" != "$expected" ]]; then
+              echo "::error::$suite finished with $result (expected $expected)."
+              return 1
+            fi
+          }
+          check_result "Coverage" "$RUN_COVERAGE" "$COVERAGE"
+          check_result "Locked pytest" "$RUN_EVAL" "$EVAL"
+          check_result "Tree-sitter ABI" "$RUN_ABI" "$ABI"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: fromJSON(inputs.plan).release
         with:
