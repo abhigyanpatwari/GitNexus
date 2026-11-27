@@ -1425,6 +1425,7 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
     '--color=never',
     '--src-prefix=a/',
     '--dst-prefix=b/',
+    '--inter-hunk-context=0',
   ];
   switch (scope) {
     case 'staged':
