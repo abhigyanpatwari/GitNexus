@@ -260,7 +260,7 @@ export const en = {
     '360-degree view of a code symbol: callers, callees, processes',
   'help.command.impact.description': 'Blast radius analysis: what breaks if you change a symbol',
   'help.command.trace.description':
-    'Find the shortest directed path between two symbols (call + class-member edges)',
+    'Find the shortest directed path between two symbols (call + class-member edges); each endpoint takes a name or its --from-uid/--to-uid (a lone name always fills from)',
   'help.command.cypher.description': 'Execute raw Cypher query against the knowledge graph',
   'help.command.detectChanges.description':
     'Map git diff hunks to indexed symbols and affected execution flows',
