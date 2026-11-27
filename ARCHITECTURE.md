@@ -188,7 +188,7 @@ converging on the routes phase's `(method, url)` registry:
 | Filesystem convention | path → URL, no parsing | Next.js `app/`, Expo, PHP |
 | Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
 | Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
-| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS (`@Controller` + `@Get`/`@Post`/…; URLs are controller-relative — `setGlobalPrefix` and URI versioning live in the bootstrap file and are not applied), **JS/TS dispatch guards and static data route tables** |
+| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS (`@Controller` + `@Get`/`@Post`/…, including the handlers a controller inherits from a base class declared in the same file — a base class imported from another file is not followed; URLs are controller-relative — `setGlobalPrefix` and URI versioning live in the bootstrap file and are not applied), **JS/TS dispatch guards and static data route tables** |
 | Cross-file AST route facts | `extractRouteFacts` + `resolveRouteFacts` | Express apps/routers and their mount paths; directly proven Hono registrations |
 
 The AST-level route hook is the one whose name undersells it. A route is DECLARED by a
@@ -690,11 +690,11 @@ Automatic resource admission uses 75% of effective process/container RAM as a
 fixed process-family ceiling, divided across concurrent analyses. Each phase
 accounts for the main heap, retained supervisor, native pools and headroom;
 parser workers and embedding model/queues use separate phase reservations.
-Parser workers reserve at least the main-heap allocation because Node's process
-heap flag overrides per-worker V8 limits. Automatic main-heap sizing leaves room
-for required worker reservations. Explicit limits never expand the family
+The parser pool enforces each worker's own heap cap, so a worker reserves that
+cap plus native memory; the automatic main heap is sized first, beside the
+required workers, and automatic worker count uses what remains. Explicit limits never expand the family
 ceiling; combinations that cannot fit fail admission.
-This bounds reservations, not operating-system RSS.
+Community-detection workers request the inherited V8 limits and sit outside the parser and embedding reservations. Process RSS can exceed the reserved total.
 
 **Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
@@ -844,6 +844,8 @@ Node IDs use arity suffix (`#<paramCount>`): `Method:file:Class.method#1` vs `#2
 **Generic/template types:** type-hash uses `rawType` (full AST text including generics): `~vector<int>` vs `~vector<std::string>`.
 
 **ID stability:** collision-only tags mean IDs change when overloads are added. `save#1` becomes `save#1~int` when `save(String)` is added.
+
+Java distinguishes colliding variadic methods and constructors by their declared parameter types, for example `#1~String...`. Generic signatures also include the declared type-parameter bounds. When several types in one Java file share a simple name, their graph IDs use their qualified identities so calls can point to distinct declarations.
 
 **Variadic matching:** confidence 0.7 when one side is variadic and the other has fixed count.
 

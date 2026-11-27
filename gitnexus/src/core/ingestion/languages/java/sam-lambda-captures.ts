@@ -18,7 +18,7 @@ export function javaLambdaArgument(lambda: SyntaxNode): SyntaxNode {
 
 /** The names an implicitly typed lambda declares (`x`, `(x, y)`, `(var x)`);
  * `undefined` for an explicitly typed or empty parameter list. */
-function implicitParameterNames(lambda: SyntaxNode): SyntaxNode[] | undefined {
+export function implicitParameterNames(lambda: SyntaxNode): SyntaxNode[] | undefined {
   const parameters = lambda.childForFieldName('parameters');
   if (parameters === null) return undefined;
   if (parameters.type === 'identifier') return [parameters];

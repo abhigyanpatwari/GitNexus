@@ -1,8 +1,12 @@
+import { execFile, type ExecFileException } from 'node:child_process';
 import { appendFile, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import lbug from '@ladybugdb/core';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { tsxLoaderUrl } from '../helpers/cli-entry.js';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { readEmbeddingNodeIds, seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
 import {
@@ -25,18 +29,36 @@ import {
   MAX_INCREMENTAL_MUTATION_ROWS,
 } from '../../src/core/incremental/compaction-policy.js';
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-});
+// Vitest can finish a timed-out test before its async body reaches finally.
+// Keep the connection and mocks owned until even the body's cleanup has returned.
+let nativeOwner: string | undefined;
+function useNativeConnection(): Disposable {
+  if (nativeOwner) throw new Error(`LadybugDB is still in use by ${nativeOwner}`);
+  nativeOwner = expect.getState().currentTestName ?? 'the previous test';
+  let release!: () => void;
+  const done = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  onTestFinished(() => done);
+  return {
+    [Symbol.dispose]() {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      nativeOwner = undefined;
+      release();
+    },
+  };
+}
 
 const options = { skipAgentsMd: true, skipSkills: true };
 const callbacks = { onProgress: () => {} };
+const analysisTimeout = 120_000;
 
 describe('hybrid graph writes (real LadybugDB)', () => {
   it.each([MAX_INCREMENTAL_MUTATION_ROWS - 1, MAX_INCREMENTAL_MUTATION_ROWS])(
     'selects the write plan at the persisted footprint boundary (%s rows)',
     async (rows) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo('gitnexus-hybrid-boundary-');
       const { lbugPath } = getStoragePaths(repo.dbPath);
       const relative = 'src/isolated.ts';
@@ -49,13 +71,13 @@ describe('hybrid graph writes (real LadybugDB)', () => {
         await runFullAnalysis(repo.dbPath, options, callbacks);
         await adapter.initLbug(lbugPath);
         const existing = await persistedMutationRows(writePaths, MAX_INCREMENTAL_MUTATION_ROWS);
-        await adapter.executeWithReusedStatement(
-          'CREATE (:Function {id: $id, name: $name, filePath: $filePath})',
-          Array.from({ length: rows - existing }, (_, i) => ({
-            id: `Function:${relative}:old${i}`,
-            name: `old${i}`,
+        await adapter.executePrepared(
+          'UNWIND $names AS name CREATE (:Function {id: $prefix + name, name: name, filePath: $filePath})',
+          {
+            names: Array.from({ length: rows - existing }, (_, i) => `old${i}`),
+            prefix: `Function:${relative}:`,
             filePath: relative,
-          })),
+          },
         );
         expect(await persistedMutationRows(writePaths, MAX_INCREMENTAL_MUTATION_ROWS)).toBe(rows);
         await adapter.closeLbug();
@@ -80,6 +102,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   it.each(['delete', 'rename'] as const)(
     'keeps a small file %s selective',
     async (mode) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo('gitnexus-hybrid-removed-');
       try {
         initGitRepo(repo.dbPath);
@@ -106,6 +129,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   it.each(['corrupt', 'version', 'missing', 'periodic', 'dirty'] as const)(
     'recovers an unreadable old graph without discarding its bytes (%s)',
     async (mode) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo('gitnexus-hybrid-unreadable-');
       const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
       try {
@@ -183,6 +207,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   it.each(['periodic', 'mutation'] as const)(
     'stops before compaction when the real cache schema probe fails (%s)',
     async (mode) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo('gitnexus-hybrid-probe-failure-');
       const { storagePath } = getStoragePaths(repo.dbPath);
       try {
@@ -237,6 +262,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   );
 
   it('keeps small edits incremental and compacts at the update deadline even without a source edit', async () => {
+    using _connection = useNativeConnection();
     const repo = await setupMiniRepo('gitnexus-hybrid-periodic-');
     const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
     try {
@@ -284,6 +310,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   it.each(['missing', 'grown'] as const)(
     'rebuilds a %s compact baseline before an unchanged-snapshot no-op',
     async (mode) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo(`gitnexus-hybrid-${mode}-`);
       const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
       try {
@@ -318,51 +345,58 @@ describe('hybrid graph writes (real LadybugDB)', () => {
     120_000,
   );
 
-  it('selects COPY for a large mutation contained in one file', async () => {
-    const repo = await setupMiniRepo('gitnexus-hybrid-large-file-');
-    try {
-      await runFullAnalysis(repo.dbPath, options, callbacks);
-      initGitRepo(repo.dbPath);
-      await writeFile(
-        path.join(repo.dbPath, 'src/generated.ts'),
-        Array.from(
-          { length: MAX_INCREMENTAL_MUTATION_ROWS + 1 },
-          (_, i) => `export function generated${i}() { return ${i}; }`,
-        ).join('\n'),
-      );
-      commitAll(repo.dbPath, 'add one large source file');
-      const logs: string[] = [];
-      const result = await runFullAnalysis(repo.dbPath, options, {
-        ...callbacks,
-        onLog: (message) => logs.push(message),
-      });
-      expect(result.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'full' });
-      expect(logs.some((message) => message.includes('2000 graph rows'))).toBe(true);
+  it(
+    'selects COPY for a large mutation contained in one file',
+    async ({ signal }) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-large-file-');
+      const source = path.join(repo.dbPath, 'src/generated.ts');
+      const runner = fileURLToPath(new URL('../helpers/large-mutation-copy.ts', import.meta.url));
+      // Vitest can start the next case while a timed-out native query is still running (#4047).
+      // Each analysis owns its connection. execFile waits for exit before we reuse the database.
+      async function analyze(phase: 'baseline' | 'growth' | 'shrink', expectedFunctions?: number) {
+        signal.throwIfAborted();
+        const args = ['--import', tsxLoaderUrl(), runner, repo.dbPath];
+        if (expectedFunctions !== undefined) args.push(String(expectedFunctions));
+        await promisify(execFile)(process.execPath, args, {
+          env: {
+            ...process.env,
+            GITNEXUS_HOME: path.join(repo.dbPath, '.git', 'gitnexus-home'),
+            GITNEXUS_STORAGE_PATH: undefined,
+            GITNEXUS_STORAGE_ROOT: undefined,
+          },
+          timeout: analysisTimeout,
+          killSignal: 'SIGKILL',
+        }).catch((error: ExecFileException) => {
+          throw new Error(`LadybugDB ${phase} analysis failed (${error.signal ?? error.code}).`, {
+            cause: error,
+          });
+        });
+      }
+      try {
+        initGitRepo(repo.dbPath);
+        await analyze('baseline');
+        // Each function contributes a node and a DEFINES edge to the mutation budget.
+        const functions = Math.ceil(MAX_INCREMENTAL_MUTATION_ROWS / 2);
+        await writeFile(
+          source,
+          Array.from({ length: functions }, (_, i) => `export function f${i}() {}`).join('\n'),
+        );
+        commitAll(repo.dbPath, 'add one large source file');
+        await analyze('growth', functions);
 
-      // The deleting half of a replacement matters too: the file still exists,
-      // but none of its thousands of old symbols survive in the fresh graph.
-      await writeFile(path.join(repo.dbPath, 'src/generated.ts'), 'export {};\n');
-      commitAll(repo.dbPath, 'empty the large source file');
-      logs.length = 0;
-      const shrunk = await runFullAnalysis(repo.dbPath, options, {
-        ...callbacks,
-        onLog: (message) => logs.push(message),
-      });
-      expect(shrunk.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'full' });
-      expect(logs.some((message) => message.includes('2000 graph rows'))).toBe(true);
-      await adapter.initLbug(getStoragePaths(repo.dbPath).lbugPath);
-      expect(
-        await adapter.executeQuery(
-          "MATCH (n:Function) WHERE n.filePath = 'src/generated.ts' RETURN count(n) AS count",
-        ),
-      ).toEqual([{ count: 0 }]);
-    } finally {
-      await adapter.closeLbug();
-      await repo.cleanup();
-    }
-  }, 120_000);
+        // Only the persisted rows can put the now-empty file over the threshold.
+        await writeFile(source, 'export {};\n');
+        commitAll(repo.dbPath, 'empty the large source file');
+        await analyze('shrink', 0);
+      } finally {
+        await repo.cleanup();
+      }
+    },
+    3 * analysisTimeout + 30_000,
+  );
 
   it('keeps compaction counters independent across small repositories', async () => {
+    using _connection = useNativeConnection();
     const first = await setupMiniRepo('gitnexus-hybrid-first-');
     const second = await setupMiniRepo('gitnexus-hybrid-second-');
     try {
@@ -390,6 +424,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   it.each([false, true])(
     'preserves underreported vectors during periodic compaction unless explicitly dropped (drop=%s)',
     async (dropEmbeddings) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo('gitnexus-hybrid-vectors-');
       const { storagePath } = getStoragePaths(repo.dbPath);
       try {
@@ -430,6 +465,7 @@ describe('hybrid graph writes (real LadybugDB)', () => {
   );
 
   it('does not advance the compact baseline when preserving old vectors fails', async () => {
+    using _connection = useNativeConnection();
     const repo = await setupMiniRepo('gitnexus-hybrid-cache-failure-');
     const { storagePath } = getStoragePaths(repo.dbPath);
     try {
@@ -469,6 +505,7 @@ describe('incremental graph identity before publication', () => {
   it.each([false, true])(
     'does not advance the compaction receipt after a final checkpoint failure (force=%s)',
     async (force) => {
+      using _connection = useNativeConnection();
       const repo = await setupMiniRepo('gitnexus-hybrid-final-checkpoint-');
       const { storagePath } = getStoragePaths(repo.dbPath);
       try {
@@ -499,6 +536,7 @@ describe('incremental graph identity before publication', () => {
   );
 
   it('chooses a full write before selective mutation when manual checkpoints are disabled', async () => {
+    using _connection = useNativeConnection();
     vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
     const repo = await setupMiniRepo('gitnexus-test-checkpoint-opt-out-');
     const { storagePath } = getStoragePaths(repo.dbPath);
@@ -530,6 +568,7 @@ describe('incremental graph identity before publication', () => {
   }, 120_000);
 
   it('retries a transient checkpoint I/O failure at the final publication gate', async () => {
+    using _connection = useNativeConnection();
     const repo = await setupMiniRepo('gitnexus-test-final-checkpoint-retry-');
     const { storagePath } = getStoragePaths(repo.dbPath);
     try {
@@ -562,6 +601,7 @@ describe('incremental graph identity before publication', () => {
     }
   }, 120_000);
   it('matches native CSV normalization for nullable, absent-range and Unicode identity fields', async () => {
+    using _connection = useNativeConnection();
     const repo = await setupMiniRepo('gitnexus-test-identity-parity-');
     const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
     const graph = createKnowledgeGraph();
@@ -590,7 +630,7 @@ describe('incremental graph identity before publication', () => {
       // own real persistence coverage in embedding-identity-integrity.test.ts.
       id: 'Function:src/Å.ts:王',
       label: 'Function',
-      properties: { name: '王\r\n\uD800', filePath: 'src/Å.ts' },
+      properties: { name: `王\r\n${String.fromCharCode(0xd800)}`, filePath: 'src/Å.ts' },
     });
     try {
       await adapter.initLbug(lbugPath, { skipFts: true });
@@ -623,6 +663,7 @@ describe('incremental graph identity before publication', () => {
   ])(
     'refuses freshness after $phase failure (atomic=$atomicIncremental)',
     async ({ phase, atomicIncremental }) => {
+      using _connection = useNativeConnection();
       // Windows uses in-place writes even when a caller requests staging.
       const expectsStaging = atomicIncremental && process.platform !== 'win32';
       const repo = await setupMiniRepo('gitnexus-test-write-integrity-');

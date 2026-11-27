@@ -1,0 +1,1 @@
+package i3p; public class Base { private @interface Getter {} }

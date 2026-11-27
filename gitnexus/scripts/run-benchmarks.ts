@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 // Discover the opt-in suites from source so a new benchmark cannot silently
 // miss a hand-maintained workflow list. Keep wall-clock measurements serial.
-const files = globSync('test/**/*.test.ts', { cwd: root })
+const files = globSync('test/{unit,integration}/**/*.test.ts', { cwd: root })
+  .map((file) => file.replaceAll('\\', '/'))
   .filter((file) =>
     /process\.env(?:\.GITNEXUS_BENCH|\[['"]GITNEXUS_BENCH['"]\])/.test(
-      readFileSync(new URL(`../${file.replaceAll('\\', '/')}`, import.meta.url), 'utf8'),
+      readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'),
     ),
   )
   .sort();

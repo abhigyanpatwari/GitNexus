@@ -1,0 +1,5 @@
+<project>
+  <parent><groupId>com.example</groupId><artifactId>parent</artifactId><version>1</version></parent>
+  <artifactId>shared-lib</artifactId>
+  <dependencies></dependencies>
+</project>

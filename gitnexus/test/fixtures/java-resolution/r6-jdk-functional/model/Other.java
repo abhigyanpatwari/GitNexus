@@ -1,0 +1,1 @@
+package model; public class Other { public void audit() {} }

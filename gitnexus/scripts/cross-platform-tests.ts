@@ -203,7 +203,6 @@ const LBUG_NATIVE = [
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',
-  'test/integration/java-overload-impact-persistence.test.ts',
   'test/integration/dangling-owner-edges.test.ts',
   'test/integration/impact-private-type-file-seed.test.ts',
   'test/integration/impact-private-type-source.test.ts',
@@ -220,7 +219,6 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-csharp.test.ts',
   'test/integration/rename-provider-dart.test.ts',
   'test/integration/rename-provider-go.test.ts',
-  'test/integration/rename-provider-java.test.ts',
   'test/integration/rename-provider-javascript.test.ts',
   'test/integration/rename-provider-kotlin.test.ts',
   'test/integration/rename-provider-objective-c.test.ts',
@@ -278,8 +276,9 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
-  // Runs the route extractor's two symbol queries against a real engine.
-  'test/integration/http-route-symbol-batch.test.ts',
+  // Group sync leases a real pool entry across extraction; the idle sweep and
+  // LRU eviction it guards against close native handles.
+  'test/integration/group/sync-extraction-lease.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
@@ -326,10 +325,12 @@ const LBUG_NATIVE = [
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
-  'test/integration/resolvers/java-javac-overloads.test.ts',
   // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
   'test/unit/shard-timings-roundtrip.test.ts',
   'test/unit/run-cross-platform.test.ts',
+  // Spawns Node on the tree releaser's source (type stripping, file URLs) to
+  // check its real V8 nudge and the zero-fill flag spellings.
+  'test/unit/tree-sitter/native-tree-release.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
@@ -408,8 +409,6 @@ const WORKER_THREADS = [
   // warm parse-cache and ParsedFile-store path (#2982).
   'test/integration/cfg/adonis-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
-  'test/integration/java-imported-return-types.test.ts',
-  'test/integration/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/worker-pool-admission.test.ts',
@@ -421,9 +420,6 @@ const WORKER_THREADS = [
   'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
-  // Lombok accessor, constructor-DI and workspace-proof facts through a real
-  // parse worker (cold) and the warm cache replay.
-  'test/integration/java-lombok-worker-cache.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -449,8 +445,6 @@ const FILESYSTEM = [
   'test/unit/dart-package-imports.test.ts',
   // Verify the same capture is reused by native parsing and scope resolution.
   'test/integration/resolvers/dart.test.ts',
-  // Exercise non-ASCII Java package paths and file names on each platform.
-  'test/integration/java-non-ascii-names.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

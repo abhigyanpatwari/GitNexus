@@ -581,12 +581,9 @@ function classOfDeclaredType(
  * unique. A qualified miss is authoritative: the bare `rawName` cannot name
  * a different package's declaration just because it is unique in the repo.
  *
- * FROM THE MODULE SCOPE, not from `declaredAtScope`. The hook's qualifier names
- * a file-level import, and `declaredAtScope` is where the BINDING lives — a
- * scope that can bind the qualifier's own name. `vault *vault.Vault` as a field,
- * a parameter or a local is ordinary code, and asked from there the qualifier
- * `vault` found the receiver itself rather than the import, so the namespace
- * branch had no target files and the bare fallback refused the ambiguous name.
+ * Use the scope selected by the provider for lexical imports. For a plain
+ * spelling, start at the module so a parameter named after its file-level
+ * import (`vault *vault.Vault`) does not hide the qualifier.
  *
  * Exported for the simple-typeBinding case in `receiver-bound-calls`, so a
  * receiver typed through a field and one typed through a parameter cannot
@@ -604,9 +601,13 @@ export function classOfQualifiedTypeSpelling(
   const qualified = qualifiedTypeLookupSpelling?.(typeRef, scopes);
   if (qualified === null) return null;
   if (qualified === undefined || qualified === typeRef.rawName) return undefined;
-  const importScope = moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope;
+  const spelling = typeof qualified === 'string' ? qualified : qualified.spelling;
+  const importScope =
+    typeof qualified === 'string'
+      ? (moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope)
+      : qualified.scope;
   return (
-    resolveClassBindingForName(importScope, qualified, scopes, undefined, {
+    resolveClassBindingForName(importScope, spelling, scopes, undefined, {
       ...lookup,
       namespaceMemberVisible,
       uniqueQualifiedNameFallback: false,

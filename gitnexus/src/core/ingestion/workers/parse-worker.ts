@@ -1115,6 +1115,7 @@ const enclosingFunctionIdAt = (
       // When same-arity collisions exist, also append ~type1,type2.
       let arity: number | undefined;
       let encTypeTag = '';
+      let graphIdSuffix = standaloneMethodInfo?.graphIdSuffix;
       if (finalLabel === 'Method' || finalLabel === 'Constructor') {
         if (standaloneMethodInfo) {
           arity = standaloneMethodInfo.parameters.some((p) => p.isVariadic)
@@ -1136,6 +1137,12 @@ const enclosingFunctionIdAt = (
             const info = methodMap?.get(
               methodInfoKey(funcName, defLine, current.startPosition.column),
             );
+            graphIdSuffix = info
+              ? info.graphIdSuffix
+              : provider.methodExtractor?.extractFromNode?.(current, {
+                  filePath,
+                  language: encLang,
+                })?.graphIdSuffix;
             if (info) {
               arity = info.parameters.some((p) => p.isVariadic)
                 ? undefined
@@ -1150,7 +1157,7 @@ const enclosingFunctionIdAt = (
           }
         }
       }
-      const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
+      const arityTag = graphIdSuffix ?? (arity !== undefined ? `#${arity}${encTypeTag}` : '');
       const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
       return result;
     }
@@ -1190,6 +1197,7 @@ const enclosingFunctionIdAt = (
       const sigNode = current.previousSibling ?? current;
       let arity2: number | undefined;
       let encTypeTag2 = '';
+      let graphIdSuffix2: string | undefined;
       if (finalLabel === 'Method' || finalLabel === 'Constructor') {
         const encLang2 = getLanguageFromFilename(filePath);
         const classNode2 = findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
@@ -1203,6 +1211,7 @@ const enclosingFunctionIdAt = (
             methodInfoKey(customResult.funcName, defLine2, sigNode.startPosition.column),
           );
           if (info2) {
+            graphIdSuffix2 = info2.graphIdSuffix;
             arity2 = info2.parameters.some((p) => p.isVariadic)
               ? undefined
               : info2.parameters.length;
@@ -1215,7 +1224,7 @@ const enclosingFunctionIdAt = (
           }
         }
       }
-      const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
+      const arityTag2 = graphIdSuffix2 ?? (arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '');
       const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
       return result;
     }
@@ -2570,7 +2579,8 @@ const processFileGroupFiles = (
             : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
               // scope id keys the worker-path node, matching the sequential path.
               (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
-                provider.classExtractor?.qualifiedNodeId === true &&
+                (extractedClassSymbol?.qualifiedNodeId ??
+                  provider.classExtractor?.qualifiedNodeId) === true &&
                 qualifiedTypeName !== undefined
               ? qualifiedTypeName
               : nestedCallablePrefix !== undefined && definitionNode
@@ -2692,6 +2702,7 @@ const processFileGroupFiles = (
             enrichedByMethodExtractor = true;
             arityForId = arityForIdFromInfo(info);
             methodProps = buildMethodProps(info);
+            defMethodInfo = info;
           }
         }
       }
@@ -2724,6 +2735,7 @@ const processFileGroupFiles = (
         );
         arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, groups);
       }
+      if (defMethodInfo?.graphIdSuffix !== undefined) arityTag = defMethodInfo.graphIdSuffix;
       const parameterShapeTag =
         nodeLabel === 'Function' || nodeLabel === 'Method'
           ? parameterShapeIdTag(

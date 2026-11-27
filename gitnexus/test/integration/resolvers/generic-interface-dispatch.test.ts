@@ -28,7 +28,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from './helpers.js';
+} from '../../integration/resolvers/helpers.js';
 
 /** Files a dispatch edge out of `caller` landed in, deduped and sorted. */
 function dispatchTargetFiles(result: PipelineResult, caller: string, member: string): string[] {
@@ -213,49 +213,6 @@ describe('C# non-generic interface dispatch is unaffected (#2912)', () => {
 
   it('fans out to every implementor when no generics are involved', () => {
     expect(dispatchTargetFiles(result, 'Run', 'Greet')).toEqual(['Loud.cs', 'Quiet.cs']);
-  });
-});
-
-describe('Java generic interface dispatch (#2912)', () => {
-  let result: PipelineResult;
-  let root: string;
-
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-generic-dispatch-'));
-    writeFixtureRepo(root, {
-      'Validator.java': `package probe;
-        public interface Validator<T> { boolean check(T item); }`,
-      'StringValidator.java': `package probe;
-        public class StringValidator implements Validator<String> {
-          public boolean check(String item) { return true; }
-        }`,
-      'NumberValidator.java': `package probe;
-        public class NumberValidator implements Validator<Integer> {
-          public boolean check(Integer item) { return true; }
-        }`,
-      'Runner.java': `package probe;
-        public class Runner {
-          public boolean run(Validator<String> v) { return v.check("x"); }
-          public <T> boolean runAny(Validator<T> v, T item) { return v.check(item); }
-        }`,
-    });
-    result = await runPipelineFromRepo(root, () => {});
-  }, 60000);
-
-  afterAll(() => {
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  it('reaches only the implementor of the receiver instantiation', () => {
-    const targets = dispatchTargetFiles(result, 'run', 'check');
-    expect(targets).toContain('StringValidator.java');
-    expect(targets).not.toContain('NumberValidator.java');
-  });
-
-  it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {
-    const targets = dispatchTargetFiles(result, 'runAny', 'check');
-    expect(targets).toContain('StringValidator.java');
-    expect(targets).toContain('NumberValidator.java');
   });
 });
 

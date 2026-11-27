@@ -21,8 +21,8 @@ function synthesizedCaptureFingerprint(): string {
   const hash = createHash('sha256');
   for (const file of files) {
     const absolute = path.join(root, file);
-    const captures = emitTsScopeCaptures(readFileSync(absolute, 'utf8'), absolute).filter(
-      (capture) => tags.some((tag) => capture[tag]),
+    const captures = emitTsScopeCaptures(readFileSync(absolute, 'utf8'), file).filter((capture) =>
+      tags.some((tag) => capture[tag]),
     );
     // Preserve match order: equal-strength bindings can depend on arrival order.
     hash.update(JSON.stringify([file, captures])).update('\n');
@@ -32,11 +32,45 @@ function synthesizedCaptureFingerprint(): string {
 
 describe('TypeScript synthesized capture order', () => {
   it('preserves the ordered synthesized capture stream across the TypeScript fixture corpus', () => {
-    // Recorded from the full-tree traversal before the native-selection change;
-    // re-recorded when #3532 added @reference.lookup-purpose (match order unchanged).
+    // Tuple captures retain actual positions and narrowings now anchor proven
+    // receiver expressions. Scope IDs use fixture-relative paths.
     expect(synthesizedCaptureFingerprint()).toBe(
-      '2b848e344e6314b48277befdae8093cccadc3f7543fe71b0566756d5eb4b2ce0',
+      '45398b3b7f30e2a6060e000cd6b7ee7a7369796522b168c675bc8488eb2e05de',
     );
+  });
+
+  describe('guards after writes to the receiver', () => {
+    it.each([
+      ['sequence', 'if (x instanceof A) { x.before(), x = b, x.after(); }', ['before']],
+      ['unbraced loop', 'if (x instanceof A) for (; run(); x.after()) { x = b; }', []],
+      [
+        'type assertion',
+        'if (x instanceof A) { x.before(); (<any>x) = b; x.after(); }',
+        ['before'],
+      ],
+      [
+        'satisfies',
+        'if (x instanceof A) { x.before(); (x satisfies A) = b; x.after(); }',
+        ['before'],
+      ],
+      [
+        'closure',
+        'function replace() { x = b; } if (x instanceof A) { replace(); x.after(); }',
+        [],
+      ],
+      ['shadow', 'if (x instanceof A) { { let x = b; x.after(); } x.before(); }', ['before']],
+      ['write before guard', 'x = b; if (x instanceof A) { x.before(); }', ['before']],
+      ['hoisted write', 'if (x instanceof A) { x.before(); var x = b; x.after(); }', ['before']],
+    ] as const)('keeps the proven member uses for %s', (_name, body, expected) => {
+      const source = `function run(x: A | B, b: B) { ${body} }`;
+      const names = emitTsScopeCaptures(source, 'guard.ts')
+        .filter((match) => match['@type-binding.instanceof-narrow'])
+        .map((match) => {
+          const column = match['@type-binding.name'].range.endCol;
+          return source.slice(column + 1, source.indexOf('(', column));
+        });
+      expect(names).toEqual(expected);
+    });
   });
 
   it('keeps parents before nested classes and visits sibling classes right to left', () => {
@@ -105,19 +139,29 @@ describe('TypeScript synthesized capture order', () => {
     ]);
   });
 
-  it('keeps outer narrowings ahead of nested if statements and visits else first', () => {
+  it('uses the nearest guard for each receiver and leaves sibling branches alone', () => {
     const captures = emitTsScopeCaptures(
-      `if (left instanceof Left) {}
-       if (outer instanceof Outer) {
-         if (inner instanceof Inner) {}
-       } else if (alternative instanceof Alternative) {}
-       if (right instanceof Right) {}`,
-      'narrowing-order.ts',
+      `function run(value: unknown) {
+         if (value instanceof Outer) {
+           value.outerBefore();
+           if (value instanceof Inner) value.inner();
+           value.outerAfter();
+         } else value.notInBranch();
+         value.afterBranch();
+       }`,
+      'narrowing-boundaries.ts',
     );
     expect(
       captures
         .filter((capture) => capture['@type-binding.instanceof-narrow'])
-        .map((capture) => capture['@type-binding.name']?.text),
-    ).toEqual(['right', 'outer', 'alternative', 'inner', 'left']);
+        .map((capture) => [
+          capture['@type-binding.type'].text,
+          capture['@type-binding.name'].range.startLine,
+        ]),
+    ).toEqual([
+      ['Outer', 3],
+      ['Outer', 5],
+      ['Inner', 4],
+    ]);
   });
 });

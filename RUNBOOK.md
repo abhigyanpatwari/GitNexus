@@ -260,7 +260,8 @@ Orchestrator: `.github/workflows/ci.yml`.
 ## Query memory limit
 
 **Symptom:** a CLI, MCP, or HTTP server process exits with code **70** and
-`GitNexus stopped: process memory reached …` on stderr.
+`GitNexus stopped: process memory (RSS) reached …` or, on macOS,
+`GitNexus stopped: physical footprint reached …` on stderr.
 
 The pooled-read guard detected memory above its process-wide budget. Native
 query allocations are outside both V8's heap limit and LadybugDB's buffer pool.
@@ -268,6 +269,14 @@ The Node binding cannot interrupt them, so the guard exits the process to
 release memory. Every request in that process is interrupted; restart the
 CLI/server or reconnect the MCP client. A read-only query does not require a
 reindex after this exit.
+
+The message lists each running query's starting RSS and elapsed time. On an RSS
+breach, it also reports the net change in process RSS since each query started.
+If every query started above half the final RSS, the headline gives the lowest
+starting value, rounded down. Check earlier work such as source parsing as well
+as the running queries. Memory can be freed and allocated again between samples.
+On macOS, a physical-footprint breach reports starting RSS and elapsed time only,
+because RSS and footprint measure different things.
 
 To diagnose a repeat, set `GITNEXUS_QUERY_TRACE=1` in the query/server environment
 and retain stderr. It includes query text but not bound parameters. Review the
@@ -294,6 +303,8 @@ on a partial result.
 
 ## Memory / analyze crashes
 
+PDG indexing can spill lexical scopes to temporary storage for any language that builds a PDG when V8 heap usage reaches 70%. If the automatic spill cannot write its shards, indexing continues in memory and logs a warning. Check free space in the index storage directory if you see that warning. See [scope index environment settings](docs/cli-reference.md#environment-variables) for explicit disk and resident overrides.
+
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
 
 `--resource-budget <MiB>` admits the analyzer process family within one memory
@@ -304,17 +315,28 @@ embedding model, bounded input queue, and headroom. For example:
 npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 1024 --workers 2
 ```
 
-Node propagates the main V8 heap flag to parser workers, so each worker reserves
-at least the `--memory-budget` allocation. Explicit settings that do not fit
+Each parser worker reserves its old-space cap plus 128 MiB for the young
+generation and native allocations. Raising `--memory-budget`
+leaves less room for worker heaps or additional workers. Explicit settings that do not fit
 the family budget fail before work starts. Without a family override,
 GitNexus fixes the family ceiling at 75% of effective process/container RAM,
 divided among concurrent auto-sync analyses. Automatic heap, worker and native
 pool allocations must fit that ceiling; it never grows to accommodate them.
 Explicit heap, worker or pool requests that cannot fit are rejected before work.
 Small hosts may need an HTTP embedding provider or more RAM for the local model.
-The budget controls
-admission and queue sizes; it is not an operating-system RSS limit. Watch mode
-accepts the same family budget and drains active work before shutdown.
+Community-detection workers and user preload isolates sit outside these reservations.
+An admission error reports the minimum for the allocations at the rejected budget.
+A larger total can also increase headroom and pool sizes, so it may take more
+than that minimum. Watch mode accepts the same family budget and drains active
+work before shutdown.
+
+When setting the heap manually with `GITNEXUS_MEMORY=off`, parser workers keep
+their caps under `--max-old-space-size`, `--max-semi-space-size`,
+`--max-heap-size` and `--max-old-space-size-percentage`, in every spelling Node
+and V8 accept, and other workers keep the main heap those flags give. If V8's
+flags are frozen (`--freeze-flags-after-init`) or the flags analyze reads do not
+match the heap V8 reports, parser workers keep the main heap and admission
+charges each one for it.
 
 `Unable to allocate memory` / `The buffer pool is full` during graph writes
 refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,

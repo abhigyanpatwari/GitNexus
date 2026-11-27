@@ -9,6 +9,11 @@ import { resolveVendoredFtsPath, resolveVendoredVectorPath } from './vendored-ex
  *  CLI startup gate (same bounding rationale as the extension probe below). */
 const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
+// The empty probe only loads an extension. Bound both the buffer pool and the
+// database mapping. Their native defaults use 80% of host RAM and up to 8 TiB.
+// Keep this local so doctor can start when the native addon is missing.
+const PROBE_ALLOCATION_BYTES = 64 * 1024 * 1024;
+
 /**
  * Why the native check failed. A failed check is NOT necessarily a missing
  * binary — the package may be absent, the binary may be absent, a binary that is
@@ -366,7 +371,7 @@ function compareDottedVersions(a: string, b: string): number {
  * via dynamic import from the CLI lazy actions, and this file is the
  * dependency-light startup gate that must not pull it in.
  */
-function hostGlibcVersion(): string | null {
+export function hostGlibcVersion(): string | null {
   try {
     const report = process.report?.getReport() as
       | { header?: { glibcVersionRuntime?: unknown } }
@@ -553,7 +558,13 @@ async function probeExtensionLoad(
   const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
-      const db = new lbug.Database(':memory:');
+      const db = new lbug.Database(
+        ':memory:',
+        PROBE_ALLOCATION_BYTES,
+        undefined,
+        undefined,
+        PROBE_ALLOCATION_BYTES,
+      );
       // Nested finallys so `db` is closed even if the Connection ctor throws.
       try {
         const conn = new lbug.Connection(db);

@@ -1,0 +1,17 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location.args": 1, "compiler.err.doesnt.exist": 1, "compiler.err.foreach.not.applicable.to.type": 1},
+  "calls": [
+    {"caller": "Method:app/Svc.java:Svc.sameClass#0", "member": "save", "source": ["app/Svc.java#10:2"]},
+    {"caller": "Method:app/Svc.java:Svc.crossFile#0", "member": "save", "source": ["app/Svc.java#11:2"]},
+    {"caller": "Method:app/Svc.java:Svc.mapValues#0", "member": "save", "source": ["app/Svc.java#12:2"]},
+    {"caller": "Method:app/Svc.java:Svc.mapKeys#0", "member": "save", "source": ["app/Svc.java#13:2"]},
+    {"caller": "Method:app/Svc.java:Svc.copied#0", "member": "save", "source": ["app/Svc.java#14:2"]},
+    {"caller": "Method:app/Svc.java:Svc.exactOverload#0", "member": "save", "source": ["app/Svc.java#18:2"]},
+    {"caller": "Method:app/Svc.java:Svc.producerImport#0", "member": "save", "source": ["app/Svc.java#15:2"]},
+    {"caller": "Method:shadow/Svc.java:Svc.run#0", "member": "save", "source": ["shadow/Svc.java#4:2"], "targets": 0},
+    {"caller": "Method:app/Svc.java:Svc.typeParameter#0", "member": "save", "source": ["app/Svc.java#16:2"], "targets": 0},
+    {"caller": "Method:app/Svc.java:Svc.methodTypeVariable#0", "member": "save", "published": [], "compilerTargets": ["app/User.java#1:33"], "source": ["app/Svc.java#17:2"]},
+    {"caller": "Method:app/Svc.java:Svc.unknownOverload#1", "member": "save", "source": ["app/Svc.java#19:2"], "targets": 0},
+    {"caller": "Method:app/Svc.java:Svc.exactOverload#0", "member": "*", "source": ["app/Svc.java#18:2"], "targets": 2}
+  ]
+}

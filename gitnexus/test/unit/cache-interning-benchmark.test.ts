@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import v8 from 'node:v8';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const checker = new URL('../../bench/v8-sidecar/check.mjs', import.meta.url);
 const { assessPairs, indexingMetrics, interningMetrics } = await import(checker.href);
@@ -185,6 +186,177 @@ describe('cache interning performance gate', () => {
     expect(() => indexingMetrics({ ...report, graphParity: misbound }, 'fresh')).toThrow(
       /candidate does not match/,
     );
+
+    const expectedReferences = JSON.parse(
+      readFileSync(
+        new URL('../../bench/lib/expected-reference-additions.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    type Digest = { count: number; sha256: string };
+    const [head, { additions, typeOnlyImports }] = Object.entries(expectedReferences)[0] as [
+      string,
+      { additions: Digest; typeOnlyImports: Digest },
+    ];
+    const withAdditions = graphParity.map((receipt) => {
+      const sample = report.results.find((entry) => entry.name === receipt.candidateName);
+      if (!sample) throw new Error(`Missing sample ${receipt.candidateName}`);
+      sample.graph.edges.count += additions.count;
+      return {
+        ...receipt,
+        mode: 'added-references',
+        candidate: structuredClone(sample.graph),
+        additions,
+        typeOnlyImports,
+      };
+    });
+    expect(() =>
+      indexingMetrics({ ...report, corpusTrees: head, graphParity: withAdditions }, 'fresh'),
+    ).not.toThrow();
+    expect(() => indexingMetrics({ ...report, graphParity: withAdditions }, 'fresh')).toThrow(
+      'Unknown reference corpus',
+    );
+    const missingImports = withAdditions.map(
+      ({ typeOnlyImports: _imports, ...receipt }) => receipt,
+    );
+    expect(() =>
+      indexingMetrics({ ...report, corpusTrees: head, graphParity: missingImports }, 'fresh'),
+    ).toThrow('Unexpected type-only imports');
+    const tampered = withAdditions.map((receipt, i) =>
+      i === 1 ? { ...receipt, additions: { ...additions, sha256: 'invented' } } : receipt,
+    );
+    expect(() =>
+      indexingMetrics({ ...report, corpusTrees: head, graphParity: tampered }, 'fresh'),
+    ).toThrow('Unexpected added reference receipt');
+  });
+
+  it('rejects exact parity when every pinned reference addition is absent', async () => {
+    const manifest = new URL('../../bench/lib/expected-reference-additions.json', import.meta.url);
+    const [head] = Object.keys(JSON.parse(readFileSync(manifest, 'utf8')));
+    const source = new URL('../../bench/lexical-lookup/reference-migration.mjs', import.meta.url);
+    const { assertGraphParity } = await import(source.href);
+    const report = indexing();
+    const { graph } = report.results[0];
+    expect(() => assertGraphParity({ graph }, { graph }, '.', head)).toThrow(
+      'Missing expected added reference receipt',
+    );
+    expect(() => indexingMetrics({ ...report, corpusTrees: head }, 'fresh')).toThrow(
+      'Missing expected added reference receipt',
+    );
+  });
+
+  it('accepts only the pinned reference removals', async () => {
+    type Digest = { count: number; sha256: string };
+    const manifest = JSON.parse(
+      readFileSync(
+        new URL('../../bench/lib/expected-reference-additions.json', import.meta.url),
+        'utf8',
+      ),
+    ) as Record<string, { removals?: Digest }>;
+    const pinned = Object.entries(manifest).find(([, entry]) => entry.removals);
+    if (!pinned?.[1].removals) throw new Error('No manifest entry pins a removal');
+    const [head, { removals }] = pinned;
+    // The read the awaited generic call `workerPool.dispatchGroups<…>()` no longer emits.
+    const removed = JSON.stringify({
+      confidence: 1,
+      id: 'rel:ACCESSES:Function:gitnexus/src/core/ingestion/parsing-processor.ts:dispatchChunkParseRound->Method:gitnexus/src/core/ingestion/workers/worker-pool.ts:WorkerPool.dispatchGroups#2:read:398:25:398:50',
+      reason: 'read',
+      sourceId: 'Function:gitnexus/src/core/ingestion/parsing-processor.ts:dispatchChunkParseRound',
+      targetId:
+        'Method:gitnexus/src/core/ingestion/workers/worker-pool.ts:WorkerPool.dispatchGroups#2',
+      type: 'ACCESSES',
+    });
+    const kept = JSON.stringify({
+      id: 'rel:CALLS:a->b:1:0',
+      sourceId: 'a',
+      targetId: 'b',
+      type: 'CALLS',
+    });
+    const imports = JSON.stringify({
+      id: 'rel:IMPORTS:a->b',
+      sourceId: 'a',
+      targetId: 'b',
+      type: 'IMPORTS',
+    });
+    const rowsDigest = (rows: string[]) => {
+      const hash = createHash('sha256');
+      for (const row of [...rows].sort()) hash.update(row).update('\n');
+      return { count: rows.length, sha256: hash.digest('hex') };
+    };
+    const directory = mkdtempSync(path.join(tmpdir(), 'reference-removals-'));
+    try {
+      let files = 0;
+      const sample = (edges: string[]) => {
+        const graphRowsPath = path.join(directory, `graph-${files++}.json`);
+        writeFileSync(graphRowsPath, JSON.stringify({ nodes: ['node'], edges }));
+        return { graph: { nodes: rowsDigest(['node']), edges: rowsDigest(edges) }, graphRowsPath };
+      };
+      const source = new URL('../../bench/lexical-lookup/reference-migration.mjs', import.meta.url);
+      const { assertGraphParity } = await import(source.href);
+      const receipt = assertGraphParity(sample([kept, removed]), sample([kept]), '.', head);
+      expect(receipt.mode).toBe('added-references');
+      expect(receipt.removals).toEqual(removals);
+      expect(() =>
+        assertGraphParity(sample([kept, removed]), sample([removed]), '.', head),
+      ).toThrow('Unexpected removed reference receipt');
+      expect(() =>
+        assertGraphParity(sample([imports, kept, removed]), sample([kept]), '.', head),
+      ).toThrow('Removed a non-reference relationship');
+
+      const report = indexing();
+      const graphParity = Array.from({ length: 10 }, (_, i) => {
+        const suffix = i || 'seed';
+        const baseline = report.results.find((entry) => entry.name === `baseline-${suffix}`);
+        const candidate = report.results.find((entry) => entry.name === `candidate-${suffix}`);
+        if (!baseline || !candidate) throw new Error(`Missing samples ${suffix}`);
+        candidate.graph.edges.count -= removals.count;
+        return {
+          version: 1,
+          mode: 'added-references',
+          baselineName: baseline.name,
+          candidateName: candidate.name,
+          baseline: structuredClone(baseline.graph),
+          candidate: structuredClone(candidate.graph),
+          comparison: structuredClone(baseline.graph),
+          additions: receipt.additions,
+          removals: receipt.removals,
+          typeOnlyImports: receipt.typeOnlyImports,
+        };
+      });
+      expect(() =>
+        indexingMetrics({ ...report, corpusTrees: head, graphParity }, 'fresh'),
+      ).not.toThrow();
+      const unpinned = graphParity.map(({ removals: _removals, ...rest }) => rest);
+      expect(() =>
+        indexingMetrics({ ...report, corpusTrees: head, graphParity: unpinned }, 'fresh'),
+      ).toThrow('Unexpected removed reference receipt');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('loads timing assessment without the reference manifest', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'timing-check-'));
+    try {
+      const bench = new URL('../', checker);
+      for (const file of [
+        'v8-sidecar/check.mjs',
+        'mcp-query/statistics.mjs',
+        'lib/reference-additions.mjs',
+      ]) {
+        const destination = path.join(directory, file);
+        mkdirSync(path.dirname(destination), { recursive: true });
+        copyFileSync(new URL(file, bench), destination);
+      }
+      const isolated = await import(
+        pathToFileURL(path.join(directory, 'v8-sidecar/check.mjs')).href
+      );
+      expect(isolated.assessPairs(Array(8).fill({ baseline: 1, candidate: 1 })).verdict).toBe(
+        'within-budget',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('rejects missing, duplicate, or non-equivalent shard measurements', () => {

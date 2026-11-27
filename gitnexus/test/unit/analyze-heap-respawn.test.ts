@@ -1,6 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
+const allocatorCases = [
+  { limited: true, libc: '2.41', arena: undefined, tunables: undefined, expected: '2' },
+  { limited: false, libc: '2.41', arena: undefined, tunables: undefined, expected: undefined },
+  { limited: true, libc: null, arena: undefined, tunables: undefined, expected: undefined },
+  { limited: true, libc: '2.41', arena: '0', tunables: undefined, expected: '0' },
+  {
+    limited: true,
+    libc: '2.41',
+    arena: undefined,
+    tunables: 'glibc.malloc.arena_max=3',
+    expected: undefined,
+  },
+  {
+    limited: true,
+    libc: '2.41',
+    arena: undefined,
+    tunables: 'glibc.malloc.trim_threshold=65536',
+    expected: '2',
+  },
+];
+
 const spawnMock = vi.fn();
 const getHeapStatisticsMock = vi.fn();
 const npmWarningMock = vi.hoisted(() => vi.fn());
@@ -28,6 +49,17 @@ vi.mock('os', async () => {
   const mocked = { ...actual, totalmem: () => 16 * 1024 * 1024 * 1024 };
   return { ...mocked, default: mocked };
 });
+
+vi.mock('../../src/core/analysis-host-resources.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/analysis-host-resources.js')>()),
+  analysisSupervisorReservation: () => 192 * 1024 ** 2,
+}));
+
+// The admission expectations below describe a host with 4 KiB pages.
+vi.mock('../../src/core/lbug/lbug-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/lbug/lbug-config.js')>()),
+  granuleRatio: () => 1,
+}));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
@@ -71,6 +103,21 @@ const setStreamIsTTY = (stream: NodeJS.WriteStream, value: boolean): (() => void
   };
 };
 
+// Admission on the mocked 16 GiB host (constrainedMemory 0) with the
+// supervisor reservation pinned to 192 MiB. The
+// family ceiling is 75% of RAM, and the main heap takes what the always-counted
+// embedding reservations leave, which exceed the one-worker parse reservation.
+const ADMITTED_TOTAL_MB = Math.floor(16384 * 0.75); // 12288
+const ADMITTED_MAIN_MB =
+  ADMITTED_TOTAL_MB -
+  (Math.ceil(ADMITTED_TOTAL_MB * 0.12) + // headroom 1475
+    192 + // supervisor floor
+    Math.floor(ADMITTED_TOTAL_MB * 0.15) + // graph pool 1843
+    Math.floor(ADMITTED_TOTAL_MB / 8) + // vector pool 1536
+    Math.floor(ADMITTED_TOTAL_MB / 32)); // embedding queues 384 -> 6858
+// The respawn gives that heap as old space plus three 128 MiB semi-spaces.
+const ADMITTED_OLD_SPACE_FLAG = `--max-old-space-size=${ADMITTED_MAIN_MB - 3 * 128}`;
+
 describe('analyzeCommand heap respawn', () => {
   let initialNodeOptions: string | undefined;
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
@@ -109,6 +156,60 @@ describe('analyzeCommand heap respawn', () => {
     if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = initialNodeOptions;
   });
+
+  it.each([
+    // Admission fits several parser workers here; they parse under the guard too.
+    [undefined, undefined, '2'],
+    ['1', undefined, '2'],
+    // An operator's arena policy always wins.
+    [undefined, '8', '8'],
+  ] as const)(
+    'keeps two allocator arenas for the constrained PDG build with --workers %s and MALLOC_ARENA_MAX %s',
+    async (workers, operatorArenas, expected) => {
+      const os = (await import('node:os')).default;
+      const cpus = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+      const native = await import('../../src/core/lbug/native-check.js');
+      const libc = vi.spyOn(native, 'hostGlibcVersion').mockReturnValue('2.41');
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform') ?? {};
+      vi.stubEnv('MALLOC_ARENA_MAX', operatorArenas);
+      vi.stubEnv('GLIBC_TUNABLES', undefined);
+      vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', undefined);
+      vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', undefined);
+      // No heap flag is set here, so V8's default limit is the live one.
+      getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4144 * 1024 ** 2 });
+      try {
+        if (workers === undefined) {
+          const { resolveHostAnalysisResources } =
+            await import('../../src/core/analysis-host-resources.js');
+          const admitted = resolveHostAnalysisResources({
+            totalMb: 6144,
+            mainHeapMb: 1600,
+            includeEmbeddings: false,
+            supervisorBytes: 192 * 1024 ** 2,
+          });
+          expect(admitted.parse.workers).toBeGreaterThan(1);
+        }
+        mockSpawnExit();
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+        // glibc arenas exist only on Linux; take that branch on every host.
+        Object.defineProperty(process, 'platform', { value: 'linux' });
+        await analyzeCommand(undefined, {
+          pdg: true,
+          resourceBudget: '6144',
+          memoryBudget: '1600',
+          workers,
+        });
+        expect(spawnMock).toHaveBeenCalledOnce();
+        const child = spawnMock.mock.calls[0][2].env;
+        expect(child.MALLOC_ARENA_MAX).toBe(expected);
+      } finally {
+        Object.defineProperty(process, 'platform', platform);
+        cpus.mockRestore();
+        libc.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('defers npm subprocess probes until the admitted working process', async () => {
     delete process.env.NODE_OPTIONS;
@@ -151,10 +252,10 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=3916');
+    expect(args).toContain(ADMITTED_OLD_SPACE_FLAG);
     expect(args).toContain('--max-semi-space-size=128');
-    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=3916');
-    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe('4300');
+    expect(opts.env.NODE_OPTIONS).toContain(ADMITTED_OLD_SPACE_FLAG);
+    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe(String(ADMITTED_MAIN_MB));
     expect(opts.env.NODE_OPTIONS).toContain('--max-semi-space-size=128');
     expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBe('1');
   });
@@ -186,7 +287,8 @@ describe('analyzeCommand heap respawn', () => {
 
   it('re-execs with the auto cap when ambient NODE_OPTIONS pins a smaller heap (#2649)', async () => {
     process.env.NODE_OPTIONS = '--max-old-space-size=4096';
-    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
+    // What V8 gives that pin: its old space plus a 48 MiB young generation.
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: (4096 + 48) * 1024 * 1024 });
     mockSpawnExit();
 
     const { _captureLogger } = await import('../../src/core/logger.js');
@@ -197,14 +299,16 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=3916');
+    expect(args).toContain(ADMITTED_OLD_SPACE_FLAG);
     // The auto flag is appended after the ambient value, so V8's
     // later-flag-wins semantics resolve to the admitted whole-heap cap.
-    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=3916')).toBeGreaterThan(
+    expect(opts.env.NODE_OPTIONS.indexOf(ADMITTED_OLD_SPACE_FLAG)).toBeGreaterThan(
       opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=4096'),
     );
     const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
-    expect(warn?.msg).toContain('Re-running analyze with the admitted 4300MB main heap');
+    expect(warn?.msg).toContain(
+      `Re-running analyze with the admitted ${ADMITTED_MAIN_MB}MB main heap`,
+    );
   });
 
   it('honors GITNEXUS_MEMORY=off: keeps the small ambient heap, silently (#2649)', async () => {
@@ -248,6 +352,9 @@ describe('analyzeCommand heap respawn', () => {
     expect(parseMaxOldSpaceMb('--max-semi-space-size=128')).toBeNull();
     expect(parseMaxOldSpaceMb('')).toBeNull();
     expect(parseMaxOldSpaceMb('--max-old-space-size=0')).toBeNull();
+    expect(parseMaxOldSpaceMb('--max-old-space-size="1536"')).toBe(1536);
+    expect(parseMaxOldSpaceMb('--require "module --max-old-space-size=800"')).toBeNull();
+    expect(parseMaxOldSpaceMb(['--eval', '--max-old-space-size=800'])).toBeNull();
     // V8 treats - and _ interchangeably in flag names, and Node accepts a
     // space-separated value in NODE_OPTIONS; every spelling of the pin must
     // be honored instead of silently overridden.
@@ -774,7 +881,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     expect({ args, source: opts.env.GITNEXUS_HEAP_LIMIT_SOURCE, records: cap.records() }).toEqual({
       args: [
         ...preserved,
-        '--max-old-space-size=3916',
+        ADMITTED_OLD_SPACE_FLAG,
         '--max-semi-space-size=128',
         '--stack-size=4096',
         ...process.argv.slice(1),
@@ -794,6 +901,28 @@ describe('ensureHeap --memory-budget (#3137)', () => {
       source: 'auto',
     });
   });
+
+  it.each(allocatorCases)(
+    'selects the child allocator without changing the parent: %j',
+    async function checkAllocatorInheritance({ limited, libc, arena, tunables, expected }) {
+      const native = await import('../../src/core/lbug/native-check.js');
+      const host = vi.spyOn(native, 'hostGlibcVersion').mockReturnValue(libc);
+      vi.stubEnv('MALLOC_ARENA_MAX', arena);
+      vi.stubEnv('GLIBC_TUNABLES', tunables);
+      try {
+        mockSpawnExit();
+        const { ensureHeap } = await import('../../src/cli/analyze.js');
+        await ensureHeap({ admittedHeapMb: 2000, limitMallocArenas: limited });
+        const child = spawnMock.mock.calls[0][2].env;
+        expect(child.MALLOC_ARENA_MAX).toBe(process.platform === 'linux' ? expected : arena);
+        expect(child.GLIBC_TUNABLES).toBe(tunables);
+        expect(process.env.MALLOC_ARENA_MAX).toBe(arena);
+      } finally {
+        host.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('the admitted automatic-heap OOM message names both heap and family overrides', async () => {
     mockSpawnExit({ status: null, signal: 'SIGABRT' });

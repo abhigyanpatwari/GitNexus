@@ -65,6 +65,8 @@ import { TransitionalScopeTree } from '../../storage/scope-index-store.js';
  * #922 will populate `hooks.resolveImportTarget` + friends per language.
  */
 export interface FinalizeOrchestratorOptions {
+  /** Prepare a resident tree that can release its bindings to disk before emission. */
+  readonly spillableScopeTree?: boolean;
   /**
    * Hooks forwarded to shared `finalize()`. Any omitted field gets a
    * no-op default: unresolved targets, empty wildcard expansion, append
@@ -127,13 +129,10 @@ export function finalizeScopeModel(
     moduleEntries.push({ filePath: file.filePath, moduleScopeId: file.moduleScope });
   }
 
-  // Out-of-core scope index: when enabled, build a TransitionalScopeTree
-  // (validated + fully resident now; sealed to disk by run.ts just before emit so
-  // the heavy Scope.bindings payload is reclaimed). Default off → the in-heap
-  // buildScopeTree result exactly, byte-identical.
-  const scopeTree = parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX)
-    ? new TransitionalScopeTree(allScopes)
-    : buildScopeTree(allScopes);
+  const scopeTree =
+    (options.spillableScopeTree ?? parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX))
+      ? new TransitionalScopeTree(allScopes)
+      : buildScopeTree(allScopes);
   onProgress?.('scopeTree-end');
   const defs = buildDefIndex(allDefs);
   onProgress?.('defs-end');
@@ -167,6 +166,9 @@ export function finalizeScopeModel(
         ? createEagerImportVisibility(finalizeOut.imports)
         : createGroupedImportVisibility(finalizeOut.importEntries, finalizeOut.imports),
     bindings: finalizeOut.bindings,
+    ...(finalizeOut.moduleExports === undefined
+      ? {}
+      : { moduleExports: finalizeOut.moduleExports }),
     // Empty post-finalize augmentation channel. Populated (if at all)
     // by language hooks like `populateCsharpNamespaceSiblings` running
     // AFTER `finalizeScopeModel` returns, before `resolveReferenceSites`

@@ -17,7 +17,6 @@ import type {
 } from '../../rename-provider.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import {
-  canonicalizeRenameBindings,
   containsRange,
   createTreeSitterRenameSource,
   innermostRenameScope,
@@ -30,6 +29,7 @@ import { resolveDefGraphId, simpleQualifiedName } from '../../scope-resolution/g
 import { buildGraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { canonicalTypeScriptName } from './identifiers.js';
+import { canonicalizeEcmaBindings } from './canonicalize-bindings.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 
 export { canonicalTypeScriptName } from './identifiers.js';
@@ -864,7 +864,7 @@ export const typescriptRenameProvider: RenameProvider = {
     skip: (node) => node.type === 'comment',
     role,
     canonicalName: canonicalTypeScriptName,
-    transformParsed: (parsed) => canonicalizeRenameBindings(parsed, canonicalTypeScriptName),
+    transformParsed: canonicalizeEcmaBindings,
     reference: bareReference,
   }),
   checkOccurrence(context) {

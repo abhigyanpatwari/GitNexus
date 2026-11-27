@@ -1,0 +1,17 @@
+{
+  "diagnostics": {"compiler.err.doesnt.exist": 1},
+  "calls": [
+    {"caller": "parameter", "member": "save", "source": ["app/Main.java#7:2"]},
+    {"caller": "local", "member": "save", "source": ["app/Main.java#8:2"]},
+    {"caller": "field", "member": "save", "source": ["app/Main.java#9:2"]},
+    {"caller": "returned", "member": "save", "source": ["app/Main.java#10:2"]},
+    {"caller": "constructor", "member": "save", "source": ["app/Main.java#11:2"]},
+    {"caller": "genericConstructor", "member": "save", "source": ["app/Main.java#12:2"]},
+    {"caller": "annotatedConstructor", "member": "save", "source": ["app/Main.java#13:2"]},
+    {"caller": "alias", "member": "save", "source": ["app/Main.java#14:2"]},
+    {"caller": "annotated", "member": "save", "source": ["app/Main.java#15:2"]},
+    {"caller": "annotatedArray", "member": "save", "source": ["app/Main.java#16:2"]},
+    {"caller": "qualifiedArray", "member": "save", "source": ["app/Main.java#17:2"]},
+    {"caller": "unresolved", "member": "save", "source": ["app/Main.java#18:2"], "targets": 0}
+  ]
+}

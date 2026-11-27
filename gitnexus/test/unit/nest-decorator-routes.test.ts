@@ -735,4 +735,308 @@ describe('NestJS decorator routes', () => {
 
     expect(format(routes.filter((route) => route.handlerName === 'i'))).toEqual(['GET /v/i']);
   });
+
+  // ─── Routes inherited from a base class in the same file ───────────
+  //
+  // Every expectation below was checked against a running NestJS 12.5.0
+  // application: the listed URLs answer, the absent ones return 404.
+
+  it('mounts the handlers of a same-file base class under the controller prefix', () => {
+    const routes = extract(`
+      abstract class BaseHealth {
+        @Get('ping')
+        ping() {}
+      }
+
+      @Controller('health')
+      export class HealthController extends BaseHealth {}
+    `);
+
+    expect(format(routes)).toEqual(['GET /health/ping']);
+    // The handler is the base method, on the line where it is declared.
+    expect(routes[0]).toMatchObject({ handlerName: 'ping', lineNumber: 4, decoratorName: 'Get' });
+  });
+
+  it('lists own routes first, then each base class from the nearest up', () => {
+    expect(
+      urls(`
+        class Root {
+          @Get('root') root() {}
+        }
+
+        class Mid extends Root {
+          @Get('mid') mid() {}
+        }
+
+        @Controller('levels')
+        export class LevelsController extends Mid {
+          @Get('own') own() {}
+        }
+      `),
+    ).toEqual(['GET /levels/own', 'GET /levels/mid', 'GET /levels/root']);
+  });
+
+  it('gives each controller that extends the base its own copy of the routes', () => {
+    expect(
+      urls(`
+        class Shared {
+          @Get('ping') ping() {}
+        }
+
+        @Controller('one')
+        export class OneController extends Shared {}
+
+        @Controller('two')
+        export class TwoController extends Shared {}
+      `),
+    ).toEqual(['GET /one/ping', 'GET /two/ping']);
+  });
+
+  it('inherits from a base class that is a controller itself', () => {
+    expect(
+      urls(`
+        @Controller('base')
+        export class BaseController {
+          @Get('ping') ping() {}
+        }
+
+        @Controller('sub')
+        export class SubController extends BaseController {}
+      `),
+    ).toEqual(['GET /base/ping', 'GET /sub/ping']);
+  });
+
+  it('reads the base through type arguments and an implements clause', () => {
+    expect(
+      urls(`
+        abstract class Crud<T> {
+          @Get(':id') findOne(): T | undefined { return undefined; }
+        }
+
+        @Controller('users')
+        export class UsersController extends Crud<User> implements Marker {}
+      `),
+    ).toEqual(['GET /users/:id']);
+  });
+
+  it('inherits every path of a multi-path decorator and a method-agnostic route', () => {
+    expect(
+      urls(`
+        class Base {
+          @Get(['a', 'b']) both() {}
+          @All('any') any() {}
+        }
+
+        @Controller('multi')
+        export class MultiController extends Base {}
+      `),
+    ).toEqual(['GET /multi/a', 'GET /multi/b', '* /multi/any']);
+  });
+
+  it.each([
+    {
+      label: 'redeclared without a route decorator',
+      controllerMember: 'list() {}',
+      expected: ['GET /x/kept'],
+    },
+    {
+      label: 'redeclared with another route',
+      controllerMember: "@Post('changed') list() {}",
+      expected: ['POST /x/changed', 'GET /x/kept'],
+    },
+    {
+      label: 'hidden by an accessor of the same name',
+      controllerMember: 'get list() { return () => 1; }',
+      expected: ['GET /x/kept'],
+    },
+    {
+      label: 'redeclared under a quoted name',
+      controllerMember: "'list'() {}",
+      expected: ['GET /x/kept'],
+    },
+  ])('drops an inherited route $label', ({ controllerMember, expected }) => {
+    // Nest walks the prototype chain from the controller up and keeps the first
+    // declaration of each name, so the base decorator is never read.
+    expect(
+      urls(`
+        class Base {
+          @Get('list') list() {}
+          @Get('kept') kept() {}
+        }
+
+        @Controller('x')
+        export class XController extends Base {
+          ${controllerMember}
+        }
+      `),
+    ).toEqual(expected);
+  });
+
+  it.each([
+    { label: 'a class field', controllerMember: 'list = () => 1;' },
+    { label: 'a static method', controllerMember: 'static list() {}' },
+    { label: 'a private method', controllerMember: '#list() {}' },
+  ])('keeps an inherited route beside $label of the same name', ({ controllerMember }) => {
+    // None of the three is a property of the controller prototype, so the base
+    // method is still the one Nest finds there.
+    expect(
+      urls(`
+        class Base {
+          @Get('list') list() {}
+        }
+
+        @Controller('x')
+        export class XController extends Base {
+          ${controllerMember}
+        }
+      `),
+    ).toEqual(['GET /x/list']);
+  });
+
+  it('applies the nearest redeclaration when a class between the two redeclares a handler', () => {
+    expect(
+      urls(`
+        class Root {
+          @Get('plain') plain() {}
+          @Get('changed') changed() {}
+          @Get('kept') kept() {}
+        }
+
+        class Mid extends Root {
+          plain() {}
+          @Post('moved') changed() {}
+        }
+
+        @Controller('x')
+        export class XController extends Mid {}
+      `),
+    ).toEqual(['POST /x/moved', 'GET /x/kept']);
+  });
+
+  it('does not inherit a decorated static method or accessor of the base', () => {
+    expect(
+      urls(`
+        class Base {
+          @Get('static') static make() {}
+          @Get('getter') get value() { return 1; }
+          @Get('ok') ok() {}
+        }
+
+        @Controller('x')
+        export class XController extends Base {}
+      `),
+    ).toEqual(['GET /x/ok']);
+  });
+
+  it.each([
+    { label: 'imported from another file', declaration: '', heritage: 'Base' },
+    {
+      label: 'reached through a namespace',
+      declaration: "class Base { @Get('ping') ping() {} }",
+      heritage: 'ns.Base',
+    },
+    {
+      label: 'wrapped in a mixin call',
+      declaration: "class Base { @Get('ping') ping() {} }",
+      heritage: 'Mixin(Base)',
+    },
+    {
+      label: 'declared inside a function',
+      declaration: "function scope() { class Base { @Get('ping') ping() {} } }",
+      heritage: 'Base',
+    },
+    {
+      label: 'declared twice in the file',
+      declaration:
+        "class Base { @Get('ping') ping() {} }\nfunction scope() { class Base { @Get('pong') pong() {} } }",
+      heritage: 'Base',
+    },
+  ])('inherits nothing from a base class $label', ({ declaration, heritage }) => {
+    // Which class the clause reaches is not provable from this file alone, and
+    // a wrong base would publish URLs the application does not serve.
+    expect(
+      urls(`
+        ${declaration}
+
+        @Controller('x')
+        export class XController extends ${heritage} {
+          @Get('own') own() {}
+        }
+      `),
+    ).toEqual(['GET /x/own']);
+  });
+
+  it.each([
+    {
+      label: 'the controller has a computed key',
+      base: "@Get('list') list() {}",
+      controllerMember: '[HANDLER]() {}',
+    },
+    {
+      label: 'the base handler has a computed key',
+      base: "@Get('list') [HANDLER]() {}",
+      controllerMember: '',
+    },
+  ])('inherits nothing when $label', ({ base, controllerMember }) => {
+    // `['list']() {}` on the controller takes the place of the base `list`
+    // exactly as `list() {}` does, and a computed key does not say which name
+    // it is. The own route beside it shows the controller is still read.
+    expect(
+      urls(`
+        class Base {
+          ${base}
+        }
+
+        @Controller('x')
+        export class XController extends Base {
+          @Get('own') own() {}
+          ${controllerMember}
+        }
+      `),
+    ).toEqual(['GET /x/own']);
+  });
+
+  it('drops inherited routes too when the controller prefix cannot be read', () => {
+    expect(
+      extract(`
+        class Base {
+          @Get('ping') ping() {}
+        }
+
+        @Controller(ROUTES.X)
+        export class XController extends Base {}
+      `),
+    ).toEqual([]);
+  });
+
+  it('stops at a class that extends itself through another', () => {
+    expect(
+      urls(`
+        class A extends B {
+          @Get('a') a() {}
+        }
+
+        class B extends A {
+          @Get('b') b() {}
+        }
+
+        @Controller('x')
+        export class XController extends A {}
+      `),
+    ).toEqual(['GET /x/a', 'GET /x/b']);
+  });
+
+  it('inherits under the JavaScript grammar, where the extends clause has no wrapper node', () => {
+    expect(
+      jsUrls(`
+        class Base {
+          @Get('ping')
+          ping() {}
+        }
+
+        @Controller('health')
+        export class HealthController extends Base {}
+      `),
+    ).toEqual(['GET /health/ping']);
+  });
 });

@@ -152,13 +152,6 @@ describe('extractGenericTypeArgs', () => {
       expected: string[];
     }> = [
       {
-        lang: SupportedLanguages.Java,
-        file: 'C.java',
-        code: 'class C { List<User> f; }',
-        typeText: 'List<User>',
-        expected: ['User'],
-      },
-      {
         lang: SupportedLanguages.TypeScript,
         file: 'c.ts',
         code: 'let f: Array<User>;',
@@ -185,13 +178,6 @@ describe('extractGenericTypeArgs', () => {
         code: 'class C { val f: List<User> = x }',
         typeText: 'List<User>',
         expected: ['User'],
-      },
-      {
-        lang: SupportedLanguages.Java,
-        file: 'C.java',
-        code: 'class C { Map<String, User> f; }',
-        typeText: 'Map<String, User>',
-        expected: ['String', 'User'],
       },
       {
         // Kotlin multi-arg through user_type > type_arguments > type_projection.

@@ -1,0 +1,15 @@
+{
+  "diagnostics": {},
+  "onDemand": {
+    "status": "imports match JLS 7.5.2 (imported once); receivers share the S2 gap",
+    "extraEdges": [
+      "CALLS Method:viaNew -> Class:src/a/T.java:T",
+      "IMPORTS File:U.java -> File:src/a/T.java:T.java"
+    ],
+    "missingCompilerEdges": [
+      "CALLS Method:viaField -> Method:src/a/T.java:run",
+      "CALLS Method:viaNew -> Method:src/a/T.java:run",
+      "CALLS Method:viaParam -> Method:src/a/T.java:run"
+    ]
+  }
+}

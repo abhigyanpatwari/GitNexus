@@ -245,8 +245,15 @@ const IGNORED_EXTENSIONS = new Set([
   // Source maps (debug files, not source)
   '.map',
 
+  // IntelliJ module, project and workspace files (the directory-based .idea
+  // format is ignored with the directories above)
+  '.iml',
+  '.ipr',
+  '.iws',
+
   // Lock files (handled separately, but also here)
   '.lock',
+  '.lockfile', // Gradle: gradle.lockfile, buildscript-gradle.lockfile
 
   // Certificates & Keys (security - don't index!)
   '.pem',

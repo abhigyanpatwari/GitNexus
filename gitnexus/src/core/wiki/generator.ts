@@ -11,8 +11,9 @@
  */
 
 import fs from 'fs/promises';
+import { statSync } from 'node:fs';
 import path from 'path';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 import {
   initWikiDb,
@@ -64,7 +65,45 @@ import {
   formatProcesses,
 } from './prompts.js';
 
+import { splitModuleByDirectory } from './module-split.js';
+
 import { shouldIgnorePath } from '../../config/ignore-service.js';
+
+/** A repository being documented must not participate in finding the Git executable. */
+function resolveWikiGit(): string | undefined {
+  const configured = process.env.GITNEXUS_WIKI_GIT_PATH;
+  if (configured) {
+    if (
+      !path.isAbsolute(configured) ||
+      !statSync(configured, { throwIfNoEntry: false })?.isFile()
+    ) {
+      throw new Error('GITNEXUS_WIKI_GIT_PATH must be the absolute path of a Git executable');
+    }
+    return configured;
+  }
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'cmd', 'git.exe'),
+          path.join(
+            process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)',
+            'Git',
+            'cmd',
+            'git.exe',
+          ),
+          path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Git', 'cmd', 'git.exe'),
+        ]
+      : [
+          '/usr/bin/git',
+          '/bin/git',
+          '/run/current-system/sw/bin/git',
+          '/opt/homebrew/bin/git',
+          '/usr/local/bin/git',
+        ];
+  return candidates.find(
+    (file) => path.isAbsolute(file) && statSync(file, { throwIfNoEntry: false })?.isFile(),
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -74,6 +113,11 @@ export interface WikiOptions {
   concurrency?: number;
   /** If true, stop after building module tree for user review */
   reviewOnly?: boolean;
+  /**
+   * Generate from module_tree.json as it is, even when it matches the last
+   * generation's tree. The CLI sets it for the run that follows a review.
+   */
+  useSavedTree?: boolean;
   /** Output language for generated documentation (e.g. 'english', 'chinese', 'spanish') */
   lang?: string;
 }
@@ -87,6 +131,24 @@ export interface WikiMeta {
   moduleTree: ModuleTreeNode[];
   /** Pages that must be retried even when fromCommit is still current. */
   failedModules?: string[];
+  /** A regrouping a run started and did not complete. */
+  regrouping?: PendingRegrouping;
+}
+
+/**
+ * A run that groups an existing wiki's files again records this in meta.json
+ * before it deletes any page, and the run that completes the regrouping
+ * drops it. The rest of meta.json still describes the previous wiki.
+ */
+export interface PendingRegrouping {
+  /** The commit the run documents. */
+  commit: string;
+  /** The tree the run writes pages for. */
+  tree: ModuleTreeNode[];
+  /** The pages of the previous wiki the run keeps as they are. */
+  keptPages: string[];
+  /** Whether the run has deleted the other pages of both trees. */
+  staleRemoved: boolean;
 }
 
 export interface ModuleTreeNode {
@@ -105,15 +167,39 @@ export interface WikiRunResult {
   moduleTree?: ModuleTreeNode[];
 }
 
+/** An existing wiki whose files a full generation groups again (see removeStalePages). */
+interface Regrouping {
+  meta: WikiMeta;
+  /** The files changed since `meta.fromCommit`. */
+  changedFiles: string[];
+}
+
+/** `value` as JSON with every object's keys in name order; arrays keep theirs. */
+const keyOrderFreeJson = (value: unknown): string =>
+  JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : item,
+  );
+
 // ─── Constants ────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
 const GROUPING_TOKEN_BUDGET = 100_000;
+const MAX_SLUG_LENGTH = 60;
 const WIKI_DIR = 'wiki';
+
+/** One file as a module page prompt quotes it. */
+const sourceSection = (filePath: string, content: string): string =>
+  `\n--- ${filePath} ---\n${content}`;
+
+/** What a module page prompt quotes for a file it cannot read. */
+const UNREADABLE_FILE = '(file not readable)';
 
 // ─── Generator Class ──────────────────────────────────────────────────
 
 export class WikiGenerator {
+  private readonly gitExecutable = resolveWikiGit();
   private repoPath: string;
   private storagePath: string;
   private wikiDir: string;
@@ -272,9 +358,11 @@ export class WikiGenerator {
     // Up-to-date check (skip if --force)
     if (
       !forceMode &&
+      currentCommit &&
       existingMeta &&
       existingMeta.fromCommit === currentCommit &&
-      !existingMeta.failedModules?.length
+      !existingMeta.failedModules?.length &&
+      !existingMeta.regrouping
     ) {
       const currentLang = this.effectiveLang();
       const metaLang = existingMeta.lang ?? '';
@@ -290,13 +378,12 @@ export class WikiGenerator {
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
     }
 
-    // Force mode: delete snapshot to force full re-grouping
+    // Force mode: regenerate every page, from a new grouping unless the saved
+    // tree was edited since the last generation (see discardSavedGrouping)
     if (forceMode) {
       // A failure must not leave the previous wiki marked complete at this commit.
       await fs.rm(path.join(this.wikiDir, 'meta.json'), { force: true });
-      try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
-      } catch {}
+      await this.discardSavedGrouping(existingMeta);
       // Delete existing module pages so they get regenerated
       const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
       for (const f of existingFiles) {
@@ -334,8 +421,9 @@ export class WikiGenerator {
       await closeWikiDb();
     }
 
-    // Always generate the HTML viewer after wiki content changes
-    await this.ensureHTMLViewer();
+    // Generate the HTML viewer after wiki content changes. A tree waiting for
+    // review has no pages yet, so the viewer keeps showing the last wiki.
+    if (!(this.options.reviewOnly && result.moduleTree)) await this.ensureHTMLViewer();
 
     return result;
   }
@@ -355,7 +443,10 @@ export class WikiGenerator {
 
   // ─── Full Generation ────────────────────────────────────────────────
 
-  private async fullGeneration(currentCommit: string): Promise<WikiRunResult> {
+  private async fullGeneration(
+    currentCommit: string,
+    regroup?: Regrouping,
+  ): Promise<WikiRunResult> {
     let pagesGenerated = 0;
 
     // Phase 0: Gather structure
@@ -377,8 +468,13 @@ export class WikiGenerator {
 
     this.onProgress('gather', 10, `Found ${sourceFiles.length} source files`);
 
-    // Phase 1: Build module tree
-    const moduleTree = await this.buildModuleTree(enrichedFiles);
+    // Phase 1: Build module tree, or take the one of a regrouping to complete
+    const moduleTree =
+      regroup?.meta.regrouping?.tree ??
+      (await this.buildModuleTree(
+        enrichedFiles,
+        regroup && !(await this.keepsSavedTree(regroup.meta)),
+      ));
     pagesGenerated = 0;
 
     // If reviewOnly mode, save tree and stop for user to review/edit
@@ -393,6 +489,8 @@ export class WikiGenerator {
       };
       return reviewResult;
     }
+
+    if (regroup) await this.removeStalePages(moduleTree, currentCommit, regroup);
 
     // Phase 2: Generate module pages (parallel with concurrency limit)
     const totalModules = this.countModules(moduleTree);
@@ -476,31 +574,27 @@ export class WikiGenerator {
 
   // ─── Phase 1: Build Module Tree ────────────────────────────────────
 
-  private async buildModuleTree(files: FileWithExports[]): Promise<ModuleTreeNode[]> {
+  /**
+   * @param groupAgain Ask the model even when a tree is saved, for a run that
+   *   groups an existing wiki's files again (see keepsSavedTree).
+   */
+  private async buildModuleTree(
+    files: FileWithExports[],
+    groupAgain = false,
+  ): Promise<ModuleTreeNode[]> {
     // First, check for user-edited module_tree.json (from --review workflow)
-    const editablePath = path.join(this.wikiDir, 'module_tree.json');
-    try {
-      const edited = await fs.readFile(editablePath, 'utf-8');
-      const parsed = JSON.parse(edited);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        this.onProgress('grouping', 25, 'Using edited module tree');
-        return parsed;
-      }
-    } catch {
-      // No edited tree, check for original snapshot
+    const edited = groupAgain ? null : await this.readSavedTree('module_tree.json');
+    if (edited) {
+      this.onProgress('grouping', 25, 'Using edited module tree');
+      return edited;
     }
 
     // Check for existing immutable snapshot (resumability)
     const snapshotPath = path.join(this.wikiDir, 'first_module_tree.json');
-    try {
-      const existing = await fs.readFile(snapshotPath, 'utf-8');
-      const parsed = JSON.parse(existing);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        this.onProgress('grouping', 25, 'Using existing module tree (resuming)');
-        return parsed;
-      }
-    } catch {
-      // No snapshot, generate new
+    const snapshot = groupAgain ? null : await this.readSavedTree('first_module_tree.json');
+    if (snapshot) {
+      this.onProgress('grouping', 25, 'Using existing module tree (resuming)');
+      return snapshot;
     }
 
     this.onProgress('grouping', 15, 'Grouping files into modules (LLM)...');
@@ -532,18 +626,34 @@ export class WikiGenerator {
 
     // Convert to tree nodes
     const tree: ModuleTreeNode[] = [];
+    // Pages of a split module get names whose slugs no other page uses, the
+    // overview's included. A page's slug is empty only when its module's is,
+    // and the module's slug is in the set.
+    const takenSlugs = new Set([
+      'overview',
+      ...Object.keys(grouping).map((name) => this.slugify(name)),
+    ]);
     for (const [moduleName, modulePaths] of Object.entries(grouping)) {
       const slug = this.slugify(moduleName);
       const node: ModuleTreeNode = { name: moduleName, slug, files: modulePaths };
 
       // Token budget check — split if too large
-      const totalTokens = await this.estimateModuleTokens(modulePaths);
-      if (totalTokens > this.maxTokensPerModule && modulePaths.length > 3) {
-        const children = this.splitBySubdirectory(moduleName, modulePaths);
+      const fileTokens = await this.estimateFileTokens(modulePaths);
+      let totalTokens = 0;
+      for (const tokens of fileTokens.values()) totalTokens += tokens;
+      if (totalTokens > this.maxTokensPerModule) {
+        const parts = splitModuleByDirectory(
+          modulePaths,
+          (file) => fileTokens.get(file) ?? 0,
+          this.maxTokensPerModule,
+        );
         // Only create hierarchy if we actually got multiple children
         // If splitting results in 1 child, keep files flat (avoid redundant nesting)
-        if (children.length > 1) {
-          node.children = children;
+        if (parts.length > 1) {
+          node.children = parts.map((part) => {
+            const name = this.uniqueModuleName(moduleName, part.label, takenSlugs);
+            return { name, slug: this.slugify(name), files: part.files };
+          });
           node.files = []; // Parent doesn't own files directly when split
         }
         // If only 1 child, keep original flat structure (files stay in node.files)
@@ -827,38 +937,6 @@ export class WikiGenerator {
     return Object.fromEntries(groups);
   }
 
-  /**
-   * Split a large module into sub-modules by subdirectory.
-   * Uses the full subDir path for naming to avoid slug collisions
-   * (e.g., "synapse-screen/src" vs "synapse-core/src").
-   */
-  private splitBySubdirectory(moduleName: string, files: string[]): ModuleTreeNode[] {
-    const subGroups = new Map<string, string[]>();
-    for (const fp of files) {
-      const parts = fp.replace(/\\/g, '/').split('/');
-      const subDir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0];
-      let group = subGroups.get(subDir);
-      if (!group) {
-        group = [];
-        subGroups.set(subDir, group);
-      }
-      group.push(fp);
-    }
-
-    // Check if basenames are unique; if not, use the full subDir path
-    const basenames = Array.from(subGroups.keys()).map((s) => path.basename(s));
-    const hasCollisions = new Set(basenames).size < basenames.length;
-
-    return Array.from(subGroups.entries()).map(([subDir, subFiles]) => {
-      const label = hasCollisions ? subDir.replace(/\//g, '-') : path.basename(subDir);
-      return {
-        name: `${moduleName} — ${label}`,
-        slug: this.slugify(`${moduleName}-${label}`),
-        files: subFiles,
-      };
-    });
-  }
-
   // ─── Phase 2: Generate Module Pages ─────────────────────────────────
 
   /**
@@ -1010,6 +1088,20 @@ export class WikiGenerator {
   ): Promise<WikiRunResult> {
     this.onProgress('incremental', 5, 'Detecting changes...');
 
+    // A regrouping an earlier run did not complete is completed at the commit
+    // it documents. Anywhere else, or after a review, its pages are taken back.
+    const pending = existingMeta.regrouping;
+    if (pending?.commit === currentCommit && !this.options.useSavedTree) {
+      this.onProgress('incremental', 10, 'Completing the regrouping of an interrupted run...');
+      // The recorded regrouping already lists the pages it keeps.
+      const fullResult = await this.fullGeneration(currentCommit, {
+        meta: existingMeta,
+        changedFiles: [],
+      });
+      return { ...fullResult, mode: 'incremental' };
+    }
+    if (pending) existingMeta = await this.abandonRegrouping(existingMeta, pending);
+
     // Get changed files since last generation
     const changedFiles = this.getChangedFiles(existingMeta.fromCommit, currentCommit);
 
@@ -1017,6 +1109,7 @@ export class WikiGenerator {
     // now running on main). Fall back to full generation.
     if (changedFiles === null) {
       this.onProgress('incremental', 10, 'Branch diverged, running full generation...');
+      await this.removeFailedPages(existingMeta);
       const fullResult = await this.fullGeneration(currentCommit);
       return { ...fullResult, mode: 'incremental' };
     }
@@ -1037,33 +1130,41 @@ export class WikiGenerator {
     // Determine affected modules
     const affectedModules = new Set(existingMeta.failedModules ?? []);
     const newFiles: string[] = [];
+    // A file no module lists is new when the graph indexes it and its path did
+    // not exist at the last generation. An edit to a file a reviewed tree left
+    // out, or a path the graph skips, is neither grouped nor added to a module.
+    const added = new Set(this.getAddedFiles(existingMeta.fromCommit, currentCommit));
+    const indexed = new Set(added.size > 0 ? await getAllFiles() : []);
 
     for (const fp of changedFiles) {
       let found = false;
+      // Every module that lists the file, not only the first: a sub-module's
+      // files are also listed under its parent, parent first (extractModuleFiles).
+      // The sub-module page documents the file, and the parent page is written
+      // from the sub-module pages, so both are regenerated, leaves first.
       for (const [mod, files] of Object.entries(existingMeta.moduleFiles)) {
         if (files.includes(fp)) {
           affectedModules.add(mod);
           found = true;
-          break;
         }
       }
-      if (!found && !shouldIgnorePath(fp)) {
+      if (!found && added.has(fp) && indexed.has(fp) && !shouldIgnorePath(fp)) {
         newFiles.push(fp);
       }
     }
 
     // If significant new files exist, re-run full grouping
     if (newFiles.length > 5) {
+      await this.removeFailedPages(existingMeta);
       this.onProgress(
         'incremental',
         15,
         'Significant new files detected, running full generation...',
       );
-      // Delete old snapshot to force re-grouping
-      try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
-      } catch {}
-      const fullResult = await this.fullGeneration(currentCommit);
+      const fullResult = await this.fullGeneration(currentCommit, {
+        meta: existingMeta,
+        changedFiles,
+      });
       return { ...fullResult, mode: 'incremental' };
     }
 
@@ -1083,14 +1184,15 @@ export class WikiGenerator {
 
     this.onProgress('incremental', 20, `Regenerating ${affectedArray.length} module(s)...`);
 
+    const removePage = (node: ModuleTreeNode): Promise<void> =>
+      fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
     const affectedNodes: ModuleTreeNode[] = [];
     for (const mod of affectedArray) {
-      const modSlug = this.slugify(mod);
-      const node = this.findNodeBySlug(moduleTree, modSlug);
+      const node = this.findModule(moduleTree, mod);
       if (node) {
-        try {
-          await fs.unlink(path.join(this.wikiDir, `${node.slug}.md`));
-        } catch {}
+        // A parent page is removed just before it is regenerated, below, so a
+        // parent held back by a failed sub-module keeps its last page.
+        if (!node.children?.length) await removePage(node);
         affectedNodes.push(node);
       }
     }
@@ -1126,6 +1228,7 @@ export class WikiGenerator {
         this.failedModules.push(node.name);
         continue;
       }
+      await removePage(node);
       pagesGenerated += await regenerateNode(node);
     }
 
@@ -1151,16 +1254,34 @@ export class WikiGenerator {
     return { pagesGenerated, mode: 'incremental', failedModules: [...this.failedModules] };
   }
 
+  /**
+   * Before a full generation, which keeps the pages it finds, remove the pages
+   * of the modules the last run could not write. A parent held back by a
+   * failed sub-module still has its previous page, and a full generation
+   * would leave that page as it is and drop the retry.
+   */
+  private async removeFailedPages(meta: WikiMeta): Promise<void> {
+    for (const name of meta.failedModules ?? []) {
+      const node = this.findModule(meta.moduleTree, name);
+      if (node) await fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
+    }
+  }
+
   // ─── Helpers ────────────────────────────────────────────────────────
+
+  private runGit(args: string[]): string {
+    if (!this.gitExecutable) throw new Error('Git unavailable for wiki generation');
+    return execFileSync(this.gitExecutable, args, {
+      cwd: this.repoPath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
 
   private getCurrentCommit(): string {
     try {
-      return execSync('git rev-parse HEAD', {
-        cwd: this.repoPath,
-        windowsHide: true,
-      })
-        .toString()
-        .trim();
+      return this.runGit(['rev-parse', 'HEAD']).trim();
     } catch {
       return '';
     }
@@ -1172,11 +1293,7 @@ export class WikiGenerator {
    */
   private isCommitReachable(fromCommit: string, toCommit: string): boolean {
     try {
-      execFileSync('git', ['merge-base', '--is-ancestor', fromCommit, toCommit], {
-        cwd: this.repoPath,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
+      this.runGit(['merge-base', '--is-ancestor', fromCommit, toCommit]);
       return true;
     } catch {
       return false;
@@ -1191,16 +1308,26 @@ export class WikiGenerator {
     }
 
     try {
-      const output = execFileSync('git', ['diff', `${fromCommit}..${toCommit}`, '--name-only'], {
-        cwd: this.repoPath,
-        windowsHide: true,
-      })
-        .toString()
-        .trim();
-      return output ? output.split('\n').filter(Boolean) : [];
+      return this.diffPaths(fromCommit, toCommit);
     } catch {
       return null; // Treat git errors as needing full regen
     }
+  }
+
+  /** The changed paths that did not exist at `fromCommit`, a moved file's new path included. */
+  private getAddedFiles(fromCommit: string, toCommit: string): string[] {
+    try {
+      return this.diffPaths(fromCommit, toCommit, ['--no-renames', '--diff-filter=A']);
+    } catch {
+      return [];
+    }
+  }
+
+  /** The paths `git diff` lists between two commits, unquoted, as the graph stores them. */
+  private diffPaths(fromCommit: string, toCommit: string, options: string[] = []): string[] {
+    return this.runGit(['diff', '-z', '--name-only', ...options, `${fromCommit}..${toCommit}`])
+      .split('\0')
+      .filter(Boolean);
   }
 
   private async readSourceFiles(filePaths: string[]): Promise<string> {
@@ -1209,9 +1336,9 @@ export class WikiGenerator {
       const fullPath = path.join(this.repoPath, fp);
       try {
         const content = await fs.readFile(fullPath, 'utf-8');
-        parts.push(`\n--- ${fp} ---\n${content}`);
+        parts.push(sourceSection(fp, content));
       } catch {
-        parts.push(`\n--- ${fp} ---\n(file not readable)`);
+        parts.push(sourceSection(fp, UNREADABLE_FILE));
       }
     }
     return parts.join('\n');
@@ -1224,17 +1351,23 @@ export class WikiGenerator {
     return source.slice(0, maxChars) + '\n\n... (source truncated for context window limits)';
   }
 
-  private async estimateModuleTokens(filePaths: string[]): Promise<number> {
-    let total = 0;
+  /**
+   * Estimated tokens each file takes in a module page prompt: its section
+   * from readSourceFiles, the placeholder for a file it cannot read, and the
+   * newline joining it to the next one.
+   */
+  private async estimateFileTokens(filePaths: string[]): Promise<Map<string, number>> {
+    const tokens = new Map<string, number>();
     for (const fp of filePaths) {
+      let content: string;
       try {
-        const content = await fs.readFile(path.join(this.repoPath, fp), 'utf-8');
-        total += estimateTokens(content);
+        content = await fs.readFile(path.join(this.repoPath, fp), 'utf-8');
       } catch {
-        // File not readable, skip
+        content = UNREADABLE_FILE;
       }
+      tokens.set(fp, estimateTokens(`${sourceSection(fp, content)}\n`));
     }
-    return total;
+    return tokens;
   }
 
   private async readProjectInfo(): Promise<string> {
@@ -1390,6 +1523,23 @@ export class WikiGenerator {
     });
   }
 
+  /**
+   * The node of a module that meta.json names: the node of that name, else the
+   * node whose page the name gives. A tree edited on --review can give a
+   * module a page name that does not come from its name.
+   */
+  private findModule(tree: ModuleTreeNode[], name: string): ModuleTreeNode | null {
+    const byName = (nodes: ModuleTreeNode[]): ModuleTreeNode | null => {
+      for (const node of nodes) {
+        if (node.name === name) return node;
+        const found = byName(node.children ?? []);
+        if (found) return found;
+      }
+      return null;
+    };
+    return byName(tree) ?? this.findNodeBySlug(tree, this.slugify(name));
+  }
+
   private findNodeBySlug(tree: ModuleTreeNode[], slug: string): ModuleTreeNode | null {
     for (const node of tree) {
       if (node.slug === slug) return node;
@@ -1406,7 +1556,40 @@ export class WikiGenerator {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
-      .slice(0, 60);
+      .slice(0, MAX_SLUG_LENGTH);
+  }
+
+  /**
+   * `${moduleName} — ${label}`, followed by a number when its slug is taken:
+   * slugs fold case and punctuation and keep MAX_SLUG_LENGTH characters, so
+   * two pages can meet on one page file. The number must survive that cut,
+   * so the module name loses words first and the label keeps the directory
+   * it names. The slug used is added to `taken`.
+   */
+  private uniqueModuleName(moduleName: string, label: string, taken: Set<string>): string {
+    let name = `${moduleName} — ${label}`;
+    for (let n = 2; taken.has(this.slugify(name)); n++) {
+      name = this.numberedPageName(moduleName, label, n);
+    }
+    taken.add(this.slugify(name));
+    return name;
+  }
+
+  private numberedPageName(moduleName: string, label: string, n: number): string {
+    const fits = (name: string): boolean => this.slugify(name).length < MAX_SLUG_LENGTH;
+    const words = moduleName.split(/\s+/).filter(Boolean);
+    for (let count = words.length; count > 0; count--) {
+      const head = words
+        .slice(0, count)
+        .join(' ')
+        .replace(/[\s,;:.—–-]+$/, '');
+      if (head && fits(`${head} — ${label} ${n}`)) return `${head} — ${label} ${n}`;
+    }
+    if (fits(`${label} ${n}`)) return `${label} ${n}`;
+    // The label alone is too long: keep its end, where the directory it names is.
+    let tail = label;
+    while (tail.length > 1 && !fits(`…${tail} ${n}`)) tail = tail.slice(1);
+    return `…${tail} ${n}`;
   }
 
   private async fileExists(fp: string): Promise<boolean> {
@@ -1441,5 +1624,138 @@ export class WikiGenerator {
       JSON.stringify(tree, null, 2),
       'utf-8',
     );
+  }
+
+  /**
+   * Drop the saved grouping before a forced run, so that buildModuleTree asks
+   * the model to group the files again, unless module_tree.json holds a tree
+   * to keep (see keepsSavedTree).
+   */
+  private async discardSavedGrouping(meta: WikiMeta | null): Promise<void> {
+    await fs.rm(path.join(this.wikiDir, 'first_module_tree.json'), { force: true });
+    if (meta && !(await this.keepsSavedTree(meta))) {
+      await fs.rm(path.join(this.wikiDir, 'module_tree.json'), { force: true });
+    }
+  }
+
+  /**
+   * Whether a run that groups the files again should still use module_tree.json.
+   * buildModuleTree reads that file first, as a tree the user edited, but every
+   * completed generation also writes it for the HTML viewer. While it holds the
+   * tree meta.json records, it is that generation's copy rather than an edit,
+   * unless the user has just approved it on --review.
+   */
+  private async keepsSavedTree(meta: WikiMeta): Promise<boolean> {
+    if (this.options.useSavedTree) return true;
+    const saved = await this.readSavedTree('module_tree.json');
+    // A tool that only reorders keys or reindents the file has not edited it.
+    return saved !== null && keyOrderFreeJson(saved) !== keyOrderFreeJson(meta.moduleTree);
+  }
+
+  /** The tree saved in a file of the wiki folder; null when it is missing, empty or not JSON. */
+  private async readSavedTree(file: string): Promise<ModuleTreeNode[] | null> {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(this.wikiDir, file), 'utf-8'));
+      return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Before a full generation that groups an existing wiki's files again,
+   * delete the pages the new tree makes stale: the generation writes the pages
+   * that are missing and keeps the others. meta.json records the regrouping
+   * first, so a run that stops before the end does not leave the previous wiki
+   * marked complete, and the next run takes it up (see incrementalUpdate).
+   */
+  private async removeStalePages(
+    tree: ModuleTreeNode[],
+    currentCommit: string,
+    { meta, changedFiles }: Regrouping,
+  ): Promise<void> {
+    let pending = meta.regrouping;
+    if (!pending) {
+      pending = {
+        commit: currentCommit,
+        tree,
+        keptPages: this.keptPages(tree, meta.moduleTree, changedFiles),
+        staleRemoved: false,
+      };
+      await this.saveWikiMeta({ ...meta, regrouping: pending });
+    }
+    if (pending.staleRemoved) return;
+    await this.removePagesExcept(pending.keptPages, meta.moduleTree, pending.tree);
+    await this.saveWikiMeta({ ...meta, regrouping: { ...pending, staleRemoved: true } });
+  }
+
+  /**
+   * The pages of the previous wiki that a new tree keeps as they are. A page
+   * is kept when the previous tree has a module with its slug, name, files and
+   * sub-modules, and none of the files changed; a parent page also needs each
+   * of its sub-module pages kept.
+   */
+  private keptPages(
+    tree: ModuleTreeNode[],
+    previous: ModuleTreeNode[],
+    changedFiles: string[],
+  ): string[] {
+    const changed = new Set(changedFiles);
+    const { leaves, parents } = this.flattenModuleTree(previous);
+    const before = new Map([...leaves, ...parents].map((node) => [node.slug, node]));
+    const sameSet = (a: string[] = [], b: string[] = []): boolean => {
+      const set = new Set(a);
+      return set.size === new Set(b).size && b.every((item) => set.has(item));
+    };
+    const childSlugs = (node: ModuleTreeNode) => (node.children ?? []).map((child) => child.slug);
+    const unchanged = (node: ModuleTreeNode): boolean => {
+      const old = before.get(node.slug);
+      return (
+        old !== undefined &&
+        old.name === node.name &&
+        sameSet(old.files, node.files) &&
+        sameSet(childSlugs(old), childSlugs(node)) &&
+        !(node.files ?? []).some((file) => changed.has(file))
+      );
+    };
+    const kept: string[] = [];
+    for (const node of tree) {
+      const children = node.children ?? [];
+      const keptChildren = children.filter(unchanged);
+      kept.push(...keptChildren.map((child) => child.slug));
+      if (keptChildren.length === children.length && unchanged(node)) kept.push(node.slug);
+    }
+    return kept;
+  }
+
+  /** Delete the pages of the modules of the trees, apart from the `kept` ones. */
+  private async removePagesExcept(kept: string[], ...trees: ModuleTreeNode[][]): Promise<void> {
+    const keep = new Set(kept);
+    for (const tree of trees) {
+      const { leaves, parents } = this.flattenModuleTree(tree);
+      for (const { slug } of [...leaves, ...parents]) {
+        if (!keep.has(slug)) await fs.rm(path.join(this.wikiDir, `${slug}.md`), { force: true });
+      }
+    }
+  }
+
+  /**
+   * Take back a regrouping that an earlier run started and did not complete:
+   * delete the pages it may have written, and list the modules of this wiki
+   * whose pages are gone as failed, which makes this run write them again.
+   */
+  private async abandonRegrouping(meta: WikiMeta, pending: PendingRegrouping): Promise<WikiMeta> {
+    await this.removePagesExcept(pending.keptPages, meta.moduleTree, pending.tree);
+    const kept = new Set(pending.keptPages);
+    const { leaves, parents } = this.flattenModuleTree(meta.moduleTree);
+    const gone = [...leaves, ...parents].filter((node) => !kept.has(node.slug));
+    const previous: WikiMeta = {
+      ...meta,
+      failedModules: [
+        ...new Set([...(meta.failedModules ?? []), ...gone.map((node) => node.name)]),
+      ],
+    };
+    delete previous.regrouping;
+    return previous;
   }
 }

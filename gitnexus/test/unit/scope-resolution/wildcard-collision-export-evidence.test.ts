@@ -33,6 +33,42 @@ const mkScope = (id: ScopeId, filePath: string): Scope => ({
   typeBindings: new Map(),
 });
 
+describe('exclusive wildcard order independence', () => {
+  it.each([
+    ['Variable', undefined, 'a:x', []],
+    ['Function', true, undefined, ['a:x', 'b:x']],
+  ] as const)('selects stable %s evidence with three owners', (kind, marked, owner, witnesses) => {
+    const sources = ['c', 'b', 'a'].map((file) =>
+      mkFile(file, {
+        localDefs: [def(file + ':x', file, kind, 'x', marked)],
+      }),
+    );
+    const barrel = mkFile('barrel', {
+      parsedImports: sources.map((file) => ({ kind: 'wildcard', targetRaw: file.filePath })),
+    });
+    const other = mkFile('other', { parsedImports: [{ kind: 'wildcard', targetRaw: 'a' }] });
+    const consumer = mkFile('consumer', {
+      parsedImports: [{ kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'barrel' }],
+    });
+    for (const ordering of [
+      [barrel, other],
+      [other, barrel],
+    ]) {
+      const result = finalizeScopeModel([...ordering, ...sources, consumer], {
+        hooks: {
+          resolveImportTarget: (name) => name,
+          namedImportsBindTopLevelOnly: true,
+          wildcardCollisionIsAmbiguous: true,
+        },
+      });
+      expect(result.imports.edgesAt(consumer.moduleScope)?.[0].targetDefId).toBe(owner);
+      expect(
+        result.stats.ambiguousWildcardExports.flatMap((conflict) => conflict.candidateDefIds),
+      ).toEqual(witnesses);
+    }
+  });
+});
+
 const mkFile = (filePath: string, overrides: Partial<ParsedFile> = {}): ParsedFile => ({
   filePath,
   moduleScope: `scope:${filePath}#module`,
@@ -83,6 +119,29 @@ function run(aDefs: SymbolDefinition[], bDefs: SymbolDefinition[], name: string)
 }
 
 describe('export * collisions with export evidence', () => {
+  it('preserves the declaration on an exports-only edge without exclusive wildcard linking', () => {
+    const leaf = mkFile('leaf', {
+      localDefs: [def('leaf:helper', 'leaf', 'Function', 'helper', true)],
+    });
+    const barrel = mkFile('barrel', {
+      parsedImports: [
+        {
+          kind: 'reexport',
+          localName: 'publicHelper',
+          importedName: 'helper',
+          targetRaw: 'leaf',
+          exportsOnly: true,
+        },
+      ],
+    });
+    const out = finalizeScopeModel([leaf, barrel], {
+      hooks: { resolveImportTarget: (name) => name },
+    });
+    const edge = out.imports.edgesAt(barrel.moduleScope)?.[0];
+    expect(edge?.targetDefId).toBe('leaf:helper');
+    expect(edge?.linkStatus).toBeUndefined();
+  });
+
   it('refuses conflicting named re-exports without reporting an export-star collision', () => {
     const a = mkFile('a.ts', { localDefs: [def('a:alpha', 'a.ts', 'Function', 'alpha', true)] });
     const b = mkFile('b.ts', { localDefs: [def('b:alpha', 'b.ts', 'Function', 'alpha', true)] });

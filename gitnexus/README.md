@@ -323,7 +323,7 @@ gitnexus update                  # Install the latest published GitNexus (`npm i
 gitnexus query "<concept>"                                    # Process-grouped hybrid search
 gitnexus context <symbol> [--uid <uid> | --file <path>]       # 360° symbol view; flags disambiguate a shared name
 gitnexus impact <symbol> [--uid <uid> | --file <path> | --kind <kind>]  # Blast radius; flags disambiguate a shared name
-gitnexus trace <from> <to>       # Shortest directed path between two symbols
+gitnexus trace [from] [to] [--from-uid <uid>] [--to-uid <uid>]  # Shortest directed path; a UID flag replaces its name
 gitnexus detect-changes          # Map the working-tree diff to affected symbols and execution flows
 gitnexus check                   # Read-only structural checks against the indexed graph
 gitnexus cypher "<query>"        # Run a raw Cypher query against the knowledge graph
@@ -869,21 +869,31 @@ If analyze says the repository doesn't fit, do what the message says:
 
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
-the auto-sizer and any `--max-old-space-size` pin. Node also applies this
-process-wide heap flag to parser workers, overriding their per-worker limits.
+the auto-sizer and any `--max-old-space-size` pin. During parser startup,
+the pool temporarily clears `--max-old-space-size`, `--max-semi-space-size`
+and `--max-heap-size` so V8 can apply the worker's own limits.
+Community-detection workers get the main heap those flags give (under
+`--max-heap-size` alone, slightly more). When the flags must not be cleared,
+because `--freeze-flags-after-init` froze them or the flags analyze reads from
+the command line and `NODE_OPTIONS` do not match the main heap V8 reports,
+parser workers keep the main heap and admission charges each one for it. A
+preload that changes heap flags after startup (`v8.setFlagsFromString`, or
+removing them from `NODE_OPTIONS`) goes unseen, and the module-hooks thread a
+preload's `module.register()` starts in a parser worker gets V8's default heap.
 
-Use `--resource-budget <MiB>` to admit the complete analyzer process family,
+Use `--resource-budget <MiB>` to set the reservation for parsing and embeddings,
 including the frontend, main heap, workers, native pools, embedding model, input
 queue, and headroom. An explicit heap or pool that cannot fit is rejected before
 work starts. Automatic sizing fixes the aggregate phase ceiling at 75% of
 effective process/container RAM, divided among concurrent auto-sync analyses.
 The main heap, workers, pools, and embedding reservations must fit that ceiling.
-Each parser worker reserves at least the main-heap allocation to account for
-Node's inherited limit. Automatic concurrency may shrink to fit; explicit worker
-counts must fit with that per-worker reservation. Automatic main-heap sizing
-leaves room for explicit worker counts and heap requests.
-The reservation is not an operating-system RSS limit. `analyze --watch` accepts
-the same budget. To enlarge the main heap, use `--memory-budget`; increase
+Each parser worker reserves its old-space cap plus 128 MiB for the young
+generation and native allocations. The automatic main heap takes what the pools, headroom and required
+workers leave; automatic worker count then uses only the remainder, and explicit
+worker counts must fit beside the main heap.
+Community-detection workers run outside these reservations. Process RSS can
+exceed the reserved total. `analyze --watch` accepts the same budget.
+To enlarge the main heap, use `--memory-budget`; increase
 `--resource-budget` as well if needed, within available RAM.
 
 `embeddings sync` runs in its current process and reserves its actual V8 heap
@@ -961,6 +971,8 @@ npx gitnexus analyze
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
 
+Parser workers have a 512 MiB minimum old-space cap. Their automatic cap depends on the memory left after sizing the main heap and on how many workers share it. Files above roughly 2 MB, or large explicit sub-batches (`GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`), can exceed it: the worker stops with `worker hit its <N>MB heap cap` and the file is quarantined, so it is missing from the graph. Raise the cap with `GITNEXUS_WORKER_HEAP_MB` when you raise `--max-file-size`.
+
 ### Code under a dot directory is missing
 
 The walker skips hidden paths, so symbols defined under a directory such as `.scallywag/` or `.config/` never reach the graph: `impact` and `context` answer `Target not found`, and `detect_changes` reports no changed symbols for a diff that only touches them. To index specific dot directories, list their names (comma-separated) and re-run `analyze`:
@@ -1020,7 +1032,7 @@ Four env vars expose the pool's resilience layers (respawn budget, cumulative-ti
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                             | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
 | `GITNEXUS_MEMORY`                               | `off`                              | unset (autopilot on)                                                                                                                                                                                                                                      | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
 | `GITNEXUS_ANALYSIS_SUPERVISOR_BYTES` | nonnegative integer bytes | automatic | Internal inherited reservation for the waiting parent process. Leave unset for automatic accounting; a supplied value counts toward analysis admission and does not set the parent heap. |
-| `GITNEXUS_WORKER_HEAP_MB`                       | automatic admission              | Requested per-worker V8 old-generation limit, at least 512 MiB. Node's process heap flag can override it, so admission reserves the larger of the requested worker allocation and main-heap allocation, plus native memory. Automatic concurrency shrinks to fit the aggregate budget.                                                                                           |
+| `GITNEXUS_WORKER_HEAP_MB`                       | automatic admission              | Requested per-worker V8 old-generation limit, at least 512 MiB. Enforced on every parser worker; admission reserves it plus 128 MiB of native memory per worker. Automatic concurrency shrinks to fit the aggregate budget.                                                                                                                                                      |
 | `GITNEXUS_HEAP_LIMIT_SOURCE`                    | unset                              | Set by analyze itself (`budget` or `auto`) to record where the heap limit came from, so out-of-memory advice points at `--memory-budget` rather than a `--max-old-space-size` pin.                                                                        | Never — internal; set `--memory-budget` instead.                                                                                                                                                                                                                                                                                                       |
 | `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | automatic admission              | V8 old-generation heap for the web/MCP server's forked analyze worker. Defaults to the admitted main-heap reservation minus 48 MiB for young space. A positive integer overrides the old-generation heap in MiB; admission reserves that value plus 48 MiB and rejects it if the aggregate budget cannot fit.                                                              |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                            | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                                                                         |

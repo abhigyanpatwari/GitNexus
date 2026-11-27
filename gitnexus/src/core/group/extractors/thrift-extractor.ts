@@ -1,9 +1,11 @@
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
+import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { createTreeReleaser } from '../../tree-sitter/native-tree-release.js';
 import {
   getPluginForFile,
   THRIFT_SCAN_GLOB,
@@ -214,15 +216,12 @@ function makeContract(
 }
 
 export async function buildThriftContext(repoPath: string): Promise<ThriftContext> {
+  const thriftIgnoreFilter = await createIgnoreFilter(repoPath);
   const thriftFiles = await glob('**/*.thrift', {
     cwd: repoPath,
     absolute: false,
     nodir: true,
-    // TODO(#1156-followup): replace this hand-rolled list with createIgnoreFilter
-    // (the canonical ingestion ignore filter, like include-extractor.ts now uses).
-    // New entries to DEFAULT_IGNORE_LIST in src/config/ignore-service.ts (e.g.
-    // third_party, 3rdparty added in commit a9936a9b) silently do not apply here.
-    ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
+    ignore: thriftIgnoreFilter,
   });
   const namespacesByThrift = new Map<string, string>();
   const servicesByName = new Map<string, ThriftServiceInfo[]>();
@@ -291,18 +290,16 @@ export class ThriftExtractor implements ContractExtractor {
       }
     }
 
+    const sourceIgnoreFilter = await createIgnoreFilter(repoPath);
     const sourceFiles = await glob(THRIFT_SCAN_GLOB, {
       cwd: repoPath,
       absolute: false,
       nodir: true,
-      // TODO(#1156-followup): replace this hand-rolled list with createIgnoreFilter
-      // (the canonical ingestion ignore filter, like include-extractor.ts now uses).
-      // New entries to DEFAULT_IGNORE_LIST in src/config/ignore-service.ts (e.g.
-      // third_party, 3rdparty added in commit a9936a9b) silently do not apply here.
-      ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
+      ignore: sourceIgnoreFilter,
     });
 
     const parser = new Parser();
+    const releaseTrees = createTreeReleaser();
     for (const rel of sourceFiles) {
       const plugin = getPluginForFile(rel);
       if (!plugin) continue;
@@ -310,6 +307,8 @@ export class ThriftExtractor implements ContractExtractor {
       if (!content) continue;
 
       let detections: ThriftDetection[] = [];
+      // Lets the previous files' dropped trees be freed (see native-tree-release.ts).
+      await releaseTrees();
       try {
         parser.setLanguage(plugin.language);
         const tree = parseSourceSafe(parser, content);

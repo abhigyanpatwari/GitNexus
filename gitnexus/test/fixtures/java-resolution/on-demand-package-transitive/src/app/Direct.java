@@ -1,0 +1,1 @@
+package app; import c.Lib; public class Direct { void correct() { new Lib().run(); Lib.make(); } }

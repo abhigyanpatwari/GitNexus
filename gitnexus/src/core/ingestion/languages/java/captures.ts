@@ -49,6 +49,7 @@ import {
   setJavaSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
+import { javaClassQualifierCaptures } from './class-identity.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spring-di.js';
@@ -70,7 +71,11 @@ import { synthesizeJavaRecordComponentAccessorCaptures } from './record-componen
 import { collectLombokImports, synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 import { captureJavaOverloadFacts, setJavaOverloadFacts } from './overload-argument-facts.js';
 import { captureJavaImportUses } from './import-use-facts.js';
-import { javaTypeText, javaTrailingDimensions } from './type-spelling.js';
+import {
+  javaTypeText,
+  javaTypeTextWithoutTrivia,
+  javaTrailingDimensions,
+} from './type-spelling.js';
 import { synthesizeJavaLexicalCaptures } from './lexical-captures.js';
 import { synthesizeJavaFactoryAliasCaptures } from './factory-alias-captures.js';
 import { synthesizeJavaDeclaredTypeCaptures } from './declared-type-captures.js';
@@ -198,7 +203,10 @@ export function emitJavaScopeCaptures(
     const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
-      grouped[tag] = nodeToCapture(tag, c.node);
+      grouped[tag] =
+        tag === '@declaration.type-parameters'
+          ? syntheticCapture(tag, c.node, javaTypeTextWithoutTrivia(c.node))
+          : nodeToCapture(tag, c.node);
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
@@ -287,6 +295,10 @@ export function emitJavaScopeCaptures(
       );
       const visibilityScope = javaLocalTypeVisibilityScope(typeDeclaration);
       if (visibilityScope !== undefined) out.push(visibilityScope);
+    }
+    const typeName = grouped['@declaration.name']?.text;
+    if (typeDeclaration !== undefined && typeName !== undefined) {
+      Object.assign(grouped, javaClassQualifierCaptures(typeDeclaration, typeName));
     }
 
     // Decompose each `import_declaration`. `@import.statement` is captured
@@ -578,6 +590,7 @@ function synthesizeJavaAnonymousClassDeclarations(
       '@declaration.class': nodeToCapture('@declaration.class', body),
       '@declaration.name': syntheticCapture('@declaration.name', body, identity.name),
       '@declaration.is-synthetic': syntheticCapture('@declaration.is-synthetic', body, 'true'),
+      ...javaClassQualifierCaptures(oce, identity.name),
     });
 
     // Inheritance: the anonymous class extends/implements its constructed
@@ -639,6 +652,7 @@ function synthesizeJavaAnonymousClassDeclarations(
       out.push({
         '@declaration.class': nodeToCapture('@declaration.class', bodyNode),
         '@declaration.name': syntheticCapture('@declaration.name', bodyNode, bodiedIdentity.name),
+        ...javaClassQualifierCaptures(constant, bodiedIdentity.name),
         '@declaration.is-synthetic': syntheticCapture(
           '@declaration.is-synthetic',
           bodyNode,

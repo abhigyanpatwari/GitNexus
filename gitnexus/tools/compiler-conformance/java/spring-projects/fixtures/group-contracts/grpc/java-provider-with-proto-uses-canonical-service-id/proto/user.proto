@@ -1,0 +1,2 @@
+package com.example;
+service UserService { rpc GetUser (R) returns (R); }

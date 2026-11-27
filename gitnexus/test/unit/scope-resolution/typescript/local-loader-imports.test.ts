@@ -32,6 +32,21 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
     return extractParsedFile(provider, wrap(source, extension), `app.${extension}`)!;
   }
 
+  it('uses the second Map slot and stops narrowing after assignment', () => {
+    const parsed = extract(`
+      function consume(entries, repo) {
+        for (const [, value] of entries) value.save();
+        if (repo instanceof Key) { repo.before(); repo = other; repo.after(); }
+      }`);
+    const bindings = parsed.scopes.flatMap((scope) => [...scope.typeBindings.entries()]);
+    expect(bindings.filter(([name]) => name === 'value').map(([, type]) => type.rawName)).toContain(
+      '__MAP_TUPLE_1__:entries',
+    );
+    expect(
+      bindings.filter(([name, type]) => name === 'repo' && type.rawName === 'Key'),
+    ).toHaveLength(1);
+  });
+
   it('keeps module and function ownership when their source ranges coincide', () => {
     const parsed = extract('function sole(require) { const ns = require("./blocked"); }');
     const module = parsed.scopes.find((scope) => scope.kind === 'Module')!;
@@ -113,6 +128,26 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
     expect(forwarded.parsedImports).toEqual([]);
   });
 
+  it('accounts for loop writes to the ambient loader and respects loop-local shadows', () => {
+    const reassigned = extract(`
+      function load(otherLoader) {
+        for (require of [otherLoader]) {}
+        const { run } = require('./blocked');
+        run();
+      }
+    `);
+    expect(reassigned.parsedImports).toEqual([]);
+
+    const shadowed = extract(`
+      function load(loaders) {
+        for (const require of loaders) { require('./shadowed'); }
+        const { run } = require('./genuine');
+        run();
+      }
+    `);
+    expect(shadowed.parsedImports.map((imp) => imp.targetRaw)).toEqual(['./genuine']);
+  });
+
   it('treats a named class expression as a local loader shadow without hiding the real loader', () => {
     const parsed = extract(`const Holder = class require {
       method() { const ns = require('./shadowed'); return ns.run(); }
@@ -167,6 +202,18 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
         .map((claim) => claim.name),
     ).toEqual(['imported']);
   });
+});
+
+it('tracks guarded JavaScript member uses in a Vue script', () => {
+  const captures = emitVueScopeCaptures(
+    '<script lang="js">function use(x) { if (x instanceof A) { x.first(); x = b; x.last(); } }</script>',
+    'Guard.vue',
+  );
+  expect(
+    captures
+      .filter((match) => match['@type-binding.instanceof-narrow'])
+      .map((match) => match['@type-binding.type'].text),
+  ).toEqual(['A']);
 });
 
 it('recognizes TypeScript import-equals as a module namespace binding', () => {
@@ -311,6 +358,10 @@ describe('local-loader graph targets', () => {
         export function outsideBlock() { { const ns = require('./a'); } return ns.run(); }
         export function unresolved() { const root = require('./missing'); return root.run(); }
         export function mutated() { let ns = require('./a'); ns = factory; return ns.run(); }
+        export function loopMutated(replacements) {
+          let ns = require('./a');
+          for (ns of replacements) ns.run();
+        }
         export function conditional() { if (flag) { var ns = require('./a'); } return ns.run(); }
         export function before() { ns.run(); const ns = require('./a'); }
         export function blocked(require) { const ns = require('./a'); return ns.run(); }
@@ -318,6 +369,13 @@ describe('local-loader graph targets', () => {
         extension,
       );
       if (extension === 'ts' || extension === 'js') {
+        files[`${extension}/replaced.${extension}`] = `
+          export function replaced(otherLoader) {
+            for (require of [otherLoader]) {}
+            const { run } = require('./a');
+            return run();
+          }
+        `;
         files[`${extension}/forward.${extension}`] = `
           let { run: changed, stable } = require('./exports');
           changed = custom;
@@ -371,6 +429,18 @@ describe('local-loader graph targets', () => {
           .sort()
           .map((name) => [name, `${extension}/app.${extension}`]),
       );
+    },
+  );
+
+  it.each(['ts', 'js'])(
+    '%s refuses the module edge when a loop replaces the loader',
+    (extension) => {
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) =>
+          edge.sourceFilePath === `${extension}/replaced.${extension}` &&
+          edge.targetFilePath === `${extension}/a.${extension}`,
+      );
+      expect(calls).toEqual([]);
     },
   );
 

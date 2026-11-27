@@ -13,6 +13,25 @@ entries. The count arm remains 138 call drops and 168 total drops.
 Earlier entries below retain their original measurement contracts and source pins;
 member-name-only RESOLVES claims in those entries are historical.
 
+## C# array-typed parameters (#4098)
+
+C# `indexElement` (`repos[0].Save()` with a `User[] repos` parameter) moves
+VISIBLE-GAP -> RESOLVES with the exact `User.Save` target. The C# query now
+captures `(array_type)` parameter types, so `repos` binds `User[]`, and the
+existing `elementTypeOf` index route peels it to `User`. Every other shape
+state is unchanged, and the count arm is unchanged.
+
+The capture is limited to scoped owners (method, constructor, local function,
+operator, conversion operator) and to identifier or predefined-type elements.
+Generic elements (`Box<User>[]`, `Cell<User>[,]`) and unscoped owners
+(delegate, indexer, anonymous method, lambda) would otherwise produce
+wrong-owner edges; `csharp-array-parameter-binding.test.ts` pins them as
+no-target rows.
+
+The same change moves `bench/scope-capture`: the C# fingerprint goes from
+`3720a3d2` (2899 groups) to `38c6dc76` (2901 groups), the two `string[] args`
+parameters of `Main`. Both `measure.mjs --check` runs pass.
+
 ## Java receiver and generated dependency ownership (#3955)
 
 Java `indexElement` (`repos[0].save()` with a `User[] repos` parameter) moves
@@ -1550,3 +1569,13 @@ The validated #3667 head `fb6316b90` is merged normally. Outside the three recei
 The R audit fixes add R fixtures whose untyped receivers end as `receiver-unresolved` drops: a constructor that types a name only when every binding of it agrees, typed private members, dotted class names and `with()` limits. The count arm moves from 141 to 161 call drops and from 175 to 195 across all kinds; reads (34) and writes (0) are unchanged. All 21 added drops are `.R` files (`callDropsByExtension..R` goes from absent to 21), and no other extension moves from the R change (the net is 20 because the merged Dart awaited-call fix, #3876, removed one `.dart` drop: no-chain and unknown each lose one). By shape: chain-field 57 to 64, no-chain 39 to 41, chain-call 31 to 34 and unclassified 13 to 21. By origin: in-program 53 to 60, unknown 64 to 69 and unclassified 2 to 10; external stays 22. The bench counts only `suppressed` outcomes with the reason `receiver-unresolved`, so the movement is that reason alone. No R arm is added to the shape corpora; only the count-arm numbers change. The baseline was refreshed with `--update-baseline` and `--check` passes.
 
 After merging upstream `40c69665e`, the combined fixture tree records 174 unresolved receiver calls and 34 unresolved reads. R accounts for 21 calls. The additional 13 calls come from upstream Java fixtures.
+
+### TypeScript Express fixture calls
+
+The `express-forwarded-registrations` fixture imports Express from outside the corpus.
+The resolver now records an unresolved receiver for `app.get` in `registerWebUI`
+and `mountSSEProgress`. Both calls were absent from the base graph and still have
+no in-repository target. The fixture's three existing call edges are preserved.
+This increases the all-language count from 174 to 176 unresolved calls, with
+34 unresolved reads. The dynamic-import fixture still links `feature.activate()`
+to its imported `Feature.activate` method.

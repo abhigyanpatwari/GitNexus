@@ -699,11 +699,6 @@ describe('graph and SemanticModel rename', () => {
 
   it.each([
     [
-      'Java constructor',
-      'model.java',
-      'class Writer {\n Writer() {}\n static void use() { new Writer(); }\n}\n',
-    ],
-    [
       'C# constructor',
       'model.cs',
       'class Writer {\n public Writer() {}\n static void Use() { new Writer(); }\n}\n',

@@ -262,6 +262,24 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
     expect(isLbugReady('d-shared')).toBe(false);
   });
 
+  it('keeps a reopened repo leased when an earlier extraction releases its pin', async () => {
+    vi.useFakeTimers();
+    const id = 'reopened';
+    await init(id);
+    const releaseEarlier = pinRepo(id);
+    await closeLbug(id);
+    await init(id);
+    const releaseCurrent = pinRepo(id);
+
+    releaseEarlier();
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+    expect(isLbugReady(id)).toBe(true);
+
+    releaseCurrent();
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+    expect(isLbugReady(id)).toBe(false);
+  });
+
   it('a pin acquired while closeOne awaits db.close() does not survive teardown', async () => {
     vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
       init: vi.fn().mockResolvedValue(undefined),

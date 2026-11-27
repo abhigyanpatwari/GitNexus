@@ -79,7 +79,7 @@ Generates repository documentation from the knowledge graph using an LLM. HTTP p
 
 | Flag                | Effect                                    |
 | ------------------- | ----------------------------------------- |
-| `--force`           | Force full regeneration, also required to re-generate an existing wiki in a different language |
+| `--force`           | Force full regeneration: group the files into modules again (an edited `module_tree.json` is kept) and rewrite every page. Also required to re-generate an existing wiki in a different language |
 | `--provider <name>` | LLM provider: minimax, anthropic, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax). Local CLIs (`cursor`, `claude`, `codex`, `opencode`, `grok`) use your existing CLI login and skip `--api-key`. `anthropic` calls the Anthropic Messages API with `ANTHROPIC_API_KEY` (or `GITNEXUS_API_KEY` / `--api-key`); default model `claude-opus-5-5`. |
 | `--model <model>`   | LLM model (default: MiniMax-M3)           |
 | `--base-url <url>`  | LLM API base URL                          |

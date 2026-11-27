@@ -1,0 +1,1 @@
+record User(String name, java.util.List<String> tags) implements Named {}

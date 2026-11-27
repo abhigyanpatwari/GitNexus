@@ -1,0 +1,1 @@
+package p1; import p0.Foo; public class ChildFoo extends Foo { public void childOnly() {} }

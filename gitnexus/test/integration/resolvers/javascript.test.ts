@@ -1005,3 +1005,144 @@ describe('JavaScript default imports (#3956)', () => {
     expect(targetsFrom('App', 'Comp.jsx')).toContain('Comp');
   });
 });
+
+// #1646: member references matched only `property_identifier`, so a call, read
+// or write through `this.#name` (a `private_property_identifier`) linked
+// nothing, and JavaScript did not declare private methods and fields at all.
+const privateMembersSource = (ext: string) => `export class Logger {
+  write(msg) {
+    return msg;
+  }
+}
+
+export class Store {
+  #items = [];
+  #count = 0;
+  #logger = new Logger();
+
+  static #create() {
+    return new Store();
+  }
+
+  static make() {
+    return Store.#create();
+  }
+
+  #log(msg) {
+    return this.#logger.write(msg);
+  }
+
+  #bump() {
+    this.#count += 1;
+  }
+
+  add(item) {
+    this.#items.push(item);
+    this.#log('added');
+  }
+
+  reset() {
+    this.#count = 0;
+    this.#bump();
+  }
+
+  async #load() {
+    return this.#count;
+  }
+
+  async refresh() {
+    return await this.#load();
+  }
+${
+  ext === 'ts'
+    ? `
+  async reload() {
+    return await this.#load<number>();
+  }
+`
+    : ''
+}}
+
+export class Queue {
+  #bump() {
+    return 1;
+  }
+
+  push() {
+    return this.#bump();
+  }
+}
+
+export class Button {
+  #onClick = () => 1;
+  #onPress = function () {
+    return 2;
+  };
+
+  click() {
+    return this.#onClick();
+  }
+
+  press() {
+    return this.#onPress();
+  }
+}
+`;
+
+describe.each(['js', 'ts'])('private class members in a .%s file (#1646)', (ext) => {
+  const result = useFixture(`private-members-${ext}`, {
+    [`store.${ext}`]: privateMembersSource(ext),
+  });
+  const edgesFrom = (type: string, source: string) =>
+    getRelationships(result(), type).filter((e) => e.source === source);
+
+  it('links a call through this.#name to the method of the same class', () => {
+    expect(edgesFrom('CALLS', 'reset').map((e) => e.rel.targetId)).toEqual([
+      expect.stringContaining('Store.#bump'),
+    ]);
+    expect(edgesFrom('CALLS', 'push').map((e) => e.rel.targetId)).toEqual([
+      expect.stringContaining('Queue.#bump'),
+    ]);
+    expect(edgesFrom('CALLS', 'add').map((e) => e.target)).toEqual(['#log']);
+    expect(edgesFrom('CALLS', 'make').map((e) => e.target)).toEqual(['#create']);
+    expect(edgesFrom('CALLS', 'refresh').map((e) => e.target)).toEqual(['#load']);
+  });
+
+  it('attributes a call made in a private method to that method', () => {
+    expect(edgesFrom('CALLS', '#log').map((e) => e.target)).toEqual(['write']);
+    expect(edgesFrom('CALLS', 'Store').map((e) => e.target)).not.toContain('write');
+  });
+
+  it('records reads and writes of private fields', () => {
+    const accesses = (source: string) =>
+      edgesFrom('ACCESSES', source).map((e) => `${e.rel.reason} ${e.target}`);
+    expect(accesses('add')).toEqual(['read #items']);
+    expect(accesses('#log')).toEqual(['read #logger']);
+    expect(accesses('#load')).toEqual(['read #count']);
+    expect(accesses('reset')).toEqual(['write #count']);
+    expect(accesses('#bump')).toEqual(['write #count']);
+  });
+
+  it('gives private fields a Property node, and a private closure field a Method', () => {
+    expect(
+      edgesFrom('HAS_PROPERTY', 'Store')
+        .map((e) => e.target)
+        .sort(),
+    ).toEqual(['#count', '#items', '#logger']);
+    expect(
+      edgesFrom('HAS_METHOD', 'Button')
+        .map((e) => e.target)
+        .sort(),
+    ).toEqual(['#onClick', '#onPress', 'click', 'press']);
+    expect(edgesFrom('CALLS', 'click').map((e) => e.targetLabel)).toEqual(['Method']);
+    expect(edgesFrom('CALLS', 'press').map((e) => e.targetLabel)).toEqual(['Method']);
+  });
+
+  // Type arguments are TypeScript only. A skipped .js copy of this test would
+  // never pass anywhere, which fails `every test executed`.
+  if (ext === 'ts') {
+    it('links an awaited call with type arguments, await this.#m<T>()', () => {
+      expect(edgesFrom('CALLS', 'reload').map((e) => e.target)).toEqual(['#load']);
+    });
+  }
+});

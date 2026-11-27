@@ -1,0 +1,1 @@
+package i6; class Caller { void f(E.C c) { c.getX(); } }

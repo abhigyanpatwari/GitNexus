@@ -31,7 +31,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from './helpers.js';
+} from '../../integration/resolvers/helpers.js';
 
 interface Fixture {
   language: string;
@@ -43,33 +43,6 @@ interface Fixture {
 }
 
 const FIXTURES: Fixture[] = [
-  {
-    language: 'Java',
-    files: {
-      'Repo.java': `package probe;
-        public interface Repo { void save(String u); }`,
-      'SubRepo.java': `package probe;
-        public interface SubRepo extends Repo {}`,
-      'BaseRepo.java': `package probe;
-        public abstract class BaseRepo implements Repo {}`,
-      'UserRepo.java': `package probe;
-        public class UserRepo implements Repo { public void save(String u) {} }`,
-      'MockRepo.java': `package probe;
-        public class MockRepo implements Repo { public void save(String u) {} }`,
-      'SubImpl.java': `package probe;
-        public class SubImpl implements SubRepo { public void save(String u) {} }`,
-      'BaseImpl.java': `package probe;
-        public class BaseImpl extends BaseRepo { public void save(String u) {} }`,
-      'Service.java': `package probe;
-        public class Service {
-          private Repo repo;
-          public void runField(String u) { this.repo.save(u); this.repo.save(u); }
-          public void runParam(Repo r, String u) { r.save(u); r.save(u); }
-        }`,
-    },
-    targets: ['BaseImpl.java', 'MockRepo.java', 'Repo.java', 'SubImpl.java', 'UserRepo.java'],
-    edgesPerTarget: 1,
-  },
   {
     language: 'C#',
     files: {

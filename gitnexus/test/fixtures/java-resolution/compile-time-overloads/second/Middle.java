@@ -1,0 +1,1 @@
+package second; public class Middle extends first.Base {}

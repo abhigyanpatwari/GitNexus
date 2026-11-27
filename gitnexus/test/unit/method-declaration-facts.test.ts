@@ -1,12 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import Parser from 'tree-sitter';
-import Java from 'tree-sitter-java';
 import TypeScript from 'tree-sitter-typescript';
 import { createMethodExtractor } from '../../src/core/ingestion/method-extractors/generic.js';
-import {
-  javaMethodConfig,
-  kotlinMethodConfig,
-} from '../../src/core/ingestion/method-extractors/configs/jvm.js';
+import { kotlinMethodConfig } from '../../src/core/ingestion/method-extractors/configs/jvm.js';
 import {
   typescriptMethodConfig,
   javascriptMethodConfig,
@@ -16,9 +12,7 @@ import { pythonMethodConfig } from '../../src/core/ingestion/method-extractors/c
 import { phpMethodConfig } from '../../src/core/ingestion/method-extractors/configs/php.js';
 import { swiftMethodConfig } from '../../src/core/ingestion/method-extractors/configs/swift.js';
 import { dartMethodConfig } from '../../src/core/ingestion/method-extractors/configs/dart.js';
-import { computeJavaArityMetadata } from '../../src/core/ingestion/languages/java/arity-metadata.js';
 import { computeTsArityMetadata } from '../../src/core/ingestion/languages/typescript/arity-metadata.js';
-import { memoizeDeclarationFact } from '../../src/core/ingestion/method-extractors/declaration-facts.js';
 import { computeKotlinArityMetadata } from '../../src/core/ingestion/languages/kotlin/arity-metadata.js';
 import { computeCsharpArityMetadata } from '../../src/core/ingestion/languages/csharp/arity-metadata.js';
 import { computePythonArityMetadata } from '../../src/core/ingestion/languages/python/arity-metadata.js';
@@ -79,14 +73,6 @@ describe('shared callable declaration facts', () => {
     }
   }
   for (const fixture of [
-    {
-      language: Java,
-      config: javaMethodConfig,
-      code: 'class C { int f(int x, String... rest) { return x; } }',
-      nodeType: 'method_declaration',
-      arity: computeJavaArityMetadata,
-      expectedTypes: ['int', 'String'],
-    },
     {
       language: TypeScript.typescript,
       config: typescriptMethodConfig,
@@ -241,56 +227,4 @@ describe('shared callable declaration facts', () => {
       },
     );
   }
-
-  it('separates same-line declarations and reparsed trees', () => {
-    const parser = new Parser();
-    parser.setLanguage(Java);
-    const first = parser.parse('class C { void f(int x) {} void f(String s) {} }');
-    const second = parser.parse('class C { void f(long x) {} }');
-    const [intNode, stringNode] = first.rootNode.descendantsOfType('method_declaration');
-    const longNode = second.rootNode.descendantsOfType('method_declaration')[0]!;
-    expect(javaMethodConfig.extractParameters(intNode!)[0]!.type).toBe('int');
-    expect(javaMethodConfig.extractParameters(stringNode!)[0]!.type).toBe('String');
-    expect(javaMethodConfig.extractParameters(longNode)[0]!.type).toBe('long');
-  });
-
-  it('reuses empty and absent facts across wrappers with the same native identity', () => {
-    const parser = new Parser();
-    parser.setLanguage(Java);
-    const tree = parser.parse('class C { void f() {} }');
-    const node = tree.rootNode.descendantsOfType('method_declaration')[0]!;
-    // A fresh traversal may already reuse a JS wrapper. This wrapper deliberately
-    // differs while preserving the actual native tree/node identity.
-    const wrapper = new Proxy(node, {});
-    expect(wrapper).not.toBe(node);
-    const absent = vi.fn(() => undefined);
-    const empty = vi.fn(() => []);
-    for (const extract of [absent, empty]) {
-      const shared = memoizeDeclarationFact(extract);
-      const first = shared(node);
-      expect(shared(wrapper)).toBe(first);
-      expect(extract).toHaveBeenCalledTimes(1);
-    }
-  });
-
-  it('retries failures and bypasses sharing when tree identity is unavailable', () => {
-    const parser = new Parser();
-    parser.setLanguage(Java);
-    const node = parser.parse('class C {}').rootNode;
-    const extract = vi
-      .fn<() => string>()
-      .mockImplementationOnce(() => {
-        throw new Error('incomplete');
-      })
-      .mockReturnValue('complete');
-    const shared = memoizeDeclarationFact(extract);
-    expect(() => shared(node)).toThrow('incomplete');
-    expect(shared(node)).toBe('complete');
-    expect(shared(node)).toBe('complete');
-    expect(extract).toHaveBeenCalledTimes(2);
-    const partial = {} as Parser.SyntaxNode;
-    shared(partial);
-    shared(partial);
-    expect(extract).toHaveBeenCalledTimes(4);
-  });
 });

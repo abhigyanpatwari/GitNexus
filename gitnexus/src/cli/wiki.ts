@@ -6,6 +6,7 @@
  */
 
 import path from 'path';
+import { realpathSync, statSync } from 'fs';
 import readline from 'readline';
 import { execSync, execFileSync } from 'child_process';
 import cliProgress from 'cli-progress';
@@ -13,9 +14,12 @@ import { getGitRoot, isGitRepo } from '../storage/git.js';
 import { getStoragePaths, loadCLIConfig, saveCLIConfig } from '../storage/repo-manager.js';
 import {
   requireStoragePath,
+  resolveStoragePath,
   STATUS_STORAGE_REQUIREMENTS,
   StorageRequirementError,
+  isTransientStorageInspection,
   isUnusableIndexInspection,
+  type StorageInspection,
 } from '../storage/storage-resolver.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
@@ -142,6 +146,61 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
   }
 };
 
+/** Whether `folder` is `root` or inside it, once symlinks are resolved. */
+const isWithin = (root: string, folder: string): boolean => {
+  try {
+    const relative = path.relative(realpathSync(root), realpathSync(folder));
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether the folder's lookup found no index of its own: none was written
+ * there, or the storage it resolved to is the repository's own, as with
+ * `GITNEXUS_STORAGE_PATH`. A slot that could not be read is not taken as
+ * missing.
+ */
+const hasNoIndexOfItsOwn = (inspection: StorageInspection, root: string): boolean => {
+  if (isUnusableIndexInspection(inspection)) return !isTransientStorageInspection(inspection);
+  try {
+    return path.resolve(inspection.storagePath) === path.resolve(resolveStoragePath(root));
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The index of `repoPath`, or else of the repository that contains it. A
+ * folder inside a repository has an index of its own only when it was
+ * analyzed on its own.
+ */
+const findIndex = async (repoPath: string): Promise<{ repoPath: string; storagePath: string }> => {
+  try {
+    return {
+      repoPath,
+      storagePath: await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS),
+    };
+  } catch (error) {
+    if (!(error instanceof StorageRequirementError)) throw error;
+    const root = getGitRoot(repoPath);
+    // Git follows GIT_DIR and GIT_WORK_TREE, which can name another checkout.
+    if (
+      !root ||
+      root === repoPath ||
+      !isWithin(root, repoPath) ||
+      !hasNoIndexOfItsOwn(error.inspection, root)
+    ) {
+      throw error;
+    }
+    return {
+      repoPath: root,
+      storagePath: await requireStoragePath(root, STATUS_STORAGE_REQUIREMENTS),
+    };
+  }
+};
+
 const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions): Promise<void> => {
   // Set verbose mode globally for cursor-client to pick up
   if (options?.verbose) {
@@ -153,7 +212,15 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   // ── Resolve repo path ───────────────────────────────────────────────
   let repoPath: string;
   if (inputPath) {
-    repoPath = path.resolve(inputPath);
+    const target = path.resolve(inputPath);
+    // A file stands for the folder that holds it.
+    let isFile = false;
+    try {
+      isFile = statSync(target, { throwIfNoEntry: false })?.isFile() ?? false;
+    } catch {
+      // An unreadable path is reported by the git check below.
+    }
+    repoPath = isFile ? path.dirname(target) : target;
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
@@ -173,12 +240,18 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   // ── Check for existing index ────────────────────────────────────────
   let storagePath: string;
   try {
-    storagePath = await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS);
+    const found = await findIndex(repoPath);
+    if (found.repoPath !== repoPath) console.log(`  Using the index of ${found.repoPath}\n`);
+    ({ repoPath, storagePath } = found);
   } catch (error) {
     if (!(error instanceof StorageRequirementError)) throw error;
     const inspection = error.inspection;
     if (!isUnusableIndexInspection(inspection)) {
-      console.log(`  Error: ${error.message}\n`);
+      console.log(`  Error: ${error.message}`);
+      if (inspection.repoPath !== repoPath) {
+        console.log(`  It is the index of ${inspection.repoPath}, which contains ${repoPath}.`);
+      }
+      console.log('');
       process.exitCode = 1;
       return;
     }
@@ -693,10 +766,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       console.log('\n  Continuing with wiki generation...\n');
       bar.start(100, 30, { phase: 'Generating pages...' });
 
-      // Re-run generator without reviewOnly flag
+      // Re-run generator without reviewOnly flag, from the tree the user approved
       const continueOptions: WikiOptions = {
         ...wikiOptions,
         reviewOnly: false,
+        useSavedTree: true,
       };
 
       const continueGenerator = new WikiGenerator(

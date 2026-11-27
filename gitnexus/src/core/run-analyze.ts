@@ -41,6 +41,7 @@ import { constants as fsConstants, existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
+import { forceGc } from '../storage/parsedfile-store.js';
 import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
 import { requireExclusiveIndexLock, sweepStagingArtifacts } from '../storage/index-lock.js';
 import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
@@ -924,6 +925,7 @@ import {
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from './embedding-mode.js';
 import type { GraphEmitManifest } from './lbug/graph-emit-sink.js';
+import { isConstrainedPdgBuild } from './analysis-resource-budget.js';
 
 /**
  * Relationships RESIDENT in the in-memory graph, excluding the PDG layers —
@@ -2084,14 +2086,19 @@ async function runFullAnalysisInner(
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
   const initAnalysisLbug = (dbPath: string, readOnly = false) => {
-    if (options.resources) {
+    const budget = options.resources;
+    if (budget) {
       const sizedPool = getEffectiveBufferPoolSize();
-      const ceiling = options.resources.parse.graphPoolBytes;
+      const ceiling = budget.parse.graphPoolBytes;
+      // COPY and FTS allocate per-thread workspaces while the PDG is still
+      // resident. Serialize writes in the measured 6 GiB case (one requested
+      // parser worker; see isConstrainedPdgBuild).
+      const serialPdgWrite = !readOnly && isConstrainedPdgBuild(options.pdg, budget);
       return initLbug(dbPath, {
         skipFts: readOnly || !!ftsDisabledReason,
         ...(readOnly ? { readOnly: true } : {}),
         bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
-        threads: options.resources.parse.nativeThreads,
+        threads: serialPdgWrite ? 1 : budget.parse.nativeThreads,
       });
     }
     if (readOnly) return initLbug(dbPath, { readOnly: true, skipFts: true });
@@ -5171,6 +5178,12 @@ async function runFullAnalysisInner(
       );
       progress('fts', 90, 'Search indexes skipped (previous native abort)');
     } else if (ftsAvailable) {
+      if (!isIncremental && options.pdg && options.resources?.automatic === false) {
+        // COPY is complete. Reclaim spare V8 pages before native tokenization
+        // when they occupy a substantial fraction of the database reservation.
+        const { heapTotal, heapUsed } = process.memoryUsage();
+        if (heapTotal - heapUsed >= options.resources.parse.graphPoolBytes / 2) forceGc();
+      }
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-

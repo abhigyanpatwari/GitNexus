@@ -35,11 +35,7 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
-import {
-  collectEsmExportEvidence,
-  esmExportVerdict,
-  isEsmDefaultExport,
-} from '../../ts-js-export-marker.js';
+import { collectEsmExportEvidence, addEsmExportMarkerCaptures } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -181,8 +177,11 @@ function pickFirstNode(
  *   3. The member_expression is the `left:` of an `assignment_expression` /
  *      `augmented_assignment_expression` (it's a write, already captured
  *      as `@reference.write.member`).
- *   4. The member_expression is the `function:` of an `await_expression`
- *      being called (handled by the member-call capture).
+ *   4. The member_expression is the awaited callee of `await obj.m<T>()`,
+ *      which tree-sitter parses as
+ *      `call_expression(function: await_expression(member_expression))`
+ *      (already captured as `@reference.call.member`). An awaited member
+ *      that is not called, `await obj.pending`, stays a read.
  *   5. The member_expression is the `name:` of a `jsx_self_closing_element`
  *      or `jsx_opening_element` (it's a JSX component invocation, already
  *      captured as `@reference.call.member` by the TSX-only query suffix).
@@ -203,6 +202,12 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
     case 'assignment_expression':
     case 'augmented_assignment_expression':
       return parent.childForFieldName('left')?.id !== memberNode.id;
+    case 'await_expression': {
+      const call = parent.parent;
+      return !(
+        call?.type === 'call_expression' && call.childForFieldName('function')?.id === parent.id
+      );
+    }
     case 'jsx_self_closing_element':
     case 'jsx_opening_element':
       return parent.childForFieldName('name')?.id !== memberNode.id;
@@ -442,7 +447,7 @@ export function emitTsScopeCaptures(
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_statement') ??
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'export_statement');
       if (stmtNode !== null) {
-        const decomposed = splitImportStatement(stmtNode);
+        const decomposed = splitImportStatement(stmtNode, exportEvidence);
         for (const d of decomposed) out.push(d);
       }
       // If decomposition yielded nothing (malformed/bare anchor), drop
@@ -607,8 +612,8 @@ export function emitTsScopeCaptures(
           fnNode,
           deriveDefaultExportHocName(filePath),
         );
-        // This declaration's name is synthetic, so the later query-name
-        // marker cannot see it. The HOC predicate already proves the export.
+        // The graph gives the exported wrapper a synthetic name. A named
+        // callback's binding is scoped to that function expression.
         grouped['@declaration.is-exported'] = syntheticCapture(
           '@declaration.is-exported',
           fnNode,
@@ -618,6 +623,11 @@ export function emitTsScopeCaptures(
           '@declaration.is-default-export',
           fnNode,
           'true',
+        );
+        grouped['@declaration.named-exports'] = syntheticCapture(
+          '@declaration.named-exports',
+          fnNode,
+          '[]',
         );
       }
     }
@@ -721,24 +731,7 @@ export function emitTsScopeCaptures(
     // `@declaration.is-exported`: a verdict for every declaration the file's
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
-    const declNameNode = groupedNodes['@declaration.name'];
-    if (exportEvidence !== undefined && declNameNode !== undefined) {
-      const verdict = esmExportVerdict(declNameNode, exportEvidence);
-      if (verdict !== undefined) {
-        grouped['@declaration.is-exported'] = syntheticCapture(
-          '@declaration.is-exported',
-          declNameNode,
-          verdict ? 'true' : 'false',
-        );
-      }
-      if (verdict === true && isEsmDefaultExport(declNameNode, exportEvidence)) {
-        grouped['@declaration.is-default-export'] = syntheticCapture(
-          '@declaration.is-default-export',
-          declNameNode,
-          'true',
-        );
-      }
-    }
+    addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
@@ -772,7 +765,6 @@ export function emitTsScopeCaptures(
   // destructured local is used as a receiver (e.g. `address.save()`).
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
-  synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
 
@@ -1013,17 +1005,22 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
  * type bindings so `v` resolves like a `Map` iterator tuple element.
  * Uses sentinel `__MAP_TUPLE_i__:rhs` consumed by compound-receiver.
  */
-function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
+export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
   for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
-    if (node.type !== 'for_in_statement') continue;
+    if (node.childForFieldName('operator')?.type !== 'of') continue;
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
     if (left === null || right === null) continue;
     if (left.type !== 'array_pattern' || right.type !== 'identifier') continue;
     const rhs = right.text;
     let slot = 0;
-    for (const child of left.namedChildren) {
-      if (child === null || child.type !== 'identifier') continue;
+    // Top-level separators mark slots even when a slot has no simple binding.
+    for (const child of left.children) {
+      if (child.type === ',') {
+        slot++;
+        continue;
+      }
+      if (child.type !== 'identifier') continue;
       const localName = child.text;
       out.push({
         '@type-binding.name': syntheticCapture('@type-binding.name', child, localName),
@@ -1038,51 +1035,7 @@ function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]):
           String(slot),
         ),
       });
-      slot++;
     }
-  }
-}
-
-/**
- * `if (x instanceof User) { x.save() }` — synthesize a `User` type binding
- * for `x` anchored in the consequence block so scope-chain lookup inside
- * the then-branch sees the narrowed type.
- *
- * **Known limitation:** the LHS must be a bare `identifier` and the RHS
- * an `identifier`/`type_identifier`. Member-expression LHS such as
- * `if (user.address instanceof Address)` is intentionally NOT synthesized
- * — narrowing a property-access target requires a stable storage key
- * the binding layer can hold, which member chains don't supply. Field-
- * type resolution covers the common case for those receivers via
- * declared types instead.
- */
-function synthesizeInstanceofNarrowings(root: SyntaxNode, out: CaptureMatch[]): void {
-  for (const node of relevantNodesRightFirst(root, ['if_statement'])) {
-    if (node.type !== 'if_statement') continue;
-    const cond = node.childForFieldName('condition');
-    if (cond === null) continue;
-    const inner = cond.type === 'parenthesized_expression' ? cond.namedChildren[0] : cond;
-    if (inner === null || inner.type !== 'binary_expression') continue;
-    const op = inner.childForFieldName('operator');
-    const left = inner.childForFieldName('left');
-    const right = inner.childForFieldName('right');
-    if (op === null || left === null || right === null) continue;
-    if (op.type !== 'instanceof') continue;
-    if (left.type !== 'identifier') continue;
-    if (right.type !== 'identifier' && right.type !== 'type_identifier') continue;
-    const varName = left.text;
-    const typeName = right.text;
-    const cons = node.childForFieldName('consequence');
-    if (cons === null) continue;
-    out.push({
-      '@type-binding.name': syntheticCapture('@type-binding.name', cons, varName),
-      '@type-binding.type': syntheticCapture('@type-binding.type', right, typeName),
-      '@type-binding.instanceof-narrow': syntheticCapture(
-        '@type-binding.instanceof-narrow',
-        cons,
-        '1',
-      ),
-    });
   }
 }
 

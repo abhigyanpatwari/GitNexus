@@ -1,0 +1,9 @@
+{
+  "diagnostics": {"compiler.err.report.access": 1},
+  "calls": [
+    {"caller": "Method:Main.java:Outer.inside#1", "member": "save", "source": ["Main.java#5:2"]},
+    {"caller": "Method:Main.java:Nested.nested#1", "member": "save", "source": ["Main.java#6:24"]},
+    {"caller": "Method:Main.java:Other.shown#1", "member": "save", "source": ["Main.java#10:2"]},
+    {"caller": "Method:Main.java:Other.outside#1", "member": "save", "source": ["Main.java#9:2"], "targets": 0}
+  ]
+}

@@ -1,3 +1,4 @@
+import { runInSequence } from './run-in-sequence.mjs';
 // Run one fixture in its own process: real registry, persisted index, and public tools.
 // Build first (`npm run build`); no compiler or test-runner API is loaded by this runner.
 import assert from 'node:assert/strict';
@@ -170,6 +171,17 @@ try {
   const request = { repo, symbol_uid: target.id, new_name: specification.newName };
   const preview = await backend.callTool('rename', { ...request, dry_run: true });
   assert.equal(preview.status, specification.expect.status, JSON.stringify(preview));
+  await runInSequence(specification.alternateTargets ?? [], async (alternate) => {
+    const symbol = select(graph.nodes, alternate);
+    assert.notEqual(symbol.id, target.id);
+    const other = await backend.callTool('rename', {
+      ...request,
+      symbol_uid: symbol.id,
+      dry_run: true,
+    });
+    assert.equal(other.status, preview.status, JSON.stringify(other));
+    assert.deepEqual(other.changes, preview.changes);
+  });
   await assertSources(before);
   const applied =
     specification.expect.status === 'success'

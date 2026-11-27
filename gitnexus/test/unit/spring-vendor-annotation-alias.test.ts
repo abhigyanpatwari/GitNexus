@@ -13,22 +13,11 @@
  * 4. Parity: both ingestion and group extractors surface the same routes
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import Parser from 'tree-sitter';
-import Java from 'tree-sitter-java';
 import {
   resolveSpringAnnotationAlias,
   springAnnotationHttpMethods,
 } from '../../src/core/ingestion/route-extractors/spring-shared.js';
-import { extractSpringRoutes } from '../../src/core/ingestion/route-extractors/spring.js';
-import { JAVA_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/java.js';
-import { normalizeExtractedRoutePath } from '../../src/core/ingestion/route-extractors/route-path.js';
 import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
-
-function parse(code: string): Parser.Tree {
-  const parser = new Parser();
-  parser.setLanguage(Java);
-  return parser.parse(code);
-}
 
 beforeEach(() => {
   vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
@@ -143,97 +132,6 @@ describe('springAnnotationHttpMethods with vendor aliases', () => {
   });
 });
 
-describe('extractSpringRoutes with vendor annotations', () => {
-  it('extracts routes from a controller using @Win annotations', () => {
-    const tree = parse(`
-package com.winning.opt.controller;
-
-@RestController
-@RequestMapping("/api/opt")
-public class OrderController {
-    @WinPostMapping("/create")
-    public String create() { return "{}"; }
-
-    @WinGetMapping("/query")
-    public String query() { return "[]"; }
-
-    @WinPostMapping(value = "/update")
-    public String update() { return "{}"; }
-}
-`);
-
-    const routes = extractSpringRoutes(tree, 'OrderController.java');
-    expect(routes).toHaveLength(3);
-
-    const postRoutes = routes.filter((r) => r.httpMethod === 'POST');
-    expect(postRoutes).toHaveLength(2);
-    const postPaths = postRoutes.map((r) => r.routePath).sort();
-    expect(postPaths).toEqual(['/create', '/update']);
-    for (const r of postRoutes) {
-      expect(r.prefix).toBe('/api/opt');
-    }
-
-    const getRoute = routes.find((r) => r.httpMethod === 'GET')!;
-    expect(getRoute.routePath).toBe('/query');
-    expect(getRoute.prefix).toBe('/api/opt');
-  });
-
-  it('extracts routes when vendor and standard annotations are mixed', () => {
-    const tree = parse(`
-@RestController
-@RequestMapping("/api/mix")
-public class MixedController {
-    @WinPostMapping("/win-create")
-    public String winCreate() { return "{}"; }
-
-    @PostMapping("/std-create")
-    public String stdCreate() { return "{}"; }
-
-    @GetMapping("/std-get")
-    public String stdGet() { return "[]"; }
-}
-`);
-
-    const routes = extractSpringRoutes(tree, 'MixedController.java');
-    expect(routes).toHaveLength(3);
-
-    const paths = routes.map((r) => r.routePath).sort();
-    expect(paths).toEqual(['/std-create', '/std-get', '/win-create']);
-  });
-
-  it('ingestion and group extractors agree on vendor annotation routes', () => {
-    const tree = parse(`
-@RestController
-@RequestMapping("/api/parity")
-public class ParityController {
-    @WinPostMapping("/create")
-    public String create() { return "{}"; }
-
-    @WinGetMapping("/query")
-    public String query() { return "[]"; }
-}
-`);
-
-    const ingestionRoutes = new Set(
-      extractSpringRoutes(tree, 'ParityController.java').map(
-        (r) => `${r.httpMethod} ${normalizeExtractedRoutePath(r.routePath, r.prefix ?? null)}`,
-      ),
-    );
-
-    const groupRoutes = new Set(
-      JAVA_HTTP_PLUGIN.scan(tree)
-        .filter((d) => d.role === 'provider')
-        .map((d) => `${d.method} ${normalizeExtractedRoutePath(d.path, null)}`),
-    );
-
-    expect([...ingestionRoutes].sort()).toEqual([...groupRoutes].sort());
-    expect([...ingestionRoutes].sort()).toEqual([
-      'GET /api/parity/query',
-      'POST /api/parity/create',
-    ]);
-  });
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Review regressions (magyargergo, 2026-08-29)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -247,42 +145,6 @@ describe('review regressions: class-level aliases', () => {
     expect(isClassLevelMappingAnnotation('WinPostMapping')).toBe(false);
     expect(isClassLevelMappingAnnotation('AuditRequestMapping')).toBe(false);
     expect(isClassLevelMappingAnnotation('GetMapping')).toBe(false);
-  });
-
-  it('P1: vendor class prefix flows into route paths (@WinRequestMapping + @WinGetMapping)', () => {
-    const tree = parse(`
-@WinRequestMapping("/vendor")
-public class VendorController {
-    @WinGetMapping("/users")
-    public String list() { return "ok"; }
-}
-`);
-    const routes = extractSpringRoutes(tree, 'VendorController.java');
-    expect(routes).toHaveLength(1);
-    // Class prefix /vendor comes from the aliased @WinRequestMapping — the
-    // exact path the old exact-match-only class handling missed (review P1).
-    expect(routes[0].prefix).toBe('/vendor');
-    expect(routes[0].routePath).toBe('/users');
-    expect(routes[0].httpMethod).toBe('GET');
-    expect(
-      JAVA_HTTP_PLUGIN.scan(tree)
-        .filter((detection) => detection.role === 'provider')
-        .map((detection) => `${detection.method} ${detection.path}`),
-    ).toEqual(['GET /vendor/users']);
-  });
-
-  it('P2: unregistered suffix no longer emits a phantom route (end-to-end)', () => {
-    const tree = parse(`
-public class AuditController {
-    @AuditPostMapping("/audit")
-    public String audit() { return "x"; }
-}
-`);
-    const routes = extractSpringRoutes(tree, 'AuditController.java');
-    expect(routes).toHaveLength(0);
-    expect(
-      JAVA_HTTP_PLUGIN.scan(tree).filter((detection) => detection.role === 'provider'),
-    ).toEqual([]);
   });
 
   it('P2: extra vendor prefixes can be registered via env', () => {

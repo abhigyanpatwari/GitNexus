@@ -18,6 +18,7 @@ const GUARD_FLAGS = [
   '--color=never',
   '--src-prefix=a/',
   '--dst-prefix=b/',
+  '--inter-hunk-context=0',
 ];
 
 describe('detect_changes EOL filtering', () => {
@@ -84,6 +85,31 @@ describe('detect_changes EOL filtering', () => {
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
+});
+
+it('excludes unchanged lines between edits when diff.interHunkContext is set', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'gitnexus-inter-hunk-'));
+  try {
+    initGitRepo(dir);
+    execFileSync('git', ['config', 'diff.interHunkContext', '1'], { cwd: dir });
+    const file = path.join(dir, 'sample.ts');
+    writeFileSync(file, 'const alpha = 1;\nconst beta = 2;\nconst gamma = 3;\n');
+    commitAll(dir, 'initial');
+    writeFileSync(file, 'const alpha = 4;\nconst beta = 2;\nconst gamma = 5;\n');
+
+    const diff = execFileSync('git', diffArgsFor('unstaged'), { cwd: dir, encoding: 'utf8' });
+    expect(parseDiffHunks(diff)).toEqual([
+      {
+        filePath: 'sample.ts',
+        hunks: [
+          { startLine: 1, endLine: 1 },
+          { startLine: 3, endLine: 3 },
+        ],
+      },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 /**

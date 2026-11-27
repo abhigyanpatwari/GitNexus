@@ -187,7 +187,7 @@ const MAX_CONNS_PER_REPO = 8;
  * resolution runs, leaving the deferred executor closures pointing at dead pool
  * entries (issue #2189).
  *
- * Pins are REFERENCE-COUNTED: the map holds repoId → active lease count. This
+ * Pins are REFERENCE-COUNTED: the map holds one counter per leased repo. This
  * lets overlapping holders (two windows of one sync, or two concurrent
  * `group sync` calls sharing a repo) coexist safely — the repo stays exempt
  * until the LAST holder releases. A boolean Set could not represent "two
@@ -201,7 +201,7 @@ const MAX_CONNS_PER_REPO = 8;
  * transiently exceed MAX_POOL_SIZE — the same soft-cap behavior that already
  * occurs when every entry is checked out.
  */
-const pinnedRepos = new Map<string, number>();
+const pinnedRepos = new Map<string, { count: number }>();
 
 // Behavior-neutral RSS tracing for the FTS evict→reload memory repro
 // (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
@@ -318,12 +318,15 @@ export const touchRepo = (repoId: string): void => {
  * pair explicitly.
  */
 export const pinRepo = (repoId: string): (() => void) => {
-  pinnedRepos.set(repoId, (pinnedRepos.get(repoId) ?? 0) + 1);
+  const pins = pinnedRepos.get(repoId) ?? { count: 0 };
+  pins.count += 1;
+  pinnedRepos.set(repoId, pins);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    unpinRepo(repoId);
+    // Teardown discards this counter. A reopened repo has its own leases.
+    if (pinnedRepos.get(repoId) === pins) unpinRepo(repoId);
   };
 };
 
@@ -334,13 +337,10 @@ export const pinRepo = (repoId: string): (() => void) => {
  * negative counts). Does NOT close the repo's pool.
  */
 export const unpinRepo = (repoId: string): void => {
-  const count = pinnedRepos.get(repoId);
-  if (count === undefined) return;
-  if (count <= 1) {
-    pinnedRepos.delete(repoId);
-  } else {
-    pinnedRepos.set(repoId, count - 1);
-  }
+  const pins = pinnedRepos.get(repoId);
+  if (!pins) return;
+  pins.count -= 1;
+  if (pins.count === 0) pinnedRepos.delete(repoId);
 };
 
 /**

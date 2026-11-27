@@ -4,6 +4,7 @@ import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
+import { createTreeReleaser } from '../../tree-sitter/native-tree-release.js';
 import { scanFile, unquoteLiteral } from './tree-sitter-scanner.js';
 import {
   TOPIC_SCAN_GLOB,
@@ -79,6 +80,7 @@ export class TopicExtractor implements ContractExtractor {
     // file based on which plugin the registry returns.
     const parser = new Parser();
     const out: ExtractedContract[] = [];
+    const releaseTrees = createTreeReleaser();
 
     for (const rel of files) {
       const provider = getProviderForFile(rel);
@@ -87,6 +89,8 @@ export class TopicExtractor implements ContractExtractor {
       const content = readSafe(repoPath, rel);
       if (!content) continue;
 
+      // Lets the previous files' dropped trees be freed (see native-tree-release.ts).
+      await releaseTrees();
       const matches = scanFile(parser, provider, content);
       for (const match of matches) {
         const valueNode = match.captures.value;

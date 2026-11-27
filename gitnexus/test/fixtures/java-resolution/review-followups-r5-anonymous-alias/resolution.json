@@ -1,0 +1,22 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location": 4},
+  "calls": [
+    {"caller": "Method:Main.java:App$1.m#0", "member": "save", "source": ["Main.java#15:17"]},
+    {"caller": "Method:Main.java:App$1Local.m#0", "member": "save", "source": ["Main.java#19:18"]},
+    {"caller": "Method:Main.java:App$1PackageLocal.m#0", "member": "save", "source": ["Main.java#56:49"]},
+    {"caller": "Method:Main.java:App$10.m#0", "member": "save", "source": ["Main.java#60:24"]},
+    {"caller": "Method:Main.java:App$5.m#0", "member": "save", "source": ["Main.java#35:30"]},
+    {"caller": "Method:Main.java:App$6.m#1", "member": "save", "source": ["Main.java#39:17"]},
+    {"caller": "Method:Main.java:App$2.m#0", "member": "save", "source": ["Main.java#23:22"]},
+    {"caller": "Method:Main.java:App$3.m#0", "member": "save", "source": ["Main.java#27:21"]},
+    {"caller": "Method:Main.java:App$8.m#0", "member": "save", "source": ["Main.java#48:22"]},
+    {"caller": "Method:Main.java:App$4.run#0", "member": "save", "published": [], "compilerTargets": ["Main.java#3:13"], "source": ["Main.java#31:24"]},
+    {"caller": "Method:Main.java:App$7.m#0", "member": "save", "published": [], "compilerTargets": ["Main.java#3:13"], "source": ["Main.java#43:17"]},
+    {"caller": "Method:Main.java:App$9.m#0", "member": "save", "published": [], "compilerTargets": ["Main.java#3:13"], "source": ["Main.java#52:26"]}
+  ],
+  "nodes": [
+    "Method:Main.java:App$4.run#0",
+    "Method:Main.java:App$7.m#0",
+    "Method:Main.java:App$9.m#0"
+  ]
+}

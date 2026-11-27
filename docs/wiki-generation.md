@@ -7,6 +7,7 @@ Generate LLM-powered documentation from your knowledge graph:
 ```bash
 # Requires an LLM API key (MINIMAX_API_KEY, ANTHROPIC_API_KEY, GITNEXUS_API_KEY or OPENAI_API_KEY)
 gitnexus wiki
+gitnexus wiki src/features     # a file uses its folder; a folder without an index of its own uses the repository's index
 gitnexus wiki --api-key <key>  # or pass the key on the command line
 
 # Use a custom model or provider (default model: MiniMax-M3)
@@ -71,6 +72,18 @@ only for Azure: `--provider azure` or an Azure OpenAI base URL.
 open the file in `$EDITOR` (or `$VISUAL`, else `vi`) and generate pages from the edited tree,
 or `n` to stop. In a non-interactive shell, generation continues without asking.
 
+Wiki generation uses a system Git installation to compare revisions. If Git is installed
+elsewhere, set `GITNEXUS_WIKI_GIT_PATH` to the absolute path of your trusted Git executable.
+
+`--force` groups the files into modules again before regenerating every page, unless
+`module_tree.json` was edited since the last generation; an edit is used for the next
+generation only. A run that finds more than five new source files since the last generation
+(files the knowledge graph indexes, at paths that did not exist then) also groups the files
+again, or uses an edited tree the same way. It then rewrites only the pages of modules whose
+files changed and deletes the pages of modules that are gone; other `.md` files in the wiki
+folder are left alone. If such a run stops before the end, the next run at the same commit
+completes it, and a run at another commit writes again the pages it changed.
+
 The completion limit must be a positive integer supported by your model. It applies to
 OpenAI-compatible HTTP providers; local agent CLI providers manage their own limits.
 For reasoning models, the limit includes reasoning tokens as well as the visible answer.
@@ -85,3 +98,10 @@ Use `--force` to replace incomplete pages already saved by an older version.
 For safety, `http://` LLM base URLs are allowed by default only for loopback hosts (`localhost`, `127.0.0.1`, `::1`). `--allow-insecure-connection` and `GITNEXUS_ALLOW_INSECURE_CONNECTION` accept exact hostnames or IP addresses only; do not include schemes, ports, paths, credentials, or wildcards.
 
 The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
+
+A module whose source does not fit one page (30,000 tokens) is split by directory, below the
+directory its files share, so a Gradle or Maven module is split at its packages
+(`src — main/entity`). Small neighbouring directories share a page up to the same size, and so
+do the files sitting directly in a directory (`top-level files (1 of 2)`), so only a single file
+larger than a page is cut. A module of three files or fewer stays on one page. IntelliJ project
+files (`.iml`, `.ipr`, `.iws`) and Gradle lockfiles are not indexed, so they get no page.

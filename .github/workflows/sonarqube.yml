@@ -2,24 +2,29 @@ name: SonarQube
 
 on:
   workflow_call:
+    inputs:
+      packages:
+        type: string
+        default: '["cli","web"]'
 
 jobs:
   build:
     name: Analyze with coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       actions: read
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download CLI and web LCOV
+        if: fromJSON(inputs.packages)[0] != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: sonar-coverage
@@ -30,9 +35,13 @@ jobs:
 
       - name: Prepare repository-relative LCOV
         shell: bash
+        env:
+          CLI: ${{ contains(fromJSON(inputs.packages), 'cli') }}
+          WEB: ${{ contains(fromJSON(inputs.packages), 'web') }}
         run: |
           mkdir -p coverage
           for package in gitnexus gitnexus-web; do
+            if [[ "$package" == gitnexus && "$CLI" != true || "$package" == gitnexus-web && "$WEB" != true ]]; then continue; fi
             report="$RUNNER_TEMP/sonar-coverage/$package/coverage/lcov.info"
             if ! grep -q '^SF:' "$report" || ! grep -Eq '^DA:[0-9]+,[0-9]+' "$report"; then
               echo "::error::Missing source or line coverage for $package" >&2
@@ -47,8 +56,24 @@ jobs:
             sed "s|^SF:|SF:$package/|" "$report"
           done > coverage/lcov.info
 
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compile Java conformance tools for analysis
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/sonar-java-classes"
+          shopt -s nullglob
+          sources=(gitnexus/tools/compiler-conformance/java/org/gitnexus/conformance/*.java)
+          if (( ${#sources[@]} )); then
+            "$JAVA_HOME/bin/javac" --release 21 -proc:none -encoding UTF-8 \
+              -d "$RUNNER_TEMP/sonar-java-classes" "${sources[@]}"
+          fi
+
       - name: Cache SonarQube packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
@@ -58,8 +83,27 @@ jobs:
         uses: SonarSource/sonarqube-auth-action@b372e2c2930aadfcc4f4399446da1e12772709ad # v1.2
         id: auth
 
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+      # The action verifies the CLI signature and adds sonar-scanner to PATH.
+      - name: Install SonarScanner
+        uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1
         with:
-          # workflow_run's GITHUB_SHA is the receiving workflow's default branch tip.
-          args: ${{ github.event_name == 'workflow_run' && format('-Dsonar.branch.name=main -Dsonar.scm.revision={0}', github.event.workflow_run.head_sha) || '' }}
+          args: --version
+
+      - name: SonarQube Scan
+        shell: bash
+        env:
+          MAIN_REVISION: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          args=(-Dsonar.qualitygate.wait=true -Dsonar.java.source=21
+                "-Dsonar.java.binaries=$RUNNER_TEMP/sonar-java-classes"
+                "-Dsonar.java.jdkHome=$JAVA_HOME")
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            args+=(-Dsonar.branch.name=main "-Dsonar.scm.revision=${MAIN_REVISION:?missing Publish revision}")
+          fi
+          # An analyzer can log ERROR and still upload a successful report.
+          # bash pipefail also propagates scanner and quality gate failures.
+          sonar-scanner "${args[@]}" 2>&1 | awk '
+            { print; fflush() }
+            /^[0-9:.]+[[:space:]]+ERROR([[:space:]]|$)/ { errors++ }
+            END { if (errors) { print "::error::SonarScanner logged " errors " error(s)"; exit 1 } }
+          '

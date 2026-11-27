@@ -59,6 +59,77 @@ describe('ECMAScript identifier spellings at module boundaries', () => {
     expect([...typescriptModuleExports(parsed)]).toEqual([['calculate', definition]]);
   });
 
+  it('forwards imported bindings with the original module and per-specifier erasure', () => {
+    const parsed = parse(`
+      import './init';
+      import main, { type Item, run, unused } from './leaf';
+      import * as ns from './other';
+      export { main as start, Item as Public, type run as Signature, ns as "module object" };
+    `);
+    const forwarded = parsed.parsedImports.filter((entry) => entry.exportsOnly);
+    expect(forwarded).toMatchObject([
+      { kind: 'reexport', localName: 'start', importedName: 'default', targetRaw: './leaf' },
+      {
+        kind: 'reexport',
+        localName: 'Public',
+        importedName: 'Item',
+        targetRaw: './leaf',
+        typeOnly: true,
+      },
+      {
+        kind: 'reexport',
+        localName: 'Signature',
+        importedName: 'run',
+        targetRaw: './leaf',
+        typeOnly: true,
+      },
+      { kind: 'namespace', localName: 'module object', targetRaw: './other' },
+    ]);
+    expect(forwarded[0]).not.toHaveProperty('typeOnly');
+    expect(forwarded[3]).not.toHaveProperty('typeOnly');
+  });
+
+  it('marks every public spelling of a type declaration as erased', () => {
+    const exports = typescriptModuleExports(
+      parse(`
+      export interface Shape {}
+      export type Size = number;
+      export { Size as Dimension };
+      export default interface DefaultShape {}
+      export { DefaultShape as Other };
+      export type Dual = number;
+      export function Dual() {}
+    `),
+    );
+    for (const name of ['Shape', 'Size', 'Dimension', 'default', 'Other']) {
+      expect(exports.get(name)?.typeOnlyExports).toContain(name);
+    }
+    expect(exports.get('Dual')).toMatchObject({ type: 'Function' });
+    expect(exports.get('Dual')?.typeOnlyExports).toBeUndefined();
+  });
+
+  it('keeps erased aliases out of the value names and preserves a separately exported value', () => {
+    const exports = typescriptModuleExports(
+      parse(String.raw`
+      class Impl {}
+      export type { Impl as "P\u0075blic" };
+      export function live() {}
+      export { type live as Erased };
+    `),
+    );
+    expect([...exports.keys()].sort()).toEqual(['Erased', 'Public', 'live']);
+    expect(exports.get('Public')).toMatchObject({
+      qualifiedName: 'Impl',
+      namedExports: [],
+      typeOnlyExports: ['Public'],
+    });
+    expect(exports.get('live')).toBe(exports.get('Erased'));
+    expect(exports.get('live')).toMatchObject({
+      namedExports: ['live'],
+      typeOnlyExports: ['Erased'],
+    });
+  });
+
   it('does not publish an ambiguous canonical name under any escaped spelling', () => {
     const parsed = parse(String.raw`
 export function calculate() { return 1; }
@@ -72,22 +143,26 @@ export function unique() { return 4; }
 });
 
 describe('default export key (#3956)', () => {
-  it('publishes a default-exported declaration under its name and under `default`', () => {
-    const exports = typescriptModuleExports(parse('export default function Child() {}'));
+  it('publishes a default-exported declaration under `default`', () => {
+    const parsed = parse('export default function Child() {}');
+    const exports = typescriptModuleExports(parsed);
     expect(exports.get('default')?.type).toBe('Function');
-    expect(exports.get('default')).toBe(exports.get('Child'));
+    expect(exports.get('default')).toBe(parsed.localDefs.find((def) => def.type === 'Function'));
+    expect(exports.has('Child')).toBe(false);
   });
 
   it('maps `default` to the callable winner of a `const` arrow default', () => {
-    const exports = typescriptModuleExports(parse('const X = () => 1;\nexport default X;'));
+    const parsed = parse('const X = () => 1;\nexport default X;');
+    const exports = typescriptModuleExports(parsed);
     expect(exports.get('default')?.type).toBe('Function');
-    expect(exports.get('default')).toBe(exports.get('X'));
+    expect(exports.get('default')).toBe(parsed.localDefs.find((def) => def.type === 'Function'));
+    expect(exports.has('X')).toBe(false);
   });
 
-  it('maps `default` to the same def a named lookup of an overloaded default returns', () => {
+  it('maps an overloaded default to the same def as its explicitly published name', () => {
     const exports = typescriptModuleExports(
       parse(
-        'export default function f(a: string): void;\nexport default function f(a: number): void;\nexport default function f(a: unknown) {}',
+        'export default function f(a: string): void;\nexport default function f(a: number): void;\nexport default function f(a: unknown) {}\nexport { f };',
       ),
     );
     expect(exports.get('default')).toBeDefined();

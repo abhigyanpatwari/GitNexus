@@ -1,0 +1,1 @@
+package app; import mid.Mid; public class App { public void run() { Mid mid = new Mid(); var a = mid.makeA(); var n = a.next(); n.visitA(); n.visitB(); } }

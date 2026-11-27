@@ -1,0 +1,1 @@
+package i4; @org.springframework.stereotype.Repository public class Store4 {}

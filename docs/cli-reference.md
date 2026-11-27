@@ -225,6 +225,10 @@ Notes:
 
 ## Environment variables
 
+| Scope index variable | Default | Effect | When to tune |
+| --- | --- | --- | --- |
+| `GITNEXUS_DISK_SCOPE_INDEX` | Unset or blank (automatic) | Any language that builds a PDG can spill lexical scopes to a backing store at 70% or more of the V8 heap limit. Full-scope debug output and resolved-file callbacks keep scopes resident in automatic mode. `1`, `true`, or `yes` forces disk storage. Other nonblank values, including `0`, keep scopes resident. | Use `0` to avoid shard I/O or `1` to explicitly select disk-backed resolution. |
+
 | HTTP embedding variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |
 | `GITNEXUS_EMBEDDING_CONCURRENCY` | `4` | Concurrent provider requests, integer `1`–`64`. HTTP providers only; local models and injected providers stay at `1`. A window holds at most 256 rows, so with the default sub-batch size of 8, values above 32 cannot increase concurrency. Byte limits may reduce the window further. | Set `1` for strictly serial or rate-limited endpoints, or set `GITNEXUS_EMBEDDING_MIN_INTERVAL_MS` to pace request starts. Concurrent retries can exhaust their attempt budget on an endpoint returning `429` even when serial requests succeed. |
@@ -392,12 +396,16 @@ flowchart TD
 
 ### Analysis resource admission and resumable status
 
-Automatic analysis retains the RAM-aware main heap and independent parser-worker
-ceilings. These are virtual limits and may sum above physical RAM. Use
-`--resource-budget <MiB>` for a strict phase reservation covering the supervisor,
-main heap, workers, native pools, queues and embedding model. The two phases do
-not overlap. `--memory-budget` alone changes the main heap without removing parser
-workers; with a strict total budget, incompatible overrides fail before work.
+Automatic analysis reserves up to 75% of effective process/container RAM for
+parsing and embeddings. These phases run separately. Each reservation includes
+the supervisor, main heap, and native pools. Parsing adds each worker’s heap
+and native allowance. Embedding adds queues and the model.
+Community-detection workers and isolates started by user preloads are outside
+these reservations.
+
+Use `--resource-budget <MiB>` to set the reservation ceiling. Admission sizes
+the main heap first. A larger `--memory-budget` can leave room for fewer parser
+workers, and new embedding work must fit when watch mode checks admission again.
 Embedding thread settings are validated only when embeddings are requested or pending.
 
 `status --json` reports `index.graphStatus` for a checkout,

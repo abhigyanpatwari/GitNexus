@@ -1,0 +1,1 @@
+package outside; public class Root {}

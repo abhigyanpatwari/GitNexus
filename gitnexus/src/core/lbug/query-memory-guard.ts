@@ -32,6 +32,8 @@ const SAMPLE_INTERVAL_MS = 200;
 export const FOOTPRINT_INTERVAL_MS = 1000;
 const FOOTPRINT_TIMEOUT_MS = 2000;
 const LABEL_MAX_CHARS = 200;
+/** Highlight the start RSS when it exceeded this share of the breach RSS for every query. */
+const PREEXISTING_MEMORY_SHARE = 0.5;
 
 /** Memory budget in bytes, or `null` when disabled. Invalid values use the default. */
 export function resolveQueryRssBudgetBytes(
@@ -73,9 +75,12 @@ interface ActiveQuery {
 }
 
 export interface QueryMemoryBreach {
-  rssBytes: number;
+  /** The value that passed the budget, measured as `measurement`. */
+  memoryBytes: number;
+  measurement: 'rss' | 'footprint';
   budgetBytes: number;
-  activeLabels: string[];
+  /** Queries in flight at the breach, oldest first. `startBytes` is always RSS. */
+  activeQueries: Array<{ label: string; startBytes: number; runningMs: number }>;
 }
 
 export interface QueryMemoryGuardDeps {
@@ -102,10 +107,44 @@ export interface QueryMemoryGuard {
 
 export function formatBreachMessage(breach: QueryMemoryBreach): string {
   const gb = (n: number) => (n / (1024 * MIB)).toFixed(1);
-  const queries = breach.activeLabels.map((l) => `  - ${l}`).join('\n');
+  const signedGb = (n: number) => (n >= 0 ? '+' : '') + gb(n);
+  // Rounded down, so "X GB or more" stays true.
+  const gbAtLeast = (n: number) => (Math.floor((n / (1024 * MIB)) * 10) / 10).toFixed(1);
+  // `startBytes` is RSS. Growth and the pre-existing share are only computed
+  // against an RSS breach: the footprint counts compressed and swapped pages
+  // that RSS does not, so the two cannot be subtracted.
+  const sameUnit = breach.measurement === 'rss';
+  const queries = breach.activeQueries
+    .map(
+      (q) =>
+        `  - ${q.label} (RSS at start ${gb(q.startBytes)} GB, ` +
+        (sameUnit ? `${signedGb(breach.memoryBytes - q.startBytes)} GB since start, ` : '') +
+        `running ${(q.runningMs / 1000).toFixed(1)} s)`,
+    )
+    .join('\n');
+  const reached =
+    `GitNexus stopped: ` +
+    (sameUnit ? 'process memory (RSS)' : 'physical footprint') +
+    ` reached ${gb(breach.memoryBytes)} GB, over the ${gb(breach.budgetBytes)} GB limit`;
+  // RSS can fall and rise between samples. The floor describes only the query starts.
+  const floorBytes = breach.activeQueries.length
+    ? Math.min(...breach.activeQueries.map((q) => q.startBytes))
+    : 0;
+  let headline: string;
+  if (!sameUnit) {
+    headline =
+      `${reached}, while running a graph query. Start memory below is RSS, which ` +
+      `excludes compressed and swapped pages, so it cannot show how much of the ` +
+      `footprint was in use before these queries started.`;
+  } else if (floorBytes > breach.memoryBytes * PREEXISTING_MEMORY_SHARE) {
+    headline =
+      `${reached}. RSS was already ${gbAtLeast(floorBytes)} GB or more when each query ` +
+      `listed below started. Check earlier work such as source parsing as well as the running queries.`;
+  } else {
+    headline = `${reached}, while running a graph query.`;
+  }
   return (
-    `GitNexus stopped: process memory reached ${gb(breach.rssBytes)} GB, over the ` +
-    `${gb(breach.budgetBytes)} GB limit, while running a graph query. The database ` +
+    `${headline} The database ` +
     `cannot cancel a running query, so the process is exiting to protect the host.\n` +
     `Running queries:\n${queries}\n` +
     `Set ${QUERY_MAX_RSS_ENV}=<MiB> to change the limit (0 disables it). ` +
@@ -122,15 +161,20 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
   let footprintInFlight = false;
   let lastFootprintAt = Number.NEGATIVE_INFINITY;
 
-  const observe = (bytes: number): void => {
+  const observe = (bytes: number, measurement: QueryMemoryBreach['measurement']): void => {
     if (active.size === 0 || breached) return;
     for (const q of active) if (bytes > q.peakBytes) q.peakBytes = bytes;
     if (budgetBytes !== null && bytes > budgetBytes) {
       breached = true;
       deps.onBreach({
-        rssBytes: bytes,
+        memoryBytes: bytes,
+        measurement,
         budgetBytes,
-        activeLabels: [...active].map((q) => q.label),
+        activeQueries: [...active].map((q) => ({
+          label: q.label,
+          startBytes: q.startBytes,
+          runningMs: Math.max(0, deps.now() - q.startedAt),
+        })),
       });
     }
   };
@@ -148,7 +192,8 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
     deps.readFootprint().then(
       (bytes) => {
         footprintInFlight = false;
-        if (bytes !== null && sampledQueries.some((q) => active.has(q))) observe(bytes);
+        if (bytes !== null && sampledQueries.some((q) => active.has(q)))
+          observe(bytes, 'footprint');
       },
       () => {
         footprintInFlight = false;
@@ -158,7 +203,7 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
 
   const sample = (): void => {
     if (active.size === 0 || breached) return;
-    observe(deps.readRss());
+    observe(deps.readRss(), 'rss');
     if (!breached) maybeReadFootprint();
   };
 
@@ -178,7 +223,7 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
         peakBytes: rss,
       };
       active.add(q);
-      observe(rss);
+      observe(rss, 'rss');
       if (!stopSampler) {
         stopSampler = deps.startSampler(sample);
       }
@@ -189,7 +234,7 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
       const q = token as ActiveQuery;
       if (!active.has(q)) return;
       const endRss = deps.readRss();
-      observe(endRss);
+      observe(endRss, 'rss');
       active.delete(q);
       if (tracing) {
         const mb = (n: number) => Math.round(n / MIB);
