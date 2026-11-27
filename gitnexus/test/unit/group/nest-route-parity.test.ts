@@ -124,6 +124,25 @@ export abstract class BaseVenuesController {
     expect(ingestionPairs(src)).toEqual(groupPairs(src));
   });
 
+  it('pins a route inherited from a same-file base class', () => {
+    // The base class has no @Controller, so a scan that reads one class at a
+    // time reports nothing for it and nothing for the empty subclass. NestJS
+    // serves the handler under the subclass prefix.
+    const src = `
+import { Controller, Get } from '@nestjs/common';
+
+abstract class BaseHealth {
+  @Get('ping')
+  ping() {}
+}
+
+@Controller('health')
+export class HealthController extends BaseHealth {}
+`;
+    expect(groupPairs(src)).toEqual(['GET /health/ping']);
+    expect(ingestionPairs(src)).toEqual(groupPairs(src));
+  });
+
   it('pins the object-form @Controller({ path }) — the documented versioning shape', () => {
     // The old group query required a positional `(string)`/`(template_string)`
     // argument, so `@Controller({ path: 'cats', version: '1' })` — the form the
