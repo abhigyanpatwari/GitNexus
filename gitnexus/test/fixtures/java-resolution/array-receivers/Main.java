@@ -31,4 +31,9 @@ class App {
   void classArray(User[] users) { users.getClass(); }
   void iterateArray(User[] users) { for (var user : users) user.save(); }
   void iterateList(java.util.List<User> users) { for (var user : users) user.save(); }
+  void nested(User[][] users) { users[0][0].save(); }
+  void nestedLocal() { User[][] users = null; users[0][0].save(); }
+  void nestedTrailing(User[] users[]) { users[0][0].save(); }
+  void nestedDeep(User[][][] users) { users[0][0][0].save(); }
+  void nestedPartial(User[][][] users) { users[0][0].save(); }
 }

@@ -1,5 +1,5 @@
 {
-  "diagnostics": {"compiler.err.array.req.but.found": 1, "compiler.err.cant.resolve.location.args": 3, "compiler.err.override.meth": 1},
+  "diagnostics": {"compiler.err.array.req.but.found": 1, "compiler.err.cant.resolve.location.args": 4, "compiler.err.override.meth": 1},
   "calls": [
     {"caller": "parameter", "member": "save", "source": ["Main.java#14:2"]},
     {"caller": "trailingParameter", "member": "save", "source": ["Main.java#15:2"]},
@@ -14,6 +14,11 @@
     {"caller": "trailingMethodElement", "member": "save", "source": ["Main.java#24:2"]},
     {"caller": "iterateArray", "member": "save", "source": ["Main.java#32:2"]},
     {"caller": "iterateList", "member": "save", "source": ["Main.java#33:2"]},
+    {"caller": "nested", "member": "save", "source": ["Main.java#34:2"]},
+    {"caller": "nestedLocal", "member": "save", "source": ["Main.java#35:2"]},
+    {"caller": "nestedTrailing", "member": "save", "source": ["Main.java#36:2"]},
+    {"caller": "nestedDeep", "member": "save", "source": ["Main.java#37:2"]},
+    {"caller": "nestedPartial", "member": "save", "source": ["Main.java#38:2"], "targets": 0},
     {"caller": "unindexed", "member": "save", "source": ["Main.java#25:2"], "targets": 0},
     {"caller": "partial", "member": "save", "source": ["Main.java#26:2"], "targets": 0},
     {"caller": "mixedPartial", "member": "save", "source": ["Main.java#27:2"], "targets": 0},
