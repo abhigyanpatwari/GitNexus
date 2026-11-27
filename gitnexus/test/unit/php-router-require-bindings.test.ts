@@ -751,6 +751,37 @@ $app->router->group(['prefix' => 'v2'], function ($router) {
     expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
+  it('skipping require_once in one entry walk keeps it for another entry', () => {
+    const entryA = extractBindings(
+      `<?php
+require __DIR__ . '/../routes/web.php';
+require __DIR__ . '/../routes/mid.php';
+`,
+      'bootstrap/a.php',
+    );
+    const entryC = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'c'], function ($router) {
+  require __DIR__ . '/../routes/mid.php';
+});
+`,
+      'bootstrap/c.php',
+    );
+    const mid = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'mid'], function ($router) {
+  require_once __DIR__ . '/web.php';
+});
+`,
+      'routes/mid.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/a.php', 'bootstrap/c.php', 'routes/mid.php', 'routes/web.php']),
+      [...entryA, ...entryC, ...mid],
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual([null, 'c/mid']);
+  });
+
   it('a return inside a group closure only guards the rest of that closure', () => {
     expect(
       webContexts(`<?php

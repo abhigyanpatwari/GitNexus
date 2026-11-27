@@ -3,20 +3,17 @@
  * framework-route → controller-method `CALLS`-edge emitter in
  * call-processor.ts.
  *
- * RING4-2 (#943) migrates this emitter off the legacy `ResolutionContext.resolve`
- * tiered lookup and onto the scope-resolution registry / symbol table. These
- * tests pin the *current* edge-emission behavior (which had no direct coverage)
- * so the migration is provably behavior-preserving:
+ * RING4-2 (#943) migrates this emitter onto the symbol table. The cases below
+ * are the emission contract, including later route-handler rules:
  *
- *   - resolvable controller + same-file method  → CALLS edge to the method node
- *   - resolvable controller + unknown method    → CALLS edge to a *guessed* Method id
- *   - unknown controller                        → no edge
- *   - ambiguous global controller (>1 match)    → no edge
+ *   - unique same-file owned method     → CALLS edge to that method node
+ *   - unknown or ambiguous owned method → CALLS edge to a guessed Method id
+ *   - unknown or ambiguous controller   → no edge
  *   - one edge emitted per route
+ *   - PHP case-insensitive fallback only when the owned exact set is not unique
+ *     and the folded owner match is unique
  *
- * Confidence values captured here (controller resolves at the `global` tier for
- * routes-file → controller references, so 0.5; guessed-method edges are × 0.8)
- * are the contract the migrated implementation must match.
+ * Confidence: resolved controller method 0.5; guessed-method edges are × 0.8.
  */
 
 import { describe, it, expect } from 'vitest';

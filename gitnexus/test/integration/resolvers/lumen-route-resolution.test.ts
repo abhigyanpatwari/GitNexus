@@ -65,7 +65,9 @@ describe('Lumen route pipeline', () => {
 
     const homeCall = routeCalls().find(
       (e) =>
-        e.target === 'show' && e.targetFilePath.endsWith('app/Http/Controllers/HomeController.php'),
+        e.target === 'show' &&
+        e.targetFilePath.endsWith('app/Http/Controllers/HomeController.php') &&
+        e.sourceFilePath.replace(/\\/g, '/').endsWith('routes/web.php'),
     );
     expect(homeCall).toBeDefined();
 

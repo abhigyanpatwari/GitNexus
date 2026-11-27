@@ -91,72 +91,28 @@ export function resolvePhpRouterRequireBindings(
 
   type Edge = { host: string; target: string; binding: ExtractedRouteRequireBinding };
   const edges: Edge[] = [];
-  const required = new Set<string>();
   const bindingTarget = (binding: ExtractedRouteRequireBinding): string | null => {
     const target = binding.requiredPath.replace(/\\/g, '/');
     if (!fileSet.has(target) || !isPhpRouteFile(target)) return null;
     return target;
   };
-  /**
-   * Hosts another file unguardedly requires. Those run inside the requirer's
-   * `require_once` state, not as a separate entry with a fresh include set.
-   */
-  const inlinedHosts = new Set<string>();
-  for (const list of byHost.values()) {
-    for (const binding of list) {
-      if (!binding.unguarded) continue;
-      const target = bindingTarget(binding);
-      if (target && byHost.has(target)) inlinedHosts.add(target);
-    }
-  }
-  const skipped = new Set<ExtractedRouteRequireBinding>();
-  const visited = new Set<string>();
-  const walkHost = (host: string, loaded: Set<string>, stack: Set<string>) => {
-    if (stack.has(host) || visited.has(host)) return;
-    visited.add(host);
-    stack.add(host);
-    for (const binding of byHost.get(host)!.sort(compareBindingPosition)) {
-      const target = bindingTarget(binding);
-      if (!target) continue;
-      if (binding.once && loaded.has(target)) {
-        skipped.add(binding);
-        continue;
-      }
-      if (binding.unguarded) {
-        loaded.add(target);
-        if (byHost.has(target)) walkHost(target, loaded, stack);
-      }
-    }
-    stack.delete(host);
-  };
-  for (const host of [...byHost.keys()].sort()) {
-    if (inlinedHosts.has(host) || visited.has(host)) continue;
-    walkHost(host, new Set(), new Set());
-  }
   for (const host of [...byHost.keys()].sort()) {
     for (const binding of byHost.get(host)!.sort(compareBindingPosition)) {
-      if (skipped.has(binding)) continue;
       const target = bindingTarget(binding);
       if (!target) continue;
       edges.push({ host, target, binding });
-      required.add(target);
     }
   }
 
   const outgoing = new Map<string, Edge[]>();
+  const required = new Set<string>();
   for (const edge of edges) {
+    required.add(edge.target);
     const list = outgoing.get(edge.host);
     if (list) list.push(edge);
     else outgoing.set(edge.host, [edge]);
   }
 
-  // A host nobody requires loads as-is; a required route file loads under
-  // each of its own contexts. Each distinct context reaches a file once and
-  // is pushed along that file's edges once, so the work is proportional to
-  // the output. A context remembers the files already running above it: a
-  // `require_once` back into one of them is skipped by PHP, and a plain
-  // require back into one only terminates behind a runtime guard, so neither
-  // adds a context.
   type Chain = { file: string; parent: Chain | null };
   const onChain = (chain: Chain | null, file: string): boolean => {
     for (let c = chain; c; c = c.parent) if (c.file === file) return true;
@@ -164,31 +120,51 @@ export function resolvePhpRouterRequireBindings(
   };
   const resolved = new Map<string, PhpRouteRequireContext[]>();
   const seen = new Map<string, Set<string>>();
-  const queue: { ctx: PhpRouteRequireContext; chain: Chain }[] = [];
-  const add = (edge: Edge, ctx: PhpRouteRequireContext, parent: Chain) => {
-    if (onChain(parent, edge.target)) return;
-    let keys = seen.get(edge.target);
+  const record = (file: string, ctx: PhpRouteRequireContext) => {
+    let keys = seen.get(file);
     if (!keys) {
       keys = new Set();
-      seen.set(edge.target, keys);
-      resolved.set(edge.target, []);
+      seen.set(file, keys);
+      resolved.set(file, []);
     }
     if (keys.size >= MAX_CONTEXTS_PER_FILE) return;
     const key = contextKey(ctx);
     if (keys.has(key)) return;
     keys.add(key);
-    resolved.get(edge.target)!.push(ctx);
-    queue.push({ ctx, chain: { file: edge.target, parent } });
+    resolved.get(file)!.push(ctx);
   };
-  for (const edge of edges) {
-    if (required.has(edge.host)) continue;
-    add(edge, composeContext(IDENTITY_CONTEXT, edge.binding), { file: edge.host, parent: null });
-  }
-  for (let i = 0; i < queue.length; i++) {
-    const { ctx, chain } = queue[i];
-    for (const edge of outgoing.get(chain.file) ?? []) {
-      add(edge, composeContext(ctx, edge.binding), chain);
+  /**
+   * Each entry file has its own include set. A `require_once` is skipped only
+   * for that walk, after an earlier unguarded load of the same target.
+   * Unguarded requires inline the target's bindings before later siblings.
+   */
+  const expand = (
+    file: string,
+    incoming: PhpRouteRequireContext,
+    chain: Chain | null,
+    loaded: Set<string>,
+  ): Set<string> => {
+    if (onChain(chain, file)) return loaded;
+    const here: Chain = { file, parent: chain };
+    let current = loaded;
+    for (const edge of outgoing.get(file) ?? []) {
+      if (onChain(here, edge.target)) continue;
+      if (edge.binding.once && current.has(edge.target)) continue;
+      const ctx = composeContext(incoming, edge.binding);
+      record(edge.target, ctx);
+      if (!edge.binding.unguarded) {
+        expand(edge.target, ctx, here, current);
+        continue;
+      }
+      const next = new Set(current);
+      next.add(edge.target);
+      current = expand(edge.target, ctx, here, next);
     }
+    return current;
+  };
+  for (const host of [...byHost.keys()].sort()) {
+    if (required.has(host)) continue;
+    expand(host, IDENTITY_CONTEXT, null, new Set());
   }
 
   const identityKey = contextKey(IDENTITY_CONTEXT);
