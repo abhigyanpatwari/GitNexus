@@ -6,19 +6,55 @@ import path from 'node:path';
 import { load } from 'js-yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { affected, plan } = createRequire(import.meta.url)('../../../.github/scripts/ci-plan.cjs');
+type Lane =
+  | 'quality'
+  | 'cli'
+  | 'web'
+  | 'eval'
+  | 'docker'
+  | 'browser'
+  | 'abi'
+  | 'java'
+  | 'workflows';
+type Plan = {
+  release: boolean;
+  source: string;
+  reused: Lane[];
+  packages: string[];
+  run: Record<Lane, boolean>;
+};
+const { affected, plan } = createRequire(import.meta.url)(
+  '../../../.github/scripts/ci-plan.cjs',
+) as {
+  affected(paths: string[]): Set<Lane>;
+  plan(args: { github: object; context: object; core: object }): Promise<void>;
+};
+
+type WorkflowJob = {
+  name?: string;
+  if?: string;
+  steps?: { name?: string; with?: { name?: string } }[];
+  strategy?: { matrix?: { os?: string[] } };
+};
+function jobsFor(workflow: string) {
+  const file = path.resolve(__dirname, '../../../.github/workflows', workflow + '.yml');
+  return (load(readFileSync(file, 'utf8')) as { jobs: Record<string, WorkflowJob> }).jobs;
+}
 
 it('reserves the release matrix for Publish', () => {
-  const workflow = path.resolve(__dirname, '../../../.github/workflows/ci-tests.yml');
-  const { jobs } = load(readFileSync(workflow, 'utf8')) as {
-    jobs: Record<string, { if?: string }>;
-  };
+  const jobs = jobsFor('ci-tests');
   for (const name of [
     'cross-platform',
     'packaged-install-smoke',
     'java-platform-conformance',
     'benchmarks',
     'file-result-reuse-benchmark',
+    'analyze-resume-benchmark',
+    'lexical-lookup-benchmark',
+    'mcp-query-benchmark',
+    'embedding-chunking-benchmark',
+    'embedding-identity-benchmark',
+    'node-floor-compat',
     'scope-resolution-benchmark',
     'tool-accuracy',
     'eval-containment-linux',
@@ -54,6 +90,11 @@ describe('release reuse', () => {
   let cwd: string;
   const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
   beforeEach(() => {
+    // Git hooks and callers may set GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE.
+    // Both the fixture commits and the planner's child processes must use this repo.
+    for (const name of Object.keys(process.env).filter((name) => name.startsWith('GIT_'))) {
+      vi.stubEnv(name, undefined);
+    }
     cwd = mkdtempSync(path.join(tmpdir(), 'ci-plan-'));
     vi.stubEnv('GITHUB_WORKSPACE', cwd);
     git('init', '-q');
@@ -75,7 +116,7 @@ describe('release reuse', () => {
       merged_at: 'today',
       number: 9,
       merge_commit_sha: git('rev-parse', 'HEAD'),
-      head: { sha: 'pr-head', repo: { id: 2 } },
+      head: { sha: 'pr-head', repo: { id: 2, full_name: 'org/repo' } },
       base: { repo: { full_name: 'org/repo' } },
     };
     const ref = {
@@ -96,7 +137,11 @@ describe('release reuse', () => {
       tree: { sha: git('rev-parse', 'HEAD^{tree}') },
       parents: [{ sha: git('rev-parse', 'HEAD^1') }, { sha: 'pr-head' }],
     };
-    const artifact = { name: 'coverage-reports', expired: false };
+    const artifact = {
+      name: 'coverage-reports',
+      expired: false,
+      expires_at: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+    };
     const jobs = [
       'CI Gate',
       'quality / format',
@@ -115,7 +160,7 @@ describe('release reuse', () => {
       git: { getCommit: vi.fn(async () => ({ data: tested })) },
     };
     const core = {
-      setOutput: vi.fn(),
+      setOutput: vi.fn<(key: string, value: string) => void>(),
       info: vi.fn(),
       warning: vi.fn(),
       summary: { addHeading: vi.fn(), addRaw: vi.fn(), addLink: vi.fn(), write: vi.fn() },
@@ -130,12 +175,15 @@ describe('release reuse', () => {
       rest,
       async select(eventName = 'push') {
         await plan({
-          github: { rest, paginate: (fn: () => Promise<unknown>) => fn() },
+          github: {
+            rest,
+            paginate: (fn: (params: object) => Promise<unknown>, params: object) => fn(params),
+          },
           context: { eventName, repo: { owner: 'org', repo: 'repo' } },
           core,
         });
         expect(core.setOutput).toHaveBeenCalledExactlyOnceWith('plan', expect.any(String));
-        return JSON.parse(core.setOutput.mock.calls[0][1]);
+        return JSON.parse(core.setOutput.mock.calls[0][1]) as Plan;
       },
     };
   }
@@ -149,6 +197,17 @@ describe('release reuse', () => {
     expect(api.rest.repos.listPullRequestsAssociatedWithCommit).not.toHaveBeenCalled();
   });
 
+  it('detects every affected package when a changed file moves into docs', async () => {
+    mkdirSync(path.join(cwd, 'docs'));
+    git('mv', 'gitnexus-web/file with spaces.ts', 'docs/example.md');
+    mkdirSync(path.join(cwd, 'gitnexus'));
+    writeFileSync(path.join(cwd, 'gitnexus', 'cli.ts'), 'export const x = 0;');
+    git('add', '.');
+    git('commit', '-qm', 'move from web and update CLI', '--no-gpg-sign');
+    const result = await fixture().select('pull_request');
+    expect(result.run).toMatchObject({ cli: true, web: true });
+  });
+
   it('reuses successful web checks and runs the missing release suites', async () => {
     const api = fixture();
     const result = await api.select();
@@ -157,31 +216,71 @@ describe('release reuse', () => {
     expect(result.reused.sort()).toEqual(['browser', 'quality', 'web']);
     expect(result.run).toMatchObject({ cli: true, web: false, browser: false, eval: true });
     expect(result.packages).toEqual(['cli', 'web']);
+    const repo = { owner: 'org', repo: 'repo' };
+    expect(api.rest.repos.listPullRequestsAssociatedWithCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ ...repo, commit_sha: api.pr.merge_commit_sha }),
+    );
+    expect(api.rest.actions.listWorkflowRuns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...repo,
+        workflow_id: 'ci.yml',
+        event: 'pull_request',
+        head_sha: api.pr.head.sha,
+      }),
+    );
+    expect(api.rest.git.getCommit).toHaveBeenCalledWith({ ...repo, commit_sha: api.ref.sha });
+    expect(api.rest.actions.listWorkflowRunArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ ...repo, run_id: 123 }),
+    );
+    expect(api.rest.actions.listJobsForWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({ ...repo, run_id: 123, filter: 'latest' }),
+    );
   });
 
-  it.each([
-    'direct push',
-    'different tree',
-    'different base',
-    'different head',
-    'different PR',
-    'different fork',
-    'failed CI',
-    'missing gate',
-    'API failure',
-  ])('falls back on %s', async (reason) => {
+  type Fixture = ReturnType<typeof fixture>;
+  const invalidEvidence: [string, (api: Fixture) => void][] = [
+    [
+      'direct push',
+      (api) => api.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue([]),
+    ],
+    ['unmerged PR', (api) => Object.assign(api.pr, { merged_at: '' })],
+    ['different merge revision', (api) => Object.assign(api.pr, { merge_commit_sha: 'other' })],
+    [
+      'different base repository',
+      (api) => Object.assign(api.pr.base.repo, { full_name: 'org/other' }),
+    ],
+    [
+      'different workflow',
+      (api) => Object.assign(api.run, { path: '.github/workflows/other.yml' }),
+    ],
+    ['different event', (api) => Object.assign(api.run, { event: 'push' })],
+    ['different run head', (api) => Object.assign(api.run, { head_sha: 'other' })],
+    ['different tree', (api) => Object.assign(api.tested.tree, { sha: 'other' })],
+    ['different base', (api) => Object.assign(api.tested.parents[0], { sha: 'other' })],
+    ['different head', (api) => Object.assign(api.tested.parents[1], { sha: 'other' })],
+    ['different PR', (api) => Object.assign(api.ref, { ref: 'refs/pull/8/merge' })],
+    [
+      'different referenced repository',
+      (api) =>
+        Object.assign(api.ref, { path: 'org/other/.github/workflows/ci-tests.yml@tested-merge' }),
+    ],
+    [
+      'different referenced revision',
+      (api) => Object.assign(api.ref, { path: 'org/repo/.github/workflows/ci-tests.yml@other' }),
+    ],
+    [
+      'different referenced workflow',
+      (api) =>
+        Object.assign(api.ref, { path: 'org/repo/.github/workflows/ci-quality.yml@tested-merge' }),
+    ],
+    ['different fork', (api) => Object.assign(api.run.head_repository, { id: 10 })],
+    ['failed CI', (api) => Object.assign(api.run, { conclusion: 'failure' })],
+    ['missing gate', (api) => Object.assign(api.jobs[0], { conclusion: 'skipped' })],
+    ['API failure', (api) => api.rest.git.getCommit.mockRejectedValue(new Error('unavailable'))],
+  ];
+  it.each(invalidEvidence)('falls back on %s', async (_reason, invalidate) => {
     const api = fixture();
-    if (reason === 'direct push')
-      api.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue([]);
-    if (reason === 'different tree') api.tested.tree.sha = 'other';
-    if (reason === 'different base') api.tested.parents[0].sha = 'other';
-    if (reason === 'different head') api.tested.parents[1].sha = 'other';
-    if (reason === 'different PR') api.ref.ref = 'refs/pull/8/merge';
-    if (reason === 'different fork') api.run.head_repository.id = 10;
-    if (reason === 'failed CI') api.run.conclusion = 'failure';
-    if (reason === 'missing gate') api.jobs[0].conclusion = 'skipped';
-    if (reason === 'API failure')
-      api.rest.git.getCommit.mockRejectedValue(new Error('unavailable'));
+    invalidate(api);
     const result = await api.select();
     expect(result.reused).toEqual([]);
     expect(Object.values(result.run).every(Boolean)).toBe(true);
@@ -199,25 +298,76 @@ describe('release reuse', () => {
     expect(result.run).toMatchObject({ web: true, browser: true });
   });
 
-  it.each([true, false])(
-    'reuses eval only with both execution receipts (complete: %s)',
-    async (complete) => {
-      mkdirSync(path.join(cwd, 'eval'));
-      writeFileSync(path.join(cwd, 'eval', 'change.py'), '');
-      git('add', 'eval');
-      git('commit', '-qm', 'update eval', '--no-gpg-sign');
+  it.each([
+    [[], [], []],
+    [['quality / typecheck'], [], ['cli', 'java']],
+    [['tests / Java compiler conformance'], [], ['cli', 'java']],
+    [[], ['coverage-reports'], ['cli', 'java', 'web']],
+    [['quality / lint'], [], ['quality']],
+  ] as const)(
+    'schedules fresh checks with missing jobs %j and artifacts %j',
+    async (missingJobs, missingArtifacts, fresh) => {
+      writeFileSync(path.join(cwd, 'ci-input'), 'unknown build input');
+      git('add', '.');
+      git('commit', '-qm', 'select all suites', '--no-gpg-sign');
       const api = fixture();
-      api.jobs.push({ name: 'tests / eval / locked pytest', conclusion: 'success' });
-      const receipts = ['execution-pytest-locked'];
-      if (complete) receipts.push('execution-preflight');
-      api.rest.actions.listWorkflowRunArtifacts.mockResolvedValue(
-        receipts.map((name) => ({ name, expired: false })),
+      const tests = jobsFor('ci-tests');
+      const quality = jobsFor('ci-quality');
+      // Match the check names Actions emits, including the current ABI host matrix.
+      const checkNames = [
+        jobsFor('ci')['ci-status'].name!,
+        ...['format', 'lint', 'typecheck', 'typecheck-web', 'workflow-convention'].map(
+          (id) => 'quality / ' + (quality[id].name ?? id),
+        ),
+        ...['coverage-merge', 'java-compiler-conformance', 'eval-tests'].map(
+          (id) => 'tests / ' + tests[id].name,
+        ),
+        ...tests['abi-assert'].strategy!.matrix!.os!.map(
+          (os) => 'tests / ' + tests['abi-assert'].name!.replace('${{ matrix.os }}', os),
+        ),
+        'e2e / ' + jobsFor('ci-e2e').e2e.name,
+      ];
+      api.rest.actions.listJobsForWorkflowRun.mockResolvedValue(
+        checkNames
+          .filter((name) => !(missingJobs as readonly string[]).includes(name))
+          .map((name) => ({ name, conclusion: 'success' })),
       );
-      const result = await api.select('workflow_dispatch');
-      expect(result.run.eval).toBe(!complete);
-      expect(result.reused.includes('eval')).toBe(complete);
+      const uploads = [...tests['coverage-merge'].steps!, ...tests['eval-tests'].steps!].filter(
+        (step) => step.name?.startsWith('Upload'),
+      );
+      api.rest.actions.listWorkflowRunArtifacts.mockResolvedValue(
+        uploads
+          .flatMap((step) => step.with?.name ?? [])
+          .filter((name) => !(missingArtifacts as readonly string[]).includes(name))
+          .map((name) => ({ ...api.artifact, name })),
+      );
+      const result = await api.select();
+      expect(
+        Object.keys(result.run)
+          .filter((lane) => result.run[lane as Lane])
+          .sort(),
+      ).toEqual([...fresh].sort());
     },
   );
+
+  it.each([
+    [['execution-pytest-locked', 'execution-preflight'], true],
+    [['execution-pytest-locked'], false],
+    [['execution-preflight'], false],
+  ] as const)('reuses eval with receipts %j: %s', async (receipts, complete) => {
+    mkdirSync(path.join(cwd, 'eval'));
+    writeFileSync(path.join(cwd, 'eval', 'change.py'), '');
+    git('add', 'eval');
+    git('commit', '-qm', 'update eval', '--no-gpg-sign');
+    const api = fixture();
+    api.jobs.push({ name: 'tests / eval / locked pytest', conclusion: 'success' });
+    api.rest.actions.listWorkflowRunArtifacts.mockResolvedValue(
+      receipts.map((name) => ({ ...api.artifact, name })),
+    );
+    const result = await api.select('workflow_dispatch');
+    expect(result.run.eval).toBe(!complete);
+    expect(result.reused.includes('eval')).toBe(complete);
+  });
 });
 
 it.skipIf(process.platform !== 'linux')(
