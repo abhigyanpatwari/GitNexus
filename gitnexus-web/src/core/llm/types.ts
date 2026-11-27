@@ -122,7 +122,7 @@ export interface AzureOpenAIConfig extends BaseProviderConfig {
 export interface GeminiConfig extends BaseProviderConfig {
   provider: 'gemini';
   apiKey: string;
-  model: string; // e.g., 'gemini-2.0-flash', 'gemini-1.5-pro'
+  model: string; // e.g., 'gemini-3.6-flash', 'gemini-3.8-flash'
 }
 
 /**
@@ -131,7 +131,7 @@ export interface GeminiConfig extends BaseProviderConfig {
 export interface AnthropicConfig extends BaseProviderConfig {
   provider: 'anthropic';
   apiKey: string;
-  model: string; // e.g., 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022'
+  model: string; // e.g., 'claude-sonnet-5-5', 'claude-haiku-4-5'
 }
 
 /**
@@ -238,7 +238,7 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   },
   gemini: {
     apiKey: '',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.6-flash',
     temperature: 0.1,
   },
   azureOpenAI: {
@@ -251,7 +251,7 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   },
   anthropic: {
     apiKey: '',
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-5-5',
     temperature: 0.1,
   },
   ollama: {

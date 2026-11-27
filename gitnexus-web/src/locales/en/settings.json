@@ -48,14 +48,14 @@
       "apiKeyPlaceholder": "Enter your Google AI API key",
       "helperText": "Get your API key from",
       "helperLinkLabel": "Google AI Studio",
-      "modelPlaceholder": "e.g., gemini-2.0-flash, gemini-1.5-pro"
+      "modelPlaceholder": "e.g., gemini-3.6-flash, gemini-3.8-flash"
     },
     "anthropic": {
       "description": "Use Anthropic Claude models.",
       "apiKeyPlaceholder": "Enter your Anthropic API key",
       "helperText": "Get your API key from",
       "helperLinkLabel": "Anthropic Console",
-      "modelPlaceholder": "e.g., claude-sonnet-4-20250514, claude-3-opus"
+      "modelPlaceholder": "e.g., claude-sonnet-5-5, claude-haiku-4-5"
     },
     "azure": {
       "apiKeyPlaceholder": "Enter your Azure OpenAI API key",

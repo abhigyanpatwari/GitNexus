@@ -48,14 +48,14 @@
       "apiKeyPlaceholder": "输入 Google AI API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "Google AI Studio",
-      "modelPlaceholder": "例如：gemini-2.0-flash、gemini-1.5-pro"
+      "modelPlaceholder": "例如：gemini-3.6-flash、gemini-3.8-flash"
     },
     "anthropic": {
       "description": "使用 Anthropic Claude 模型。",
       "apiKeyPlaceholder": "输入 Anthropic API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "Anthropic Console",
-      "modelPlaceholder": "例如：claude-sonnet-4-20250514、claude-3-opus"
+      "modelPlaceholder": "例如：claude-sonnet-5-5、claude-haiku-4-5"
     },
     "azure": {
       "apiKeyPlaceholder": "输入 Azure OpenAI API Key",

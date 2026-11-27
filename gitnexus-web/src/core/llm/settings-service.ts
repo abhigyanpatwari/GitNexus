@@ -443,14 +443,9 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       // Azure models depend on deployment, so we show common ones
       return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-35-turbo'];
     case 'gemini':
-      return ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
+      return ['gemini-3.6-flash', 'gemini-3.8-flash'];
     case 'anthropic':
-      return [
-        'claude-sonnet-4-20250514',
-        'claude-3-5-sonnet-20241022',
-        'claude-3-5-haiku-20241022',
-        'claude-3-opus-20240229',
-      ];
+      return ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-4-5'];
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     case 'minimax':

@@ -214,7 +214,7 @@ describe('getAvailableModels', () => {
   it('returns models for known providers', () => {
     expect(getAvailableModels('openai').length).toBeGreaterThan(0);
     expect(getAvailableModels('ollama').length).toBeGreaterThan(0);
-    expect(getAvailableModels('anthropic')).toContain('claude-sonnet-4-20250514');
+    expect(getAvailableModels('anthropic')).toContain('claude-sonnet-5-5');
     expect(getAvailableModels('deepseek')).toContain('deepseek-v4-flash');
     expect(getAvailableModels('minimax')).toEqual([...MINIMAX_MODEL_IDS]);
   });
