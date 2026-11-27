@@ -1,4 +1,5 @@
 const { execFileSync } = require('node:child_process');
+const { gitExecutable } = require('./git-executable.cjs');
 
 // A lane can reuse its listed jobs. CLI and Java also share one LCOV report.
 const coverage = 'tests / ubuntu / coverage merge';
@@ -138,7 +139,7 @@ async function successfulPR({ github, context, revision, tree, parent }) {
 
 async function plan({ github, context, core }) {
   const git = (...args) =>
-    execFileSync('git', args, {
+    execFileSync(gitExecutable, args, {
       cwd: process.env.GITHUB_WORKSPACE,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -208,7 +209,7 @@ async function plan({ github, context, core }) {
       fallback = 'GitHub evidence lookup timed out.';
     else if (Number.isInteger(error.status) && error.status >= 400)
       fallback = `GitHub evidence lookup failed (HTTP ${error.status}).`;
-    else if (Object.hasOwn(error, 'stderr') || error.syscall === 'spawnSync git')
+    else if (Object.hasOwn(error, 'stderr') || error.syscall === 'spawnSync ' + gitExecutable)
       fallback = 'Git could not read the changes for this revision.';
     else throw error;
     changed = new Set(lanes);

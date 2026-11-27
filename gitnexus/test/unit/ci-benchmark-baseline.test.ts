@@ -93,6 +93,7 @@ it('uses the last measured main ancestor across a failed publish, a no-op publis
     rest: { actions },
     paginate: <P, T>(fn: (params: P) => Promise<T>, params: P) => fn(params),
   };
+  vi.stubEnv('PATH', path.join(cwd, 'no-executables'));
   expect(await benchmarkBaseline({ github, repo, cwd })).toBe(good);
   expect(actions.listWorkflowRuns.mock.calls).toEqual(
     [skipped, good].map((head_sha) => [

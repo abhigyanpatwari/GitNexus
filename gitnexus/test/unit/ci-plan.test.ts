@@ -224,6 +224,7 @@ describe('release reuse', () => {
 
   it('diffs the checked-out PR without consulting release history', async () => {
     const api = fixture();
+    vi.stubEnv('PATH', path.join(cwd, 'no-executables'));
     const result = await api.select('pull_request');
     expect(result.release).toBe(false);
     expect(result.coverage).toBe(true);

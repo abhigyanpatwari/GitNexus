@@ -1,4 +1,5 @@
 const { execFileSync } = require('node:child_process');
+const { gitExecutable } = require('./git-executable.cjs');
 
 const benchmarkJobs = [
   'parse cache / speed and memory (synthetic)',
@@ -11,7 +12,8 @@ const benchmarkJobs = [
 ].map((name) => 'ci / tests / ' + name);
 
 async function benchmarkBaseline({ github, repo, cwd = process.cwd() }) {
-  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim().split('\n');
+  const git = (...args) =>
+    execFileSync(gitExecutable, args, { cwd, encoding: 'utf8' }).trim().split('\n');
   // Publish writes a lightweight rc/<main SHA> marker after its CI gate passes.
   // Walk from the parent so tag releases and reruns cannot benchmark themselves.
   const markers = new Set(git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags/rc'));
