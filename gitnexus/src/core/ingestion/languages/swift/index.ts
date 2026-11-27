@@ -20,6 +20,8 @@
  *   - `target-grouping.ts`   — group same-module files by SPM target subtree
  *   - `target-siblings.ts`   — same-SPM-target implicit cross-file visibility
  *   - `implicit-imports.ts`  — same-SPM-target File→File IMPORTS edges
+ *   - `name-facts.ts`        — what each file declares and uses (capture side channel)
+ *   - `on-demand-imports.ts` — persist `import X` only to the files reached
  *   - `sibling-type-bindings.ts` — mirror sibling return-type typeBindings
  *   - `scope-resolver.ts`    — `ScopeResolver` registered in `SCOPE_RESOLVERS`
  *   - `cache-stats.ts`       — PROF_SCOPE_RESOLUTION cache hit/miss counters
@@ -39,6 +41,18 @@ export { resolveSwiftImportTarget, type SwiftResolveContext } from './import-tar
 export { groupSwiftFilesByModule, coerceSwiftTargets } from './target-grouping.js';
 export { populateSwiftTargetSiblings } from './target-siblings.js';
 export { emitSwiftImplicitImportEdges } from './implicit-imports.js';
+export {
+  collectSwiftCaptureSideChannel,
+  readSwiftNameFacts,
+  recordSwiftNameFacts,
+  type SwiftCaptureSideChannel,
+  type SwiftNameFacts,
+} from './name-facts.js';
+export {
+  SWIFT_ON_DEMAND_IMPORT_KINDS,
+  swiftOnDemandImportTargets,
+  swiftReaches,
+} from './on-demand-imports.js';
 export { mirrorSwiftSiblingTypeBindings } from './sibling-type-bindings.js';
 export {
   swiftBindingScopeFor,
