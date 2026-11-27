@@ -34,6 +34,7 @@ Every applicable shape resolves, including the bounded Box/Rc/Arc field case and
 | ------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | RUST-01 | Documented boundary | A conservative dispatch guard can suppress otherwise useful pointer-field resolution in another file.              | Measure recall on a fixed crate and identify the exact missing proof before narrowing the guard. Preserve pointer-owned and local-trait method negatives. |
 | RUST-02 | Documented boundary | Qualified pointees, projections and opaque/macro-generated dispatch are outside the proven field-unwrapping slice. | Take one owner-provable form at a time with exact targets; do not infer full Rust autoderef or macro expansion from the passing decoratedFieldType cell.  |
+| RUST-03 | Documented boundary | Calls in macro arguments resolve when a `( … )` or `[ … ]` argument list parses as Rust expressions (#1388). Brace invocations, lists with other syntax (`target: "x", …`), `matches!` patterns and guards, and calls on a name bound inside the arguments are skipped; no macro is expanded, and CFG/PDG facts do not record these calls. | Take one skipped spelling at a time, with exact targets and a negative for tokens that are not evaluated. |
 
 ## Code and regression entry points
 

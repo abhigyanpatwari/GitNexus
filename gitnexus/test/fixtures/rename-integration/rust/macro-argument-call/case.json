@@ -1,0 +1,43 @@
+{
+  "language": "rust",
+  "description": "Rename a function called inside macro arguments, leaving a same-spelled string literal alone.",
+  "categories": ["cross-file", "call-graph", "macro-arguments"],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "operations.rs"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "printed",
+        "kind": "Function",
+        "file": "lib.rs"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "operations.rs"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "collected",
+        "kind": "Function",
+        "file": "lib.rs"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "operations.rs"
+      }
+    }
+  ]
+}

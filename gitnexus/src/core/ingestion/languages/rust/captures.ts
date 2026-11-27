@@ -1,4 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type Parser from 'tree-sitter';
 import {
   findChild,
   nodeIfType,
@@ -16,6 +17,12 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { collectRustNameClaims } from './lexical-bindings.js';
+import {
+  isRustPatternCall,
+  offsetRustCapture,
+  parseRustMacroArguments,
+  rustReceiverRoot,
+} from './macro-argument-calls.js';
 
 const RUST_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_item', 'closure_expression']),
@@ -28,6 +35,9 @@ const RUST_CALLABLE_CAPTURE_OPTIONS = {
   callableReferenceNodeTypes: new Set(['scoped_identifier']),
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
 } as const;
+
+/** Each nesting level of `a!(b!(c!(…)))` is parsed again, so the walk is bounded. */
+const MAX_MACRO_NESTING = 8;
 
 export function emitRustScopeCaptures(
   sourceText: string,
@@ -49,19 +59,7 @@ export function emitRustScopeCaptures(
   const nameClaims = collectRustNameClaims(tree.rootNode);
 
   for (const m of rawMatches) {
-    const grouped: Record<string, Capture> = {};
-    // Parallel tag -> captured SyntaxNode map: the query hands us each matched
-    // node as c.node, so anchors resolve via a type-guarded lookup (nodeIfType)
-    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
-    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
-    // python #1918, mirrored here.
-    const nodeMap: Record<string, SyntaxNode> = {};
-    for (const c of m.captures) {
-      const tag = '@' + c.name;
-      if (tag.startsWith('@_')) continue;
-      grouped[tag] = nodeToCapture(tag, c.node);
-      nodeMap[tag] = c.node;
-    }
+    const { grouped, nodeMap } = groupRustCaptures(m);
     if (Object.keys(grouped).length === 0) continue;
 
     const scopeTag = Object.keys(nodeMap).find((tag) => tag.startsWith('@scope.'));
@@ -201,32 +199,124 @@ export function emitRustScopeCaptures(
       }
     }
 
-    // Attach call arity for call expressions
-    const callAnchorNode =
-      nodeMap['@reference.call.free'] ??
-      nodeMap['@reference.call.member'] ??
-      nodeMap['@reference.call.constructor'];
-    if (callAnchorNode !== undefined) {
-      const callNode = nodeIfType(callAnchorNode, 'call_expression', 'struct_expression');
-      if (callNode !== null) {
-        const arity = computeRustCallArity(callNode);
-        grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
-      }
-    }
-
-    // Structural receiver chain for a call whose receiver is itself an
-    // expression, so resolution can type it by folding over structure
-    // instead of re-parsing the receiver's source text. Self-gating: a
-    // non-call match, an absent receiver, or a chain with no nameable base
-    // all leave `grouped` untouched.
-    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
+    attachRustReferenceFacts(grouped, nodeMap);
     out.push(grouped);
+
+    const macroNode = nodeIfType(nodeMap['@reference.macro'], 'macro_invocation');
+    if (macroNode !== null) out.push(...synthesizeRustMacroArgumentCalls(macroNode));
   }
 
   out.push(...synthesizeRustInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, RUST_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
+}
+
+/**
+ * Split a query match into its captures and a parallel tag -> SyntaxNode map:
+ * the query hands us each matched node as c.node, so anchors resolve via a
+ * type-guarded lookup (nodeIfType) instead of re-deriving them with
+ * findNodeAtRange(tree.rootNode, ...) per match — the O(matches x rootChildren)
+ * root-walk fixed for go #1915 / python #1918, mirrored here.
+ */
+function groupRustCaptures(match: Parser.QueryMatch): {
+  grouped: Record<string, Capture>;
+  nodeMap: Record<string, SyntaxNode>;
+} {
+  const grouped: Record<string, Capture> = {};
+  const nodeMap: Record<string, SyntaxNode> = {};
+  for (const c of match.captures) {
+    const tag = '@' + c.name;
+    if (tag.startsWith('@_')) continue;
+    grouped[tag] = nodeToCapture(tag, c.node);
+    nodeMap[tag] = c.node;
+  }
+  return { grouped, nodeMap };
+}
+
+function attachRustReferenceFacts(
+  grouped: Record<string, Capture>,
+  nodeMap: Record<string, SyntaxNode>,
+): void {
+  // Attach call arity for call expressions
+  const callAnchorNode =
+    nodeMap['@reference.call.free'] ??
+    nodeMap['@reference.call.member'] ??
+    nodeMap['@reference.call.constructor'];
+  if (callAnchorNode !== undefined) {
+    const callNode = nodeIfType(callAnchorNode, 'call_expression', 'struct_expression');
+    if (callNode !== null) {
+      const arity = computeRustCallArity(callNode);
+      grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
+    }
+  }
+
+  // Structural receiver chain for a call whose receiver is itself an
+  // expression, so resolution can type it by folding over structure
+  // instead of re-parsing the receiver's source text. Self-gating: a
+  // non-call match, an absent receiver, or a chain with no nameable base
+  // all leave `grouped` untouched.
+  synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
+}
+
+/**
+ * Call references found in a macro's arguments, positioned like any other call
+ * so they resolve against the scope the invocation sits in.
+ *
+ * Closures and blocks inside the arguments get no scope of their own here, so a
+ * call that depends on a name they bind is dropped: resolving it from the outer
+ * scope could pick an unrelated symbol of the same name.
+ */
+function synthesizeRustMacroArgumentCalls(
+  invocation: SyntaxNode,
+  outerBound: ReadonlySet<string> = new Set(),
+  depth = 0,
+): CaptureMatch[] {
+  if (depth >= MAX_MACRO_NESTING) return [];
+  const parsed = parseRustMacroArguments(invocation);
+  if (parsed === null) return [];
+
+  const bound = new Set(outerBound);
+  for (const claims of collectRustNameClaims(parsed.root).values()) {
+    for (const claim of claims) bound.add(claim.name);
+  }
+
+  const out: CaptureMatch[] = [];
+  for (const match of getRustScopeQuery().matches(parsed.root)) {
+    const { grouped, nodeMap } = groupRustCaptures(match);
+
+    const nested = nodeIfType(nodeMap['@reference.macro'], 'macro_invocation');
+    if (nested !== null) {
+      out.push(...synthesizeRustMacroArgumentCalls(nested, bound, depth + 1));
+      continue;
+    }
+
+    const freeCall = nodeMap['@reference.call.free'];
+    const memberCall = nodeMap['@reference.call.member'];
+    const call = freeCall ?? memberCall ?? nodeMap['@reference.call.constructor'];
+    if (call === undefined || isRustPatternCall(call)) continue;
+
+    const receiver = nodeMap['@reference.receiver'];
+    if (receiver !== undefined && bound.has(rustReceiverRoot(receiver))) continue;
+    if (
+      freeCall !== undefined &&
+      nodeMap['@reference.qualified-name'] === undefined &&
+      bound.has(nodeMap['@reference.name']!.text)
+    )
+      continue;
+
+    attachRustReferenceFacts(grouped, nodeMap);
+    out.push(grouped);
+  }
+
+  return out.map((match) =>
+    Object.fromEntries(
+      Object.entries(match).map(([tag, capture]) => [
+        tag,
+        offsetRustCapture(capture!, parsed.origin),
+      ]),
+    ),
+  );
 }
 
 /**

@@ -52,14 +52,14 @@
  *
  * MACROS ARE NOT HARVESTED. `println!(...)` / `vec!(...)` are `macro_invocation`
  * nodes (a `macro` ident + a `token_tree`), NOT `call_expression`s. The Rust
- * CALLS query tags them `@reference.macro` (a DISJOINT namespace resolved via the
- * MacroRegistry to Macro defs, never a fn of the same name) — NOT
- * `@reference.call.*`. So no resolved callee-id is keyed at a macro's position,
- * and opening a call site there would put a leaf (`println`) into `callees` that
- * the resolution side never produces — a spurious, unjoinable callee. We
- * therefore record NO site for a macro (its argument identifiers still walk for
- * uses via the default token-tree descent), keeping `callees` aligned with the
- * CALLS resolution.
+ * CALLS query tags the invocation `@reference.macro` (a DISJOINT namespace
+ * resolved via the MacroRegistry to Macro defs, never a fn of the same name) —
+ * NOT `@reference.call.*` — so opening a call site for the macro itself would put
+ * a leaf (`println`) into `callees` that the resolution side never produces.
+ * Calls written in a macro's arguments DO resolve to CALLS edges (captures.ts,
+ * #1388), but this harvest records no site for them, so their callee ids stay
+ * unjoined and are absent from `BasicBlock.calleeIds`. Argument identifiers
+ * still walk for uses via the default token-tree descent.
  *
  * ANCHOR ALIGNMENT (plan KTD7 — load-bearing): a call site's `at` MUST be the
  * SAME `[line (1-based), col (0-based)]` the Rust CALLS resolution keys its
