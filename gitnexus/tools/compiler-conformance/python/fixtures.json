@@ -1,23 +1,19 @@
 {
-  "lang-resolution/python-multi-level-mro": {
-    "entry": "from app import run; run()",
-    "names": ["gp_method"]
-  },
-  "lang-resolution/python-super-resolution": {
-    "entry": "from models.user import User; User().save()",
+  "lang-resolution/python-assignment-chain": {
+    "entry": "from app import process; process()",
     "names": ["save"]
   },
-  "lang-resolution/python-grandparent-resolution": {
-    "entry": "from app import process; process()",
-    "names": ["greet", "save"]
+  "lang-resolution/python-call-result-binding": {
+    "entry": "from app import process_user; process_user()",
+    "names": ["save"]
   },
-  "lang-resolution/python-static-class-methods": {
-    "entry": "from app import process; process()",
-    "names": ["find_user", "create_user", "from_config", "delete_user"]
+  "lang-resolution/python-chain-call": {
+    "entry": "from app import process_user; process_user()",
+    "names": ["get_user", "save"]
   },
-  "lang-resolution/python-reexport-chain": {
-    "entry": "from app import main; main()",
-    "names": ["save", "persist"]
+  "lang-resolution/python-child-extends-parent": {
+    "entry": "from app import run; run()",
+    "names": ["parent_method"]
   },
   "lang-resolution/python-constructor-calls": {
     "entry": "from app import process; process()",
@@ -27,12 +23,52 @@
     "entry": "from services.app import process_entities; process_entities()",
     "names": ["save"]
   },
+  "lang-resolution/python-grandparent-resolution": {
+    "entry": "from app import process; process()",
+    "names": ["greet", "save"]
+  },
   "lang-resolution/python-inline-constructor-receiver": {
     "entry": "from app import process_inline, process_twostep; process_inline('x'); process_twostep('x')",
     "names": ["save"]
   },
+  "lang-resolution/python-member-calls": {
+    "entry": "from app import process_user; process_user()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-multi-level-mro": {
+    "entry": "from app import run; run()",
+    "names": ["gp_method"]
+  },
+  "lang-resolution/python-plain-import-alias": {
+    "entry": "from app import main; main()",
+    "names": ["save", "persist", "login"]
+  },
+  "lang-resolution/python-receiver-resolution": {
+    "entry": "from app import process_entities; process_entities()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-reexport-chain": {
+    "entry": "from app import main; main()",
+    "names": ["save", "persist"]
+  },
+  "lang-resolution/python-return-type-inference": {
+    "entry": "from app import process_user; process_user()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-same-file-method-collision": {
+    "entry": "from app import use_user, use_document; use_user(); use_document()",
+    "names": ["save"]
+  },
   "lang-resolution/python-self-this-resolution": {
     "entry": "from models.user import User; User().process()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-static-class-methods": {
+    "entry": "from app import process; process()",
+    "names": ["find_user", "create_user", "from_config", "delete_user"]
+  },
+  "lang-resolution/python-super-resolution": {
+    "entry": "from models.user import User; User().save()",
     "names": ["save"]
   }
 }
