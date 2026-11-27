@@ -3907,3 +3907,31 @@ describe('TypeScript non-null and parenthesized receivers', () => {
     expect(edge!.targetFilePath).toBe('src/repo.ts');
   });
 });
+describe('TypeScript cast receivers', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-cast-receiver'), () => {});
+  }, 60000);
+  const saveTarget = (caller: string) =>
+    getRelationships(result, 'CALLS').find((c) => c.source === caller && c.target === 'save')
+      ?.targetFilePath;
+  it('resolves (x as User).save() to User.save', () => {
+    expect(saveTarget('viaAs')).toBe('src/user.ts');
+  });
+  it('resolves (<Repo>x).save() to Repo.save', () => {
+    expect(saveTarget('viaAngle')).toBe('src/repo.ts');
+  });
+  it('resolves (x as User)?.save() to User.save', () => {
+    expect(saveTarget('viaOptional')).toBe('src/user.ts');
+  });
+  it('uses the outermost target of a double cast', () => {
+    expect(saveTarget('viaDouble')).toBe('src/repo.ts');
+  });
+  it('resolves to the cast type rather than the declared type of the operand', () => {
+    expect(saveTarget('narrowed')).toBe('src/repo.ts');
+  });
+  it('resolves nothing for a cast to a type the index cannot find', () => {
+    expect(saveTarget('unresolvedTarget')).toBeUndefined();
+    expect(saveTarget('typeParameter')).toBeUndefined();
+  });
+});

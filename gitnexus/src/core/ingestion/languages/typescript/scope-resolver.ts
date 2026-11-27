@@ -146,6 +146,9 @@ const typescriptScopeResolver: ScopeResolver = {
   // behavior: explicit return-type annotations flow across `export`
   // boundaries and resolve chained member calls).
   fieldFallbackOnMethodLookup: false,
+  // `(x as Svc).run()` reaches the resolver as `(Svc) x`; peel it to the cast type.
+  stripReceiverCastExpressions: true,
+  unresolvedCastTargetResolvesNothing: true,
   propagatesReturnTypesAcrossImports: true,
 
   // ECMAScript: `export * from './a'; export * from './b'` with a name declared
