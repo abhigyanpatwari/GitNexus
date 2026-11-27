@@ -176,6 +176,9 @@ const CASES: readonly LanguageCase[] = [
     void OptionalElement(User[] repos) {
         repos?[0].Save();
     }
+    void IndexElement(User[] repos) {
+        repos[0].Save();
+    }
 }
 `,
     },
@@ -225,14 +228,20 @@ const CASES: readonly LanguageCase[] = [
         drops: [],
       },
       {
-        // KNOWN GAP. The chain `2|repos|i` is now built, so the miss is
-        // recorded, but an array-typed parameter (`User[] repos`) gets no
-        // type binding yet.
+        // An array-typed parameter (`User[] repos`) binds `User[]`, and the
+        // index step peels it to the element type `User` (#4098).
         language: 'csharp',
         source: 'OptionalElement',
         member: 'Save',
-        targets: [],
-        drops: ['Main.cs:21'],
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
+      },
+      {
+        language: 'csharp',
+        source: 'IndexElement',
+        member: 'Save',
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
       },
     ],
   },
