@@ -282,6 +282,13 @@ describe('finalize: grouped wildcard imports change storage, not answers', () =>
     expect((entries[0] as { targetFiles: readonly string[] }).targetFiles).toBe(PKG_A);
   });
 
+  it('does not mark a wildcard group as a statement readers can select', () => {
+    const entries = [...(run(workspaces[0]!, true).output.importEntries?.values() ?? [])].flat();
+    const group = entries[0] as { via: { kind: string; groupsFiles?: true } };
+    expect(group.via.kind).toBe('wildcard-expanded');
+    expect(group.via.groupsFiles).toBeUndefined();
+  });
+
   it('reports no entries at all when nothing was grouped', () => {
     expect(run(workspaces[8]!, true).output.importEntries).toBeUndefined();
     expect(run(workspaces[0]!, false).output.importEntries).toBeUndefined();

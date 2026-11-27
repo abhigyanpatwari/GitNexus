@@ -593,6 +593,14 @@ export interface ImportEdge {
   readonly runsOnlyWhenCalled?: boolean;
   /** Set to `'unresolved'` when the SCC fixpoint could not link this edge. */
   readonly linkStatus?: 'unresolved';
+  /**
+   * The edge is a module import statement stored once for a list of files
+   * (an import group, see `import-groups.ts`). It names no single file:
+   * `targetFile` is null and `ImportVisibility.groupTargets` returns the
+   * files. Ask `importEdgeNamesFiles` / `importEdgeFiles` rather than testing
+   * `targetFile` directly.
+   */
+  readonly groupsFiles?: true;
 }
 
 // ─── §2.3 BindingRef ────────────────────────────────────────────────────────
