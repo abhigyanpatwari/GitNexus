@@ -9,6 +9,7 @@ Everyday commands:
 ```bash
 gitnexus setup                   # Configure MCP for detected editors (one-time; -c to select)
 gitnexus analyze [path]          # Index a repository (or update a stale index)
+gitnexus analyze --all           # Re-index all registered checkouts sequentially
 gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus mcp                     # Start MCP server (stdio; one server PER CLIENT) — all indexed repos
 gitnexus mcp --http              # Start MCP server (Streamable HTTP + SSE) — ONE server, many clients
@@ -81,6 +82,13 @@ GITNEXUS_AUTH_TOKEN='replace-me' gitnexus eval-server --host 0.0.0.0
 The token may be set in the shell, `.env.local`, or `.env` in the working directory. Precedence is shell > `.env.local` > `.env`. Only `GITNEXUS_AUTH_TOKEN` is read from those files; their other values are not added to the process environment. Keep token files uncommitted.
 
 ## All analyze flags
+
+Use `gitnexus analyze --all --index-only` to refresh all registered checkouts
+without generating agent files. The batch skips missing directories, continues
+after individual failures, and exits nonzero if any checkout fails. Options
+such as `--force` and `--embeddings [limit]` apply to every checkout.
+Run a single-repository analysis when specifying a path, branch, alias, shared
+store selection, or external storage override. Watch mode runs separately.
 
 ```bash
 gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
