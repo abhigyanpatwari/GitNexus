@@ -81,6 +81,17 @@ describe.skipIf(!swiftAvailable)('Swift semantic rename beside a grouped module 
     const root = await writeFixture();
     const perFile = await planWith(root, true);
     const grouped = await planWith(root, false);
+    // Both plans succeed and rename the declaration and its use, never the
+    // `import Mod` line that only shares the name.
+    for (const plan of [perFile, grouped]) {
+      expect(plan).toMatchObject({ status: 'success', planning_status: 'ready', total_edits: 2 });
+      const edits = (
+        plan as { changes: { file_path: string; edits: { line: number }[] }[] }
+      ).changes
+        .flatMap((change) => change.edits.map((edit) => `${change.file_path}:${edit.line}`))
+        .sort();
+      expect(edits).toEqual(['App/Mod.swift:1', 'App/Use.swift:4']);
+    }
     expect(grouped).toEqual(perFile);
   }, 120000);
 });

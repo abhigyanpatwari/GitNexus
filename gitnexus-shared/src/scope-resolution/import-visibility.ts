@@ -5,8 +5,9 @@
  * interface, so a reader can never hold a collection that omits part of what a
  * scope reaches. Each operation names the question a consumer has:
  *
- *   - `edgesAt`          — which import edges are bound here (name, kind, def)?
- *   - `statementsAt`     — the same, with a grouped module import as one edge
+ *   - `edgesAt`          — which per-file import edges are bound here?
+ *   - `statementsAt`     — every import statement bound here (name, kind, def),
+ *                          a grouped module import as one edge
  *   - `groupTargets`     — the files behind such a grouped statement edge
  *   - `reaches`          — does this scope import that file? (one question)
  *   - `reachesDirectory` — does it import any file of that directory?
@@ -15,10 +16,12 @@
  *
  * ## What `edgesAt` is complete for
  *
- * `edgesAt` returns every import of the scope that can be SELECTED: by a
- * non-empty local name, by a non-empty exported name, by the definition it
- * links to, or by any kind other than a nameless wildcard. For those
- * selections it is the whole answer, in statement order, whatever the storage.
+ * `edgesAt` returns every per-file import of the scope that can be SELECTED:
+ * by a non-empty local name, by a non-empty exported name, by the definition
+ * it links to, or by any kind other than a nameless wildcard. Unless a module
+ * import is grouped (below), that is the whole answer for those selections,
+ * in statement order. A reader that selects imports must read `statementsAt`,
+ * which is the whole answer in either storage form.
  *
  * It may leave out a nameless wildcard target: an import that binds no
  * name, links no definition and only says "this file is reachable"
@@ -35,10 +38,11 @@
  * may also be stored once, as a group. A file that does link the definition
  * stays an ordinary per-file edge, so one statement can be a mix of groups
  * and edges, in the order of the statement's files. A group is selectable by
- * its local name, so it is left out of `edgesAt` but listed by
- * `statementsAt`: once, as a statement edge (`groupsFiles: true`,
- * `targetFile: null`, no `targetModuleScope`), in statement order among the
- * scope's other edges. `groupTargets` returns that edge's files. Written out
+ * its local name but names no single file, so it is left out of `edgesAt`
+ * (which lists per-file edges only) and listed by `statementsAt`: once, as a
+ * statement edge (`groupsFiles: true`, `targetFile: null`, no
+ * `targetModuleScope`), in statement order among the scope's other edges.
+ * `groupTargets` returns that edge's files. Written out
  * one edge per file (each with its file's module scope, without
  * `groupsFiles`), `statementsAt` is exactly the edges `edgesAt` would list had
  * nothing been grouped.
@@ -90,8 +94,10 @@ export interface ImportMembership {
 }
 
 export interface ImportVisibility {
-  /** The scope's selectable imports (see the file header), in statement
-   *  order; an implementation may also include nameless wildcard targets.
+  /** The scope's selectable per-file imports (see the file header), in
+   *  statement order, without grouped module imports (read `statementsAt` to
+   *  select by name, kind or definition); an implementation may also include
+   *  nameless wildcard targets.
    *  `undefined` when finalize recorded nothing for the scope, which is
    *  different from an empty list: callers fall back to the scope's own
    *  pre-finalize imports only in the first case. */

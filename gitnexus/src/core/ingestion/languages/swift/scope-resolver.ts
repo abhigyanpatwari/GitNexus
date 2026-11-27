@@ -95,9 +95,10 @@ const swiftScopeResolver: ScopeResolver = {
   onDemandImportTargets: swiftOnDemandImportTargets,
   onDemandImportEdgeKinds: SWIFT_ON_DEMAND_IMPORT_KINDS,
   // ...and store such an import as groups over the module's shared file list
-  // (`resolveSwiftImportTarget` answers every importer with the same array);
-  // only a file that declares a definition named after the module keeps a
-  // finalized edge of its own.
+  // (`resolveSwiftImportTarget` answers every importer outside the module with
+  // the same array; an importer inside the module gets its own list without
+  // itself); only a file that declares a definition named after the module
+  // keeps a finalized edge of its own.
   groupsImportTargetKinds: ['namespace'],
 
   // Load the workspace's Swift modules (root and nested SwiftPM targets,

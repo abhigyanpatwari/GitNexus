@@ -2,12 +2,14 @@
  * A Swift `import X` persists an IMPORTS edge only to the files of X that
  * declare something the importer reaches. Adding, removing or moving such a
  * declaration changes the importer's edges without touching the importer, so
- * an incremental run must still end equal to a full rebuild. Which files an
- * importer reaches depends on the importer and the target file, and on one
+ * an incremental run must still end equal to a full rebuild. Whether an
+ * importer reaches a file depends on the importer and that file, and on one
  * more file only through a top-level `typealias` declared in a file the
- * importer keeps: a declaration in any other file, such as a second type with
- * an extended type's name, must not change it. Retargeting the alias, or moving the type it names, must
- * still end equal to a full rebuild.
+ * importer keeps. A declaration in any other file must not change it: a second
+ * type named like an extended type is itself kept when the importer spells
+ * that name, but the extension file is kept or dropped exactly as before.
+ * Retargeting the alias, or moving the type it names, must still end equal to
+ * a full rebuild.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -178,7 +180,8 @@ it.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
       expect(await analyzeBoth([MODEL, OTHER])).toMatchObject({ writeMode: 'incremental' });
 
       // A second type named like the extended one appears in another file of
-      // the module, and goes again: what Chain.swift reaches does not change.
+      // the module, and goes again. Chain.swift spells `Util`, so the new file
+      // is kept by name; the extension file stays kept either way.
       await write(SECOND_UTIL, 'struct Util {}\n');
       commit('add a second Util');
       expect(await analyzeBoth([MODEL, OTHER], [EXTRAS, SECOND_UTIL, UTIL])).toMatchObject({
