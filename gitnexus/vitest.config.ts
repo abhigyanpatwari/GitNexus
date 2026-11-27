@@ -158,6 +158,9 @@ export default defineConfig({
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
             'test/integration/shared-store-analyze.test.ts',
+            // Cross-branch embedding reuse (#3631): real analyses over two
+            // branch slots, opening sibling LadybugDB graphs read-only.
+            'test/integration/cross-branch-embedding-reuse.test.ts',
             'test/integration/parse-cache-identity-lifecycle.test.ts',
             'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
@@ -301,6 +304,7 @@ export default defineConfig({
             // in two projects would be collected (and run) twice.
             'test/unit/incremental-index-extension-dml-gate.test.ts',
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/cross-branch-embedding-reuse.test.ts',
             'test/integration/parse-cache-identity-lifecycle.test.ts',
             'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',

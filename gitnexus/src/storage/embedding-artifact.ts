@@ -275,6 +275,28 @@ export async function readEmbeddingArtifactSpace(
   return current;
 }
 
+/** Read a space record WITHOUT reconciling a pending rebase intent and
+ * without validating or writing anything — for FOREIGN readers (a sibling
+ * slot's publication job, #3631) that must never mutate another slot's
+ * artifact state. A pending intent means the owner's state is in flux, so
+ * the space reads as absent; the caller validates the returned owner
+ * against the sibling's own manifest before trusting it. */
+export async function readEmbeddingArtifactSpaceReadOnly(
+  root: string,
+  space: EmbeddingArtifactSpace,
+): Promise<EmbeddingArtifactRecord | null> {
+  let directory: string;
+  try {
+    directory = await spaceDirectory(root, space, false);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  if ((await optionalRecord(directory, 'rebase.json')) !== null) return null;
+  const currentRaw = await optionalRecord(directory, 'space.json');
+  return currentRaw === null ? null : record(currentRaw, space);
+}
+
 /** Manifest creation precedes this durable intent; journal recovery and native
  * mutation follow it. A crash at either rename can be replayed by read above. */
 export async function adoptEmbeddingArtifact(

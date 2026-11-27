@@ -195,6 +195,7 @@ const LBUG_NATIVE = [
   'test/integration/analysis-embedding-flow.test.ts',
   'test/integration/analysis-generation-routing.test.ts',
   'test/integration/analysis-publication-flow.test.ts',
+  'test/integration/cross-branch-embedding-reuse.test.ts',
   'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',
   'test/integration/embedding-native-release.test.ts',
