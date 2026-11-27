@@ -20,6 +20,7 @@ import { dartRenameProvider } from './dart/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { dartClassConfig } from '../class-extractors/configs/dart.js';
 import { defineLanguage } from '../language-provider.js';
+import { shebangClassifier } from '../utils/shebang.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as dartConfig } from '../type-extractors/dart.js';
 import { dartExportChecker } from '../export-detection.js';
@@ -86,6 +87,7 @@ export const dartProvider = defineLanguage({
   rename: dartRenameProvider,
   id: SupportedLanguages.Dart,
   extensions: ['.dart'],
+  ...shebangClassifier(/^dart$/),
   entryPointPatterns: [
     /^main$/,
     /^build$/,

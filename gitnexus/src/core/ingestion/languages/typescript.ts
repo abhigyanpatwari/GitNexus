@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { shebangClassifier } from '../utils/shebang.js';
 import { isBuiltin } from 'node:module';
 import type Parser from 'tree-sitter';
 import { unboundCallableName } from './typescript/unbound-callables.js';
@@ -484,6 +485,7 @@ export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   rename: typescriptRenameProvider,
   extensions: ['.ts', '.tsx', '.mts', '.cts'],
+  ...shebangClassifier(/^(ts-node|tsx)$/),
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {
@@ -588,6 +590,7 @@ export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
   rename: typescriptRenameProvider,
   extensions: ['.js', '.jsx', '.mjs', '.cjs'],
+  ...shebangClassifier(/^(node|nodejs)$/),
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {

@@ -117,6 +117,11 @@ Ruby, Rust, Swift, TypeScript, Vue and Zig have registered providers. Support
 varies by construct; see the [language inventories](docs/languages/README.md)
 for measured behavior, exclusions and remaining gaps.
 
+Extensionless scripts are parsed when their shebang names a Python, Ruby,
+Node.js, PHP, Swift, R (`Rscript`), Dart, Kotlin or TypeScript (`ts-node`,
+`tsx`) interpreter, for example `#!/usr/bin/env python3`. Other extensionless
+files, including shell scripts, are indexed as files only.
+
 R (experimental) also has a registered provider (`.r` / `.R`, parsed with
 `@eagleoutice/tree-sitter-r`): functions, S4, R6 and RefClass classes with their
 methods and fields, `library()` / `require()` / `source()` imports to local

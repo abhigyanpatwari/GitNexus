@@ -12,6 +12,7 @@ import { kotlinRenameProvider } from './kotlin/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
+import { shebangClassifier } from '../utils/shebang.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
@@ -148,6 +149,7 @@ export const kotlinProvider = defineLanguage({
   rename: kotlinRenameProvider,
   id: SupportedLanguages.Kotlin,
   extensions: ['.kt', '.kts'],
+  ...shebangClassifier(/^kotlinc?$/),
   readWorkspaceImports: (source) =>
     Array.from(source.matchAll(/^[\t ]*import\s+([a-zA-Z]\w*(?:\.(?:\w+|\*))+)/gm), (match) => ({
       name: match[1],
