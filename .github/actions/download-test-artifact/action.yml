@@ -1,13 +1,18 @@
 name: Download test artifact
-description: Download a required artifact from this run with bounded transport retries
+description: Download a required artifact with bounded transport retries
 
 inputs:
   name:
-    description: Exact artifact name to download from this workflow run
+    description: Exact artifact name to download
     required: true
   path:
     description: Destination directory
     required: true
+
+  run-id:
+    description: Verified source run in this repository. Omit for an artifact from the current run.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -21,6 +26,8 @@ runs:
       with:
         name: ${{ inputs.name }}
         path: ${{ inputs.path }}
+        run-id: ${{ inputs.run-id || github.run_id }}
+        github-token: ${{ inputs.run-id && github.token || '' }}
         digest-mismatch: error
 
     - name: Wait before retry
@@ -36,6 +43,8 @@ runs:
       with:
         name: ${{ inputs.name }}
         path: ${{ inputs.path }}
+        run-id: ${{ inputs.run-id || github.run_id }}
+        github-token: ${{ inputs.run-id && github.token || '' }}
         digest-mismatch: error
 
     - name: Wait before final attempt
@@ -50,4 +59,6 @@ runs:
       with:
         name: ${{ inputs.name }}
         path: ${{ inputs.path }}
+        run-id: ${{ inputs.run-id || github.run_id }}
+        github-token: ${{ inputs.run-id && github.token || '' }}
         digest-mismatch: error

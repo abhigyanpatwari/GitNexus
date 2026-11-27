@@ -83,6 +83,19 @@ export interface EnrichedSearchResult {
   processes?: Array<{ id: string; label: string; step?: number; stepCount?: number }>;
 }
 
+/** Search results and any server-reported limitation on search coverage. */
+export interface SearchResponse {
+  results: EnrichedSearchResult[];
+  warning?: string;
+}
+
+export interface SearchOptions {
+  limit?: number;
+  mode?: 'hybrid' | 'semantic' | 'bm25';
+  enrich?: boolean;
+  repo?: string;
+}
+
 export interface GrepResult {
   filePath: string;
   line: number;
@@ -1046,11 +1059,11 @@ export const runQuery = async (
   return (body.result ?? body) as Record<string, unknown>[];
 };
 
-/** Search with optional enrichment and mode selection. */
-export const search = async (
+/** Search with optional enrichment, retaining diagnostics even when there are no matches. */
+export const searchWithMetadata = async (
   query: string,
-  opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean; repo?: string },
-): Promise<EnrichedSearchResult[]> => {
+  opts?: SearchOptions,
+): Promise<SearchResponse> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1064,8 +1077,18 @@ export const search = async (
   });
   await assertOk(response);
   const body = await response.json();
-  return (body.results ?? []) as EnrichedSearchResult[];
+  const result: SearchResponse = { results: body.results ?? [] };
+  if (typeof body.warning === 'string' && body.warning.trim()) {
+    result.warning = body.warning;
+  }
+  return result;
 };
+
+/** Array-only search for graph consumers that do not render search diagnostics. */
+export const search = async (
+  query: string,
+  opts?: SearchOptions,
+): Promise<EnrichedSearchResult[]> => (await searchWithMetadata(query, opts)).results;
 
 /** Options for {@link grep} beyond pattern/repo/limit. */
 export interface GrepOptions {
