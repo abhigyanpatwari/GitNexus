@@ -947,9 +947,11 @@ export function buildGitEnv(
 // server's AZURE_DEVOPS_PAT for Azure hosts) via the GIT_CONFIG_* protocol —
 // never in argv. See resolveGitCredential / buildExtraHeaderKey.
 export function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
-  const windowsClone = process.platform === 'win32' && args[0] === 'clone';
-  // Git's top-level -c applies to this invocation without persisting in the clone.
-  const gitArgs = windowsClone ? ['-c', 'core.longpaths=true', ...args] : args;
+  // Refresh and inspection must be able to access the same paths as clone.
+  const windowsWorktreeCommand =
+    process.platform === 'win32' &&
+    ['clone', 'pull', 'checkout', 'status', 'clean'].includes(args[0]);
+  const gitArgs = windowsWorktreeCommand ? ['-c', 'core.longpaths=true', ...args] : args;
   return new Promise((resolve, reject) => {
     const spawnGit = options?.spawnForTest ?? spawn;
     const proc = spawnGit('git', gitArgs, {
@@ -1002,7 +1004,7 @@ export function runGit(args: string[], cwd?: string, options?: RunGitOptions): P
         if (stderr.trim()) logger.error(`git ${args[0]} stderr: ${stderr.trim()}`);
         const failure = `git ${args[0]} failed (exit code ${code})`;
         const longPathError =
-          windowsClone &&
+          windowsWorktreeCommand &&
           /^(?:error: unable to create file|fatal: cannot create directory at) [^\r\n]+: Filename too long\r?$/m.test(
             stderr,
           );

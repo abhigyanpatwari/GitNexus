@@ -1883,7 +1883,7 @@ describe('git-clone', () => {
     });
   });
 
-  describe('runGit clone checkout', () => {
+  describe('runGit managed working tree', () => {
     const url = 'https://github.com/owner/repo.git';
     const target = 'target with spaces';
 
@@ -1914,7 +1914,27 @@ describe('git-clone', () => {
         args: buildCloneArgs(url, target),
         longPaths: false,
       },
-      { name: 'pull', platform: 'win32', args: ['pull', '--ff-only'], longPaths: false },
+      { name: 'pull', platform: 'win32', args: ['pull', '--ff-only'], longPaths: true },
+      {
+        name: 'checkout',
+        platform: 'win32',
+        args: ['checkout', '-B', 'main', 'origin/main'],
+        longPaths: true,
+      },
+      { name: 'status', platform: 'win32', args: ['status', '--porcelain'], longPaths: true },
+      {
+        name: 'clean',
+        platform: 'win32',
+        args: ['clean', '-fdx', '--', '.claude'],
+        longPaths: true,
+      },
+      { name: 'rev-parse', platform: 'win32', args: ['rev-parse', 'HEAD'], longPaths: false },
+      {
+        name: 'non-Windows pull',
+        platform: 'linux',
+        args: ['pull', '--ff-only'],
+        longPaths: false,
+      },
     ] as const)('scopes the argv override for $name', async ({ platform, args, longPaths }) => {
       const { child, spawnGit, options, restore } = mockGit(platform);
       try {
@@ -1945,7 +1965,7 @@ describe('git-clone', () => {
       },
       { platform: 'win32', command: 'clone', prefix: 'remote: unable to create file', hint: false },
       { platform: 'linux', command: 'clone', prefix: 'error: unable to create file', hint: false },
-      { platform: 'win32', command: 'pull', prefix: 'error: unable to create file', hint: false },
+      { platform: 'win32', command: 'pull', prefix: 'error: unable to create file', hint: true },
     ] as const)('reports a safe error for $platform $command with $prefix', async (test) => {
       const { child, options, restore } = mockGit(test.platform);
       try {
