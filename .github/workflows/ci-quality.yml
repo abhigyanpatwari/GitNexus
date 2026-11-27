@@ -55,7 +55,7 @@ jobs:
         working-directory: gitnexus
         env:
           GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
-        run: npx vitest run test/unit/shared-tool-language-boundary.test.ts test/unit/source-control-bytes.test.ts
+        run: npm test -- test/unit/shared-tool-language-boundary.test.ts test/unit/source-control-bytes.test.ts
 
   typecheck:
     if: fromJSON(inputs.plan).run.cli
