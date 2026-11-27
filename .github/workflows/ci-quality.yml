@@ -50,12 +50,12 @@ jobs:
         if: github.event_name == 'pull_request' && !fromJSON(inputs.plan).run.cli
         with:
           lifecycle-scripts: 'false'
-      - name: Check shared language boundaries
+      - name: Check shared language boundaries and tracked source files
         if: github.event_name == 'pull_request' && !fromJSON(inputs.plan).run.cli
         working-directory: gitnexus
         env:
           GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
-        run: npx vitest run test/unit/shared-tool-language-boundary.test.ts
+        run: npx vitest run test/unit/shared-tool-language-boundary.test.ts test/unit/source-control-bytes.test.ts
 
   typecheck:
     if: fromJSON(inputs.plan).run.cli
