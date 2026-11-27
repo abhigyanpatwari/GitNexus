@@ -192,6 +192,7 @@ export function rejectUnauthorizedRequest(
 export function reindexErrorStatus(error: string): number {
   if (/already running/i.test(error)) return 409;
   if (/unknown repo|no repository found|repository .*not found/i.test(error)) return 404;
+  if (/refresh limit|GITNEXUS_MCP_REFRESH_MAX_FILES/i.test(error)) return 422;
   return 500;
 }
 

@@ -100,6 +100,14 @@ describe('eval-server POST /reindex', () => {
     expect(EVAL_SERVER_TOOLS.has('refresh_index')).toBe(false);
   });
 
+  it('maps a refresh size-limit refusal to 422', () => {
+    expect(
+      reindexErrorStatus(
+        "GitNexus has more than 5000 files in its working tree, over this server's refresh limit of 5000 (GITNEXUS_MCP_REFRESH_MAX_FILES). Run gitnexus analyze in the repository instead.",
+      ),
+    ).toBe(422);
+  });
+
   it('requires the configured bearer token before dispatch', () => {
     const response = {
       setHeader: vi.fn(),
