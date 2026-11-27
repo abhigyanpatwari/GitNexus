@@ -65,6 +65,7 @@ function canonicalizeMatch(match: CaptureMatch): string {
         '@reference.lookup-scope',
         '@reference.caller-scope',
         '@type.lookup-scope',
+        '@type.lookup-deferred',
       ].includes(tag)
     )
       continue;

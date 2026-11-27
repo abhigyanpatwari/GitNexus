@@ -5061,3 +5061,132 @@ def uses_root():
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Forward-referenced annotations: a parameter or return annotation may name a
+// class bound LATER in the file, including the class the method belongs to
+// (`def from_config(cls) -> "UserService"`). The annotation types the value at
+// call time, when the whole module has executed, so the class must be found
+// even though its name is not bound yet at the `def`.
+// ---------------------------------------------------------------------------
+
+describe('Python forward-referenced parameter and return annotations', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-forward-annotations-'));
+    writeFixtureRepo(repoDir, {
+      'service.py': `class UserService:
+    @classmethod
+    def from_config(cls, config: dict) -> "UserService":
+        return cls()
+
+    def with_name(self, name: str) -> "UserService":
+        return self
+
+    @staticmethod
+    def report() -> "Report":
+        return Report()
+
+    def merge(self, other: "UserService") -> bool:
+        return other.run()
+
+    def run(self) -> bool:
+        return True
+
+
+def export(target: "Report") -> bool:
+    return target.store()
+
+
+def make_report() -> "Report":
+    return Report()
+
+
+class Report:
+    def store(self) -> bool:
+        return True
+`,
+      'rebound.py': `class Config:
+    def first(self) -> bool:
+        return True
+
+
+def read_first(config: Config) -> bool:
+    return config.first()
+
+
+class Config:
+    def second(self) -> bool:
+        return True
+
+
+def read_second(config: Config) -> bool:
+    return config.second()
+`,
+      'app.py': `from service import UserService, make_report
+
+
+def from_factory():
+    svc = UserService.from_config({})
+    svc.run()
+
+
+def from_fluent():
+    svc = UserService().with_name("x")
+    svc.run()
+
+
+def from_later_class():
+    rep = UserService.report()
+    rep.store()
+
+
+def from_free_function():
+    rep = make_report()
+    rep.store()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  const callsFrom = (source: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === source)
+      .map((c) => `${c.target}@${c.targetFilePath}`)
+      .sort();
+
+  it('types a classmethod factory that returns its own class', () => {
+    expect(callsFrom('from_factory')).toEqual(['from_config@service.py', 'run@service.py']);
+  });
+
+  it('types an instance method that returns its own class', () => {
+    expect(callsFrom('from_fluent')).toContain('run@service.py');
+  });
+
+  it('types a method returning a class defined later in the file', () => {
+    expect(callsFrom('from_later_class')).toEqual(['report@service.py', 'store@service.py']);
+  });
+
+  it('types a free function returning a class defined later in the file', () => {
+    expect(callsFrom('from_free_function')).toEqual(['make_report@service.py', 'store@service.py']);
+  });
+
+  it('types a parameter annotated with the enclosing class', () => {
+    expect(callsFrom('merge')).toEqual(['run@service.py']);
+  });
+
+  it('types a parameter annotated with a class defined later in the file', () => {
+    expect(callsFrom('export')).toEqual(['store@service.py']);
+  });
+
+  it('keeps the position for a name already bound at the def, so a later rebinding does not hide it', () => {
+    expect(callsFrom('read_first')).toEqual(['first@rebound.py']);
+    expect(callsFrom('read_second')).toEqual(['second@rebound.py']);
+  });
+});
