@@ -29,6 +29,7 @@ import {
   type CsharpResolveContext,
 } from './index.js';
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
+import { csharpIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resolution-config.js';
 import { unwrapCsharpElementType } from './accessor-unwrap.js';
 import { emitRazorViewComponentEdges } from './razor-view-components.js';
@@ -122,6 +123,8 @@ const csharpScopeResolver: ScopeResolver = {
   // same namespace, without any `using` directive. See
   // `namespace-siblings.ts` for the implementation.
   populateNamespaceSiblings: populateCsharpNamespaceSiblings,
+
+  isGlobalNameFallbackPlausible: csharpIsGlobalNameFallbackPlausible,
 
   // The inheritance pre-pass runs before those siblings exist, so a base
   // declared in another file of the SAME named namespace binds here. Exact

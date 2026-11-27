@@ -177,3 +177,38 @@ describe('extractCsharpStructureViaScanner', () => {
     ).toBeFalsy();
   });
 });
+
+// `global using` feeds the workspace evidence the name-fallback visibility
+// veto reads: a namespace imported globally is visible in every file.
+describe('extractCsharpStructureViaScanner: global using', () => {
+  it('captures `global using` namespaces (incl. global::) but not aliases', () => {
+    const src = [
+      'global using Vendor.Proto;',
+      'global using global::Other.Lib;',
+      'global using Alias = Third.Party;',
+      'using Local.Only;',
+    ].join('\n');
+    const structure = extractCsharpStructureViaScanner(src);
+    // `global using Alias = Third.Party;` names only `Alias`, not `Third.Party`.
+    expect(structure.globalUsingNamespaces).toEqual(['Vendor.Proto', 'Other.Lib']);
+    expect(structure.incomplete).toBeFalsy();
+  });
+
+  it('records `global using static` as a global static path, not a namespace', () => {
+    const structure = extractCsharpStructureViaScanner(
+      'global using static System.Math;\nusing static Local.Only;',
+    );
+    expect(structure.usingStaticPaths).toEqual(['System.Math', 'Local.Only']);
+    expect(structure.globalUsingStaticPaths).toEqual(['System.Math']);
+    expect(structure.globalUsingNamespaces).toBeUndefined();
+  });
+
+  it('ignores `global using` inside a block comment', () => {
+    const src = '/*\nglobal using Hidden.Ns;\n*/\npublic class A {}';
+    expect(extractCsharpStructureViaScanner(src).globalUsingNamespaces).toBeUndefined();
+  });
+
+  it('flags a `global using` it cannot parse as incomplete', () => {
+    expect(extractCsharpStructureViaScanner('global using\n  Split.Ns;').incomplete).toBe(true);
+  });
+});

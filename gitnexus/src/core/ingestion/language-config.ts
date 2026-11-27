@@ -141,9 +141,33 @@ export interface CSharpNamespaceEvidence {
   /** csproj RootNamespace values plus the top-level segment of each declared
    *  namespace — the anchor set for the parent-namespace gate direction. */
   readonly rootNamespaces?: ReadonlySet<string>;
+  /** Project-wide imports: `global using X;` in `.cs` files plus MSBuild
+   *  `<Using Include="X" />` items, each with the part of the repo it reaches.
+   *  Absent when the evidence was built without a scan; consumers must then
+   *  treat global visibility as unknown. */
+  readonly globalUsings?: readonly CSharpGlobalUsing[];
+  /** Repo-relative directories that contain a `.csproj` (`''` = repo root).
+   *  A source file belongs to the project of its nearest such ancestor. */
+  readonly projectDirs?: ReadonlySet<string>;
   /** True when the BFS hit its dir/depth cap, so the namespace set may be
    *  incomplete; the gate fails open (allows) in that case. */
   readonly truncated?: boolean;
+}
+
+/**
+ * One project-wide import. A `global using` / `.csproj` item belongs to a
+ * single compilation, so it reaches only files whose owning project directory
+ * is `scopeDir` (`reach: 'project'`). `Directory.Build.props` / `.targets` are
+ * imported by every project below them (`reach: 'tree'`).
+ */
+export interface CSharpGlobalUsing {
+  readonly namespace: string;
+  /** Repo-relative, `/`-separated; `''` is the repo root. */
+  readonly scopeDir: string;
+  readonly reach: 'project' | 'tree';
+  /** `global using static T;` / `<Using Static="true">`: `namespace` is the
+   *  type path `T`, whose nested types become nameable. */
+  readonly static?: boolean;
 }
 
 /** Result of a single BFS over a repo collecting both csproj configs and
@@ -152,6 +176,8 @@ export interface CSharpProjectScan {
   readonly configs: CSharpProjectConfig[];
   readonly declaredNamespaces: ReadonlySet<string>;
   readonly rootNamespaces: ReadonlySet<string>;
+  readonly globalUsings: readonly CSharpGlobalUsing[];
+  readonly projectDirs: ReadonlySet<string>;
   readonly truncated: boolean;
 }
 
@@ -160,6 +186,8 @@ export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEv
   return {
     declaredNamespaces: scan.declaredNamespaces,
     rootNamespaces: scan.rootNamespaces,
+    globalUsings: scan.globalUsings,
+    projectDirs: scan.projectDirs,
     truncated: scan.truncated,
   };
 }
@@ -464,7 +492,13 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
   const configs: CSharpProjectConfig[] = [];
   const declaredNamespaces = new Set<string>();
   const rootNamespaces = new Set<string>();
-  const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  const globalUsings: CSharpGlobalUsing[] = [];
+  const projectDirs = new Set<string>();
+  // `ownerDir`: repo-relative dir of the nearest ancestor `.csproj`, i.e. the
+  // compilation a `.cs` file's `global using` belongs to ('' when none).
+  const scanQueue: { dir: string; depth: number; ownerDir: string }[] = [
+    { dir: repoRoot, depth: 0, ownerDir: '' },
+  ];
   let dirsScanned = 0;
   let truncated = false;
 
@@ -473,8 +507,9 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
       truncated = true;
       break;
     }
-    const { dir, depth } = scanQueue.shift()!;
+    const { dir, depth, ownerDir: inheritedOwnerDir } = scanQueue.shift()!;
     dirsScanned++;
+    const relDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
     let entries: import('fs').Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -492,12 +527,14 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
     // precedence matters); `.cs` namespace results land in shared Sets where
     // order is irrelevant.
     const csprojNames: string[] = [];
+    const msbuildNames: string[] = [];
     const csNames: string[] = [];
+    const subdirNames: string[] = [];
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (CSHARP_SCAN_SKIP_DIRS.has(entry.name)) continue;
         if (depth < CSHARP_SCAN_MAX_DEPTH) {
-          scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          subdirNames.push(entry.name);
         } else {
           truncated = true; // a real subtree was pruned at the depth cap
         }
@@ -506,9 +543,19 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
       if (!entry.isFile()) continue;
       if (entry.name.endsWith('.csproj')) {
         csprojNames.push(entry.name);
+        msbuildNames.push(entry.name);
+      } else if (CSHARP_MSBUILD_IMPORT_FILES.has(entry.name)) {
+        msbuildNames.push(entry.name);
       } else if (entry.name.endsWith('.cs')) {
         csNames.push(entry.name);
       }
+    }
+    // A `.csproj` here starts a new compilation for this dir and everything
+    // below it (until a deeper `.csproj`).
+    const ownerDir = csprojNames.length > 0 ? relDir : inheritedOwnerDir;
+    if (csprojNames.length > 0) projectDirs.add(relDir);
+    for (const name of subdirNames) {
+      scanQueue.push({ dir: path.join(dir, name), depth: depth + 1, ownerDir });
     }
     // `mapConcurrent` runs the same bounded waves and degrades per item
     // (a rejection becomes `undefined`), so entry order is still preserved.
@@ -523,9 +570,39 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
         rootNamespaces.add(config.rootNamespace);
       }
     }
+    const msbuildResults = await mapConcurrent(
+      msbuildNames,
+      (name) =>
+        collectMsbuildGlobalUsings(path.join(dir, name), (namespace, isStatic) =>
+          globalUsings.push({
+            namespace,
+            scopeDir: relDir,
+            reach: CSHARP_MSBUILD_IMPORT_FILES.has(name) ? 'tree' : 'project',
+            ...(isStatic ? { static: true } : {}),
+          }),
+        ),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    // An unreadable project file may hide `<Using>` items, so global
+    // visibility is unknown — fail open like an unreadable `.cs`.
+    for (const r of msbuildResults) {
+      if (r !== 'ok') truncated = true;
+    }
     const csResults = await mapConcurrent(
       csNames,
-      (name) => collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
+      (name) =>
+        collectDeclaredNamespaces(
+          path.join(dir, name),
+          declaredNamespaces,
+          rootNamespaces,
+          (namespace, isStatic) =>
+            globalUsings.push({
+              namespace,
+              scopeDir: ownerDir,
+              reach: 'project',
+              ...(isStatic ? { static: true } : {}),
+            }),
+        ),
       { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
     );
     // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
@@ -547,7 +624,51 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
       `[csharp] namespace scan of ${repoRoot} truncated (dir cap ${CSHARP_SCAN_MAX_DIRS}, depth cap ${CSHARP_SCAN_MAX_DEPTH}, an unreadable directory, or an unreadable .cs file); the #1881 suffix-fallback gate fails open for unmatched usings`,
     );
   }
-  return { configs, declaredNamespaces, rootNamespaces, truncated };
+  return { configs, declaredNamespaces, rootNamespaces, globalUsings, projectDirs, truncated };
+}
+
+// MSBuild files that can declare project-wide `<Using Include="X" />` items
+// (besides every `.csproj`). These are imported implicitly by the SDK.
+const CSHARP_MSBUILD_IMPORT_FILES: ReadonlySet<string> = new Set([
+  'Directory.Build.props',
+  'Directory.Build.targets',
+]);
+// `<Using Include="X" [Static="true"] [Alias="A"] />` — attribute order varies,
+// so the opening tag is captured whole and its attributes read separately.
+const CSHARP_MSBUILD_USING_TAG_RE = /<Using\b([^>]*)>/g;
+const msbuildAttr = (attrs: string, name: string): string | undefined =>
+  new RegExp(String.raw`\b${name}\s*=\s*["']([^"']*)["']`, 'i').exec(attrs)?.[1];
+// MSBuild ignores commented-out markup, so `<Using>` inside one is not an import.
+const XML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+// Project files are small; one beyond this is pathological and is treated as
+// unreadable (the scan fails open) rather than streamed.
+const CSHARP_MSBUILD_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Collect the namespaces an MSBuild project file imports globally. An
+ * `Alias` item names only the alias, so it is skipped; a `Static` item imports
+ * a type's members and is flagged as such.
+ */
+async function collectMsbuildGlobalUsings(
+  filePath: string,
+  addGlobalUsing: (namespace: string, isStatic: boolean) => void,
+): Promise<'ok' | 'truncated'> {
+  let text: string;
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.size > CSHARP_MSBUILD_MAX_BYTES) return 'truncated';
+    text = await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return 'truncated';
+  }
+  for (const match of text.replace(XML_COMMENT_RE, '').matchAll(CSHARP_MSBUILD_USING_TAG_RE)) {
+    const attrs = match[1]!;
+    const include = msbuildAttr(attrs, 'Include');
+    if (include === undefined || msbuildAttr(attrs, 'Alias') !== undefined) continue;
+    const isStatic = msbuildAttr(attrs, 'Static')?.trim().toLowerCase() === 'true';
+    addGlobalUsing(include.trim().replace(/^global::/, ''), isStatic);
+  }
+  return 'ok';
 }
 
 // Generous soft budget for locating `<RootNamespace>`: a real .csproj declares
@@ -639,6 +760,7 @@ async function collectDeclaredNamespaces(
   filePath: string,
   declaredNamespaces: Set<string>,
   rootNamespaces: Set<string>,
+  addGlobalUsing: (namespace: string, isStatic: boolean) => void,
 ): Promise<'ok' | 'truncated'> {
   const createScanner = await getCsharpStructureScannerFactory();
   const scanner = createScanner();
@@ -662,6 +784,8 @@ async function collectDeclaredNamespaces(
     const dot = ns.indexOf('.');
     rootNamespaces.add(dot === -1 ? ns : ns.slice(0, dot));
   }
+  for (const ns of structure.globalUsingNamespaces ?? []) addGlobalUsing(ns, false);
+  for (const type of structure.globalUsingStaticPaths ?? []) addGlobalUsing(type, true);
   // A declaration the scanner could not fully capture (Codex F3) means the
   // collected namespaces are an incomplete picture of this file — treat it like
   // a truncated read so the #1881 gate fails OPEN rather than over-block an
