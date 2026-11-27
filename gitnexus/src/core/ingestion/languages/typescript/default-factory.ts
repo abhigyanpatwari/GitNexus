@@ -1,6 +1,53 @@
 import { FUNCTION_NODE_TYPES, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 
+const referenceWrappers = new Set([
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'type_assertion',
+  'non_null_expression',
+  'instantiation_expression',
+]);
+
+const nonStringEvalArguments = new Set([
+  'number',
+  'true',
+  'false',
+  'null',
+  'regex',
+  'array',
+  'object',
+  'arrow_function',
+  'function_expression',
+  'generator_function',
+  'class',
+  'new_expression',
+]);
+
+/** ECMA-262 13.3.6.1 requires an ordinary call to the identifier reference eval. */
+function mayCallDirectEval(ref: SyntaxNode): boolean {
+  if (ref.type !== 'identifier') return false;
+  let callee = ref;
+  while (callee.parent && referenceWrappers.has(callee.parent.type)) callee = callee.parent;
+  const call = callee.parent;
+  if (
+    call?.type !== 'call_expression' ||
+    call.childForFieldName('function')?.id !== callee.id ||
+    call.children.some((child) => child.type === '?.')
+  )
+    return false;
+  const args = call.childForFieldName('arguments');
+  if (args?.type !== 'arguments') return false;
+  let source = args.namedChildren.find((child) => child.type !== 'comment');
+  while (source && referenceWrappers.has(source.type)) {
+    source = source.namedChildren.find(
+      (child) => child.type !== 'comment' && child.type !== 'type_arguments',
+    );
+  }
+  return source !== undefined && !nonStringEvalArguments.has(source.type);
+}
+
 /** A named function body or instance initializer can execute when its binding escapes. */
 function deferredBinding(node: SyntaxNode): SyntaxNode | undefined {
   for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
@@ -74,10 +121,12 @@ export function defaultFactoryResult(root: SyntaxNode) {
   );
   // Index names only if a write to this factory occurs inside a deferred body.
   let references: Map<string, SyntaxNode[]> | undefined;
+  let directEvalRefs: SyntaxNode[] = [];
   const unreachable = new Set<number>();
   function isPriorWrite(write: SyntaxNode): boolean {
     const pending = [write];
     const seen = new Set<number>();
+    let searchedEval = false;
     for (let node = pending.pop(); node; node = pending.pop()) {
       const owner = deferredBinding(node);
       if (!owner) {
@@ -108,9 +157,13 @@ export function defaultFactoryResult(root: SyntaxNode) {
           if (uses) uses.push(ref);
           else references.set(key, [ref]);
         }
+        directEvalRefs = (references.get('eval') ?? []).filter(mayCallDirectEval);
       }
-      // Direct eval can refer to a lexical binding by a name assembled at runtime.
-      if (references.has('eval')) return true;
+      // A reachable direct eval can invoke a writer by a name assembled at runtime.
+      if (!searchedEval && directEvalRefs.length) {
+        searchedEval = true;
+        for (const ref of directEvalRefs) pending.push(ref);
+      }
       for (const ref of references.get(canonicalTypeScriptName(binding.text)) ?? []) {
         if (ref.id === binding.id) continue;
         if (hasDependency && ref.parent?.type === 'export_specifier') return true;
@@ -122,6 +175,7 @@ export function defaultFactoryResult(root: SyntaxNode) {
         for (const ref of owner.descendantsOfType(['this', 'decorator'])) pending.push(ref);
       }
     }
+    if (searchedEval) directEvalRefs = [];
     for (const owner of seen) unreachable.add(owner);
     return false;
   }

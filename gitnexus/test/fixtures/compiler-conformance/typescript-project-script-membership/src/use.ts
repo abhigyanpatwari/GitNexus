@@ -10,3 +10,6 @@ export function patterns(a: BracketPath, b: SimilarPath, c: ExcludedTree) {
   b.run();
   c.run();
 }
+export function useIndex(value: PackageIndex) {
+  value.run();
+}

@@ -14,7 +14,7 @@
       },
       "tupleBindings": 112,
       "narrowingBindings": 80,
-      "captureFingerprint": "c3aa7937b68681b03a9c66e4a58f8fe1b2ec617390736721756accf8750de339",
+      "captureFingerprint": "95938e41a8df889417711c93425ff19e758adf0f302e80f1bba9b74c03c6fa02",
       "graphFingerprint": "fbcec1dee34004a73bbe7f7b27081fc13cedb78ad82a219efda70b557d4e3242",
       "targetFingerprint": "c9795ae91439a1a38494a43557e9a594dfa37e2b0649d71f9f695f94c48c7100",
       "resolvedEdges": 512
@@ -32,7 +32,7 @@
       },
       "tupleBindings": 448,
       "narrowingBindings": 320,
-      "captureFingerprint": "f6e05385062404912f55084e82adb25392a86af619d35cbfcaf6b1382c47dfd4",
+      "captureFingerprint": "24611007c2b2c7b7bca9006065ef379ed5a5ce29993aea084562196992b18356",
       "graphFingerprint": "41266491fd29cd7bf2d80e8ef2232671687594f1a3b9ae43e89bdde590c07899",
       "targetFingerprint": "17300ea23d2c5c66e3a9f002538603e4387b3a8565382294f4bcadac16ccd549",
       "resolvedEdges": 2048
@@ -50,7 +50,7 @@
       },
       "tupleBindings": 1792,
       "narrowingBindings": 1280,
-      "captureFingerprint": "b7b0f36246365a1751ccb8c42f9a16a5d2c9fa8dc4c4f928e2af0b3b24eabccf",
+      "captureFingerprint": "1fd43b9540040db8e49bfebea4951bf26b1dac5db4f7033a707c61cb723e7a40",
       "graphFingerprint": "e72a2f9697fc97d2f33fa70ca5a87246b80e59fcfa81c67e6b4db244b571a63e",
       "targetFingerprint": "63d991fa7f411c86ece76ccd501bd86ebbec558a38909025d52e8cfa3fbd2b48",
       "resolvedEdges": 8192

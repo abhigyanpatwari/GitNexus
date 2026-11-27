@@ -802,6 +802,7 @@ describe('TypeScript overload disambiguation via inferLiteralType', () => {
 // ---------------------------------------------------------------------------
 describe('TypeScript overload family call edges', () => {
   const bindings = new Map<number, { status: string; targetDefIds: readonly string[] }>();
+  let optionalCallbackId: string | undefined;
   const result = useFixture(
     'ts-overload-family',
     {
@@ -826,11 +827,22 @@ export function sharedReturn(x: { key: string }) { const client = connect(x); cl
 function choose(x: { key: number }): Other;
 function choose(x: { key: string }): Client;
 function choose(x: unknown) { return new Client(); }
-export function uncertainReturn(x: { key: string }) { const client = choose(x); client.send(); }`,
+export function uncertainReturn(x: { key: string }) { const client = choose(x); client.send(); }
+function callback(cb: (x?: number) => void): void;
+function callback(cb: (x: number) => void): void;
+function callback(cb: unknown) {}
+export function annotatedCallback() { callback((x: number) => { void x; }); }
+export function contextualCallback() { callback(x => { void x; }); }`,
     },
     {
+      workerPoolSize: 1,
       onScopeResolved({ parsedFiles, referenceBindings }) {
         for (const file of parsedFiles) {
+          optionalCallbackId ??= file.localDefs.find(
+            (def) =>
+              def.qualifiedName === 'callback' &&
+              def.declaredParameterTypes?.[0] === '(x?: number) => void',
+          )?.nodeId;
           for (const site of file.referenceSites) {
             const binding = referenceBindings.get(site);
             if (site.kind === 'call' && binding) bindings.set(site.atRange.startLine, binding);
@@ -867,6 +879,23 @@ export function uncertainReturn(x: { key: string }) { const client = choose(x); 
     expect(calls.filter((edge) => edge.target === 'send').map((edge) => edge.source)).toEqual([
       'sharedReturn',
     ]);
+  });
+
+  it('uses contextual callback arity without treating an explicit parameter type as optional', () => {
+    expect(optionalCallbackId).toBeDefined();
+    const annotated = bindings.get(26);
+    expect(annotated?.status).toBe('unresolved');
+    expect(annotated?.targetDefIds).toHaveLength(2);
+    expect(bindings.get(27)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [optionalCallbackId],
+    });
+    expect(
+      getRelationships(result(), 'CALLS')
+        .filter((edge) => edge.target === 'callback')
+        .map((edge) => edge.source)
+        .sort(),
+    ).toEqual(['annotatedCallback', 'contextualCallback']);
   });
 });
 

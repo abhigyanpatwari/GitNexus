@@ -8,7 +8,7 @@ export { canonicalModuleExportName } from '../../utils/ecmascript-literals.js';
 
 /** Query candidates for literalMethodName, which checks grouping and substitutions. */
 export const literalPropertyKeyQuery = `[(string) (number) (template_string) (parenthesized_expression)
-  (unary_expression operator: ["+" "-"] argument: (number))]`;
+  (unary_expression operator: ["+" "-"] argument: [(number) (parenthesized_expression)])]`;
 
 const decimalDigits = String.raw`\d(?:_?\d)*`;
 const decimalInteger = String.raw`(?:0|[1-9](?:_?\d)*)`;
@@ -34,11 +34,23 @@ export function numericLiteralValue(spelling: string): number | bigint | undefin
   return sign === '-' ? -value : value;
 }
 
+function unwrapLiteral(node: SyntaxNode | null): SyntaxNode | null {
+  while (node?.type === 'computed_property_name' || node?.type === 'parenthesized_expression') {
+    node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
+  }
+  return node;
+}
+
 /** A leading sign is its own syntax node and can be separated from the operand by trivia. */
-export function signedNumericLiteral(node: SyntaxNode): string | undefined {
+export function signedNumericLiteral(
+  node: SyntaxNode,
+  context: 'argument' | 'property-key' = 'argument',
+): string | undefined {
   if (node.type !== 'unary_expression') return undefined;
   const operator = node.childForFieldName('operator')?.text;
-  const operand = node.childForFieldName('argument');
+  const argument = node.childForFieldName('argument');
+  // TypeScript widens signed arguments with grouped operands. A property key uses its runtime value.
+  const operand = context === 'property-key' ? unwrapLiteral(argument) : argument;
   if ((operator === '-' || operator === '+') && operand?.type === 'number') {
     const spelling = operator + operand.text;
     if (numericLiteralValue(spelling) !== undefined) return spelling;
@@ -47,9 +59,7 @@ export function signedNumericLiteral(node: SyntaxNode): string | undefined {
 
 /** A constant ECMAScript property key, shared by declarations and bracket calls. */
 export function literalMethodName(node: SyntaxNode | null): string | undefined {
-  while (node?.type === 'computed_property_name' || node?.type === 'parenthesized_expression') {
-    node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
-  }
+  node = unwrapLiteral(node);
   if (!node) return undefined;
   if (
     node.type === 'template_string' &&
@@ -58,7 +68,7 @@ export function literalMethodName(node: SyntaxNode | null): string | undefined {
     return undefined;
   if (node.type === 'string' || node.type === 'template_string')
     return decodeStringLiteral(node.text) ?? undefined;
-  const spelling = node.type === 'number' ? node.text : signedNumericLiteral(node);
+  const spelling = node.type === 'number' ? node.text : signedNumericLiteral(node, 'property-key');
   const value = spelling === undefined ? undefined : numericLiteralValue(spelling);
   return value === undefined ? undefined : String(value);
 }

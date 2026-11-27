@@ -20,6 +20,7 @@ import type { CaptureMatch, NameClaim } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { deriveDefaultExportHocName } from '../../ts-js-hoc-utils.js';
 import { defaultExportNameCollides, isCommonJsModule } from './cjs-export-assignment.js';
+import { canonicalTypeScriptName } from './identifiers.js';
 import { recordPossibleCommonJsDefault } from './module-kind.js';
 
 /**
@@ -143,22 +144,49 @@ export function synthesizeCjsReExports(
   }
 }
 
-function usesCommonJsModuleBinding(root: SyntaxNode, captures: CaptureMatch[]) {
+function isModuleIdentifier(node: SyntaxNode | null): boolean {
+  return node?.type === 'identifier' && canonicalTypeScriptName(node.text) === 'module';
+}
+
+/** First position where a declaration replaces Node's wrapper parameter. */
+function moduleBindingEnd(root: SyntaxNode, captures: CaptureMatch[]): number {
   const scope = captures.find((capture) => capture['@scope.module']);
   const names = scope?.['@scope.name-claims']?.text;
-  if (!names) return true;
+  // Both providers emit '[]' for a complete module scope with no declarations.
+  if (!names) return 0;
   const claims: NameClaim[] = JSON.parse(names);
-  return !claims.some((claim) => {
-    if (claim.name !== 'module' || claim.purpose === 'type') return false;
-    // An ambient declaration describes Node's wrapper parameter without replacing it.
+  let end = Infinity;
+  for (const claim of claims) {
+    if (claim.purpose === 'type' || canonicalTypeScriptName(claim.name) !== 'module') continue;
     const pos = { row: claim.range.startLine - 1, column: claim.range.startCol };
     let node: SyntaxNode | null = root.namedDescendantForPosition(pos);
-    while (node && node !== root) {
-      if (node.type === 'ambient_declaration') return false;
+    let variable: SyntaxNode | undefined;
+    while (node && node.type !== 'program') {
+      // Ambient declarations perform no store. A static block has its own var scope.
+      if (node.type === 'ambient_declaration' || node.type === 'class_static_block') break;
+      if (node.type === 'variable_declaration') variable = node;
       node = node.parent;
     }
-    return true;
-  });
+    if (node?.type !== 'program') continue;
+    if (!variable) return 0;
+
+    // A top-level `var module` shares the parameter binding. Only an
+    // initializer that stores a different value can invalidate a later export.
+    const at = claim.availableFrom;
+    if (!at) continue;
+    const declarator = variable.namedChildren.find(
+      (child) =>
+        child.endPosition.row + 1 === at.startLine && child.endPosition.column === at.startCol,
+    );
+    if (
+      declarator &&
+      isModuleIdentifier(declarator.childForFieldName('name')) &&
+      isModuleIdentifier(declarator.childForFieldName('value'))
+    )
+      continue;
+    end = Math.min(end, variable.startIndex);
+  }
+  return end;
 }
 
 /**
@@ -179,12 +207,18 @@ export function synthesizeCjsDefaultExport(
   filePath: string,
   out: CaptureMatch[],
 ): void {
+  let declaredBindingEnd: number | undefined;
+  let reassigned = false;
   for (const child of root.namedChildren) {
     if (child.type !== 'expression_statement') continue;
     const assignment = child.namedChild(0);
     if (assignment === null || assignment.type !== 'assignment_expression') continue;
 
     const left = assignment.childForFieldName('left');
+    if (isModuleIdentifier(left)) {
+      if (!isModuleIdentifier(assignment.childForFieldName('right'))) reassigned = true;
+      continue;
+    }
     if (left === null || left.type !== 'member_expression') continue;
     if (left.childForFieldName('object')?.text !== 'module') continue;
     if (left.childForFieldName('property')?.text !== 'exports') continue;
@@ -206,7 +240,8 @@ export function synthesizeCjsDefaultExport(
     // would bind a second callable under one name, merging two functions onto
     // one node and fabricating a self-recursive call edge (#2729 review F4).
     if (ownName === null && defaultExportNameCollides(assignment, root, name)) continue;
-    const wrapperBinding = usesCommonJsModuleBinding(root, out);
+    declaredBindingEnd ??= moduleBindingEnd(root, out);
+    const wrapperBinding = !reassigned && assignment.startIndex < declaredBindingEnd;
     const exported = wrapperBinding && isCommonJsModule(root, filePath);
     if (wrapperBinding && !exported && /\.tsx?$/.test(filePath))
       recordPossibleCommonJsDefault(filePath, value);

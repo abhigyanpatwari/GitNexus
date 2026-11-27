@@ -8,7 +8,10 @@ import { describe, it, expect } from 'vitest';
 import { emitTsScopeCaptures } from '../../../src/core/ingestion/languages/typescript/captures.js';
 import { emitJsScopeCaptures } from '../../../src/core/ingestion/languages/javascript/captures.js';
 import { extract } from '../../../src/core/ingestion/scope-extractor.js';
-import { typescriptProvider } from '../../../src/core/ingestion/languages/typescript.js';
+import {
+  javascriptProvider,
+  typescriptProvider,
+} from '../../../src/core/ingestion/languages/typescript.js';
 
 type Emit = typeof emitTsScopeCaptures;
 
@@ -394,6 +397,63 @@ describe('@declaration.is-default-export (#3956)', () => {
     expect(xs.map((d) => d.isDefaultExport === true).sort()).toEqual([false, true, true]);
     const other = parsed.localDefs.find((d) => d.qualifiedName === 'other')!;
     expect('isDefaultExport' in other).toBe(false);
+  });
+});
+
+describe('CommonJS callable default exports', () => {
+  it.each([
+    ['x.cjs', emitJsScopeCaptures, javascriptProvider],
+    ['x.cts', emitTsScopeCaptures, typescriptProvider],
+  ] as const)(
+    'recognizes a bare wrapper export without other declarations in %s',
+    (file, emit, provider) => {
+      const source = 'module.exports = function candidate() {};';
+      const { localDefs } = extract(emit(source, file), file, provider);
+      expect(localDefs.find((def) => def.qualifiedName === 'candidate')).toMatchObject({
+        isExported: true,
+        isDefaultExport: true,
+      });
+    },
+  );
+
+  it.each([
+    ['x.js', 'const module = {};', false],
+    ['x.js', String.raw`const m\u006fdule = {};`, false],
+    ['x.cjs', 'var module = {};', false],
+    ['x.cjs', 'var module;', true],
+    ['x.cjs', 'var module = module;', true],
+    ['x.cjs', 'function module() {}', false],
+    ['x.cjs', '{ const module = {}; module.exports = function inner() {}; }', true],
+    [
+      'x.cjs',
+      'class C { static { var module = {}; module.exports = function inner() {}; } }',
+      true,
+    ],
+    [
+      'x.cjs',
+      'function nested(module) { module.exports = function inner() {}; } nested({});',
+      true,
+    ],
+  ] as const)('uses the wrapper binding in %s after %s', (file, prefix, exported) => {
+    const source = `${prefix}\nmodule.exports = function candidate() {};`;
+    const { localDefs } = extract(emitJsScopeCaptures(source, file), file, javascriptProvider);
+    const candidate = localDefs.find((def) => def.qualifiedName === 'candidate');
+    expect(candidate?.isExported).toBe(exported);
+    expect(candidate?.isDefaultExport === true).toBe(exported);
+    expect(localDefs.filter((def) => def.isDefaultExport).map((def) => def.qualifiedName)).toEqual(
+      exported ? ['candidate'] : [],
+    );
+  });
+
+  it.each(['var module = {};', 'module = {};'])('applies %s at its write position', (write) => {
+    const file = 'x.cjs';
+    const source = `module.exports = function visible() {};\n${write}\nmodule.exports = function privateFn() {};`;
+    const { localDefs } = extract(emitJsScopeCaptures(source, file), file, javascriptProvider);
+    const visible = localDefs.find((def) => def.qualifiedName === 'visible');
+    expect(visible).toMatchObject({ isExported: true, isDefaultExport: true });
+    const privateFn = localDefs.find((def) => def.qualifiedName === 'privateFn');
+    expect(privateFn?.isExported).toBe(false);
+    expect(privateFn?.isDefaultExport).toBeUndefined();
   });
 });
 

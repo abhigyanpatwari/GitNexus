@@ -83,6 +83,37 @@ describe('TypeScript synthesized capture order', () => {
     );
   });
 
+  it.each([
+    ['an unused eval reference', 'void eval;', true],
+    ['an indirect eval', '(0, eval)("later()");', true],
+    ['an aliased eval', 'const other = eval; other("later()");', true],
+    ['an optional eval call', 'eval?.("later()");', true],
+    ['a tagged template', 'eval`later()`;', true],
+    ['an empty eval call', 'eval(/* no argument */);', true],
+    ['a non-string eval argument', 'eval(42);', true],
+    ['an uncalled evaluator', 'function run() { eval("later()"); }', true],
+    ['a direct eval', 'eval("later()");', false],
+    ['a grouped eval', '(eval)("later()");', false],
+    ['an asserted eval', '(eval as typeof eval)("later()");', false],
+    ['a called evaluator', 'function run() { eval("later()"); } run();', false],
+    ['a direct eval after export', '', true, 'eval("later()");'],
+  ] as const)(
+    'tracks the factory result across %s',
+    (_case, expression, expected, afterExport = '') => {
+      const captures = emitTsScopeCaptures(
+        `function make() { return () => 1; }
+       function later() { make = () => () => 2; }
+       ${expression}
+       export default make();
+       ${afterExport}`,
+        'factory-eval.ts',
+      );
+      expect(
+        captures.some((match) => match['@declaration.is-default-export']?.text === 'true'),
+      ).toBe(expected);
+    },
+  );
+
   describe('guards after writes to the receiver', () => {
     it.each([
       [

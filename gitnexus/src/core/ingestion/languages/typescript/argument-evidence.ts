@@ -102,6 +102,8 @@ export function acceptsArgumentEvidence(
       )
     )
       return undefined;
+    // Only unannotated arrow parameters have arity-only evidence. A contextual
+    // parameter receives the target's optional type, including undefined.
     return evidence.parameters <= parameters.length;
   }
   if (!annotation.startsWith('{') || !annotation.endsWith('}')) return undefined;

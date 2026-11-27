@@ -181,6 +181,38 @@ test('an unchecked shadowed receiver cannot acquire the typed receiver’s publi
 
 test('runtime module exports agree with the JavaScript emitted by TypeScript', checkModuleValues);
 
+test('published calls preserve signed numeric keys with grouped operands', async () => {
+  const fixture = new URL(
+    '../../../test/fixtures/typescript-signed-property-keys/',
+    import.meta.url,
+  );
+  // The checker widens these expressions to number. Node supplies their actual property keys.
+  compilerReport(fileURLToPath(fixture));
+  const { SignedKeys, callNegative, callPositive, callDynamic } = await import(
+    new URL('keys.ts', fixture)
+  );
+  const runtimeKeys = [];
+  const keys = new Proxy(new SignedKeys(), {
+    get(target, key) {
+      runtimeKeys.push(key);
+      return Reflect.get(target, key);
+    },
+  });
+  callNegative(keys);
+  callPositive(keys);
+  callDynamic(keys, 1);
+  assert.deepEqual(runtimeKeys, ['-1', '2', '-1']);
+  const { graph } = await runPipelineFromRepo(fileURLToPath(fixture), () => {});
+  const calls = Array.from(graph.iterRelationshipsByType('CALLS'), ({ sourceId, targetId }) => [
+    graph.getNode(sourceId).properties.name,
+    graph.getNode(targetId).properties.name,
+  ]).sort();
+  assert.deepEqual(calls, [
+    [callNegative.name, runtimeKeys[0]],
+    [callPositive.name, runtimeKeys[1]],
+  ]);
+});
+
 test('two stored ownership edges cannot collapse into one method owner', async () => {
   const { graph } = await runPipelineFromRepo(root, () => {});
   const [edge] = graph.iterRelationshipsByType('HAS_METHOD');
