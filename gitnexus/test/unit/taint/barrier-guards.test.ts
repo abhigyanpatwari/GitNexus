@@ -166,6 +166,20 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
+  it('suppresses sinks nested under a further condition on the validated branch', () => {
+    const { flows } = analyze(`
+      function f(req: any, ready: boolean) {
+        const hostname = req.body;
+        if (!isValidHostName(hostname)) return;
+        if (ready) {
+          exec(hostname);
+        }
+      }
+    `);
+    expect(flows.findings).toHaveLength(0);
+    expect(flows.kills.length).toBeGreaterThan(0);
+  });
+
   it('suppresses direct source use at the sink (no intermediate binding def)', () => {
     // sourceOcc.point is the sink statement — must not be treated as a
     // post-check reassignment of the validated binding.
@@ -892,6 +906,29 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     }
   });
 
+  it('strips line continuations in computed member-assigned proto guards', () => {
+    const code = `
+      const validators: any = {};
+      validators["isValid\\
+Key"] = function helper(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      };
+      function write(req: any) {
+        if (!validators.isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+    expect(cfgs.some((c) => (c.functionName ?? '').includes('\n'))).toBe(false);
+    const { flows } = analyze(
+      code,
+      cfgs.findIndex((c) => c.functionName === 'write'),
+    );
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
   it('suppresses when isValidKey vouchers the value (not proto-only)', () => {
     const code = `
       function isValidKey(key: string) {
@@ -988,6 +1025,26 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       function safeKey(key: string) {
         if (key === "__proto__") return false;
         return true;
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(true);
+  });
+
+  it('does not treat key.includes("__proto__") as a proto-reject guard', () => {
+    // Acceptor polarity — true when the key IS __proto__.
+    const cfgs = cfgsOf(`
+      function isValidKey(key: string) {
+        return key.includes("__proto__");
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(false);
+    expect([...discoverProtoGuardCallees(cfgs)]).not.toContain('isValidKey');
+  });
+
+  it('treats !key.includes("__proto__") as a proto-reject guard', () => {
+    const cfgs = cfgsOf(`
+      function isValidKey(key: string) {
+        return !key.includes("__proto__") && !key.includes("constructor");
       }
     `);
     expect(functionContainsProtoGuard(cfgs[0])).toBe(true);

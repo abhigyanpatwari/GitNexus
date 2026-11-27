@@ -1367,6 +1367,16 @@ function decodeJsStringLiteral(raw: string): string | undefined {
       i += 1;
       continue;
     }
+    // Line continuation: backslash + newline is removed (`"isValid\<NL>Key"` → isValidKey).
+    if (next === '\n') {
+      i += 1;
+      continue;
+    }
+    if (next === '\r') {
+      i += 1;
+      if (raw[i + 1] === '\n') i += 1;
+      continue;
+    }
     // Unknown escape — keep the escaped char (JS behavior for many).
     out += next;
     i += 1;

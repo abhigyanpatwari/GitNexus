@@ -87,6 +87,26 @@ export function calleeLeaf(callee: string): string {
 
 const PROTO_LIT = `['"]__proto__['"]`;
 
+/**
+ * True when includes/indexOf is used to *reject* `__proto__`
+ * (`!key.includes("__proto__")`, `indexOf(...) === -1`, or
+ * `["__proto__", ...].includes(key)`). Bare `key.includes("__proto__")` is an
+ * acceptor and must not count.
+ */
+function rejectsProtoViaIncludesOrIndexOf(text: string): boolean {
+  if (new RegExp(`!\\s*[\\w$.]*\\.\\s*includes\\s*\\(\\s*${PROTO_LIT}\\s*\\)`).test(text))
+    return true;
+  if (new RegExp(`!\\s*[\\w$.]*\\.\\s*indexOf\\s*\\(\\s*${PROTO_LIT}\\s*\\)`).test(text))
+    return true;
+  if (new RegExp(`\\.\\s*indexOf\\s*\\(\\s*${PROTO_LIT}\\s*\\)\\s*===?\\s*-1`).test(text))
+    return true;
+  if (new RegExp(`\\.\\s*indexOf\\s*\\(\\s*${PROTO_LIT}\\s*\\)\\s*<\\s*0`).test(text)) return true;
+  // Denylist haystack: ["__proto__", ...].includes(key)
+  if (new RegExp(`\\[[^\\]]*${PROTO_LIT}[^\\]]*\\]\\s*\\.\\s*includes\\s*\\(`).test(text))
+    return true;
+  return false;
+}
+
 /** True when `text` affirms the key is not `__proto__` (return or expr body). */
 function isAffirmingProtoRejectReturn(text: string): boolean {
   if (!new RegExp(PROTO_LIT).test(text)) return false;
@@ -97,8 +117,7 @@ function isAffirmingProtoRejectReturn(text: string): boolean {
     new RegExp(`(?<![=!])!=(?!=)\\s*${PROTO_LIT}`).test(text) ||
     new RegExp(`${PROTO_LIT}\\s*!==`).test(text) ||
     new RegExp(`${PROTO_LIT}\\s*!=(?!=)`).test(text) ||
-    text.includes('includes(') ||
-    text.includes('indexOf(');
+    rejectsProtoViaIncludesOrIndexOf(text);
   if (!rejectsProto) return false;
   // `return key !== "__proto__"` (possibly with &&).
   if (/\breturn\b/.test(text)) return true;
@@ -106,12 +125,7 @@ function isAffirmingProtoRejectReturn(text: string): boolean {
   // parenthesized conditions like `(key !== "__proto__")` from `if (...)`.
   let s = text.replace(/\s+/g, '');
   while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
-  if (
-    !s.includes('&&') &&
-    !s.includes('||') &&
-    !s.includes('includes(') &&
-    !s.includes('indexOf(')
-  ) {
+  if (!s.includes('&&') && !s.includes('||') && !rejectsProtoViaIncludesOrIndexOf(text)) {
     return false;
   }
   return true;
@@ -673,8 +687,9 @@ export function memberPropertyAssignedOnValidatedPath(
 }
 
 /**
- * True when `sinkBlock` is control-dependent on a validating predicate over
- * `bindingIdx` on the validated branch sense.
+ * True when `sinkBlock` is on a validating predicate's validated branch over
+ * `bindingIdx` — including sinks nested under further conditions inside that
+ * branch (transitive CDG via {@link validatedRegionBlocks}).
  *
  * `sinkProperty` must match the controller's `subjectProperty` (both absent
  * for plain bindings) so validating `req.body` cannot suppress `req.query`.
@@ -691,25 +706,14 @@ export function isBarrierGuarded(
 ): BarrierController | undefined {
   const controllers = index.bySubject.get(bindingIdx);
   if (!controllers || controllers.length === 0) return undefined;
-  for (const edge of index.cdg) {
-    if (edge.dependentBlock !== sinkBlock) continue;
-    for (const c of controllers) {
-      if (c.controllerBlock !== edge.controllerBlock) continue;
-      if (c.validatedLabel !== edge.label) continue;
-      if ((c.subjectProperty ?? undefined) !== (sinkProperty ?? undefined)) continue;
-      // Reassignment after validation: the reaching def lives on the validated
-      // branch of the same controller → the checked value was overwritten.
-      if (taintDefPoint !== undefined) {
-        const defAfterCheck = index.cdg.some(
-          (e) =>
-            e.controllerBlock === c.controllerBlock &&
-            e.dependentBlock === taintDefPoint.blockIndex &&
-            e.label === c.validatedLabel,
-        );
-        if (defAfterCheck) continue;
-      }
-      return c;
-    }
+  for (const c of controllers) {
+    if ((c.subjectProperty ?? undefined) !== (sinkProperty ?? undefined)) continue;
+    const region = validatedRegionBlocks(index, c);
+    if (!region.has(sinkBlock)) continue;
+    // Reassignment after validation: def lives on the validated path
+    // (direct or nested under a further condition on that path).
+    if (taintDefPoint !== undefined && region.has(taintDefPoint.blockIndex)) continue;
+    return c;
   }
   return undefined;
 }
