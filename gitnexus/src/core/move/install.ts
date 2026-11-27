@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { constants as fsConstants, type Dirent } from 'node:fs';
 import {
-  access,
   chmod,
   copyFile,
   lstat,
@@ -24,6 +23,7 @@ import {
   downloadToFile,
   MAX_ARCHIVE_BYTES,
   sha256File,
+  sha256FileHandle,
   verifyArchiveChecksum,
 } from './artifact-download.js';
 import { acquireInstallLock, moveFlowInstallLockWaitMs } from './install-lock.js';
@@ -299,6 +299,7 @@ const validCachedInstall = async (
   config: MoveFlowInstallConfig,
 ): Promise<VerifiedMoveFlowBinary | null> => {
   let metadataHandle: FileHandle | undefined;
+  let binaryHandle: FileHandle | undefined;
   try {
     // Single open, then every check reads through the handle, so the type/size
     // gates and the JSON read cannot race a concurrent swap of the file
@@ -323,21 +324,33 @@ const validCachedInstall = async (
       await metadataHandle.readFile({ encoding: 'utf8' }),
     ) as MoveFlowCacheMetadata;
     const expected = expectedMetadata(config);
-    const binaryStat = await lstat(config.binaryPath);
+    // Open the binary once and gate + hash through the handle, so a swap of
+    // the cache entry between the checks and the read cannot substitute
+    // unverified bytes (CodeQL js/file-system-race; residual from #2622,
+    // which did the same for the metadata file). O_NOFOLLOW makes the
+    // kernel reject a symlinked final component atomically on POSIX;
+    // Windows has no such flag (0 fallback) — there the fstat isFile()
+    // gate plus the downstream hash validation carry the threat model.
+    // The executable gate reads the mode bits through the handle instead
+    // of access() by path, which would reintroduce the same race.
+    binaryHandle = await open(
+      config.binaryPath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+    const binaryStat = await binaryHandle.stat();
     if (!binaryStat.isFile() || binaryStat.size <= 0 || binaryStat.size > MAX_BINARY_BYTES) {
       return null;
     }
-    await access(
-      config.binaryPath,
-      process.platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK,
-    );
+    if (process.platform !== 'win32' && (binaryStat.mode & 0o111) === 0) {
+      return null;
+    }
     if (
       metadata.schemaVersion !== 1 ||
       metadata.version !== expected.version ||
       metadata.repository !== expected.repository ||
       metadata.tag !== expected.tag ||
       metadata.assetName !== expected.assetName ||
-      metadata.binarySha256 !== (await sha256File(config.binaryPath))
+      metadata.binarySha256 !== (await sha256FileHandle(binaryHandle))
     ) {
       return null;
     }
@@ -348,7 +361,7 @@ const validCachedInstall = async (
   } catch {
     return null;
   } finally {
-    await metadataHandle?.close().catch(() => {});
+    await Promise.allSettled([metadataHandle?.close(), binaryHandle?.close()]);
   }
 };
 
