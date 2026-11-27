@@ -94,12 +94,7 @@ const DEFERRED_SCOPE_TYPES = new Set([
  * Hard exits skip the rest of the enclosing block and everything after it.
  * `break` / `continue` only skip later statements in the same loop or switch body.
  */
-const HARD_EXIT_NODE_TYPES = new Set([
-  'return_statement',
-  'throw_expression',
-  'exit_statement',
-  'goto_statement',
-]);
+const HARD_EXIT_NODE_TYPES = new Set(['return_statement', 'throw_expression', 'exit_statement']);
 const LOOP_LOCAL_EXIT_NODE_TYPES = new Set(['break_statement', 'continue_statement']);
 const LOOP_OR_SWITCH_TYPES = new Set([
   'for_statement',
@@ -223,7 +218,12 @@ function collectMayExit(root: SyntaxNode): Set<number> {
       continue;
     }
     if (LOOP_LOCAL_EXIT_NODE_TYPES.has(frame.node.type)) {
-      mayExit.add(frame.node.id);
+      if (loopExitLevels(frame.node) > 1) {
+        mayExit.add(frame.node.id);
+        hard.add(frame.node.id);
+      } else {
+        mayExit.add(frame.node.id);
+      }
       continue;
     }
     if (HARD_EXIT_NODE_TYPES.has(frame.node.type)) {
@@ -258,10 +258,17 @@ const UNCONDITIONAL_EXIT_TYPES = new Set([
   'return_statement',
   'throw_expression',
   'exit_statement',
-  'goto_statement',
 ]);
 
+function loopExitLevels(node: SyntaxNode): number {
+  const literal = (node.children ?? []).find((child) => child.type === 'integer');
+  if (!literal) return 1;
+  const levels = Number(literal.text);
+  return Number.isFinite(levels) && levels > 0 ? levels : 1;
+}
+
 function statementExitsUnconditionally(node: SyntaxNode): boolean {
+  if (node.type === 'goto_statement') return false;
   if (UNCONDITIONAL_EXIT_TYPES.has(node.type)) return true;
   if (node.type !== 'expression_statement') return false;
   const inner = (node.children ?? []).find((child) => child.type !== ';');

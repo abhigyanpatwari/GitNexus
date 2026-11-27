@@ -768,6 +768,33 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toEqual(['api']);
   });
 
+  it('break 2 does not treat a require in the outer loop as a definite load', () => {
+    const source = `<?php
+foreach ([1] as $i) {
+  foreach ([1] as $j) { break 2; }
+  require_once __DIR__ . '/../routes/web.php';
+}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => b.lineNumber === 3)?.unguarded).toBe(false);
+    expect(webContexts(source)).toContain('api');
+  });
+
+  it('goto does not hide a require at the target label', () => {
+    const bindings = extractBindings(
+      `<?php
+goto done;
+done:
+require __DIR__ . '/../routes/web.php';
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings.some((b) => b.requiredPath === 'routes/web.php')).toBe(true);
+  });
+
   it('cross-host require_once skips after an unguarded load in another host', () => {
     const apiBindings = extractBindings(
       `<?php
