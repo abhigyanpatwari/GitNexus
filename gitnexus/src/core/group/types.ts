@@ -40,6 +40,8 @@ export interface DetectConfig {
   topics: boolean;
   includes: boolean;
   workspace_deps: boolean;
+  /** SOFA framework (SOFA RPC + SOFAMQ) XML contract extraction. Opt-in. */
+  sofa: boolean;
 }
 
 export interface MatchingConfig {
