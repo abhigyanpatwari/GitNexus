@@ -271,8 +271,9 @@ routes between two modes based on the triggering event:
   suffix; RC tags are excluded at trigger via a negative glob). Publishes to
   the `latest` dist-tag with a changelog-backed GitHub release. Maintainers
   are expected to tag from `main` as a convention; the workflow itself does
-  not enforce branch reachability. No Docker build (RC-only). Before cutting a
-  stable release, keep `gitnexus/package.json`,
+  not enforce branch reachability. After npm and the GitHub release succeed,
+  Publish builds the stable Docker images from the same tagged commit. Before
+  cutting a stable release, keep `gitnexus/package.json`,
   `gitnexus-claude-plugin/.claude-plugin/plugin.json`,
   `.claude-plugin/marketplace.json`,
   `gitnexus-claude-plugin/.codex-plugin/plugin.json`,
@@ -353,9 +354,9 @@ routes between two modes based on the triggering event:
   gh run rerun <run-id> --failed
   ```
 
-  Find the run ID via `gh run list --workflow=publish.yml --branch main`.
-  `docker.yml` intentionally has no `workflow_dispatch` trigger (images are
-  tag-driven by design), so the gh-run-rerun path is the supported recovery.
+  Find the RC run ID via `gh run list --workflow=publish.yml --branch main`.
+  For a stable release, rerun the failed Docker job from the tag's Publish run.
+  A direct manual Docker dispatch performs a dry run.
 
   **GitHub Release transient failure** (npm publish succeeded, Release step
   failed): the npm artifact is live but no GitHub Release page exists.

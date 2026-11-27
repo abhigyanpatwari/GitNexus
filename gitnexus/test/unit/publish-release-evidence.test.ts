@@ -11,8 +11,9 @@ interface Step {
 }
 
 interface Job {
-  needs?: string[];
+  needs?: string | string[];
   if?: string;
+  with?: Record<string, unknown>;
   permissions?: Record<string, string>;
   steps?: Step[];
 }
@@ -89,8 +90,15 @@ describe('publish.yml release evidence', () => {
     );
   });
 
-  it('grants the RC Docker gate read access to workflow evidence', () => {
-    expect(jobs.docker.needs).toEqual(['route', 'publish']);
+  it('builds images after successful npm publication for the same version and commit', () => {
+    expect(jobs.docker.needs).toBe('publish');
+    expect(jobs.docker.if).toBe(
+      "${{ !cancelled() && needs.publish.result == 'success' && needs.publish.outputs.vtag != '' }}",
+    );
+    expect(jobs.docker.with).toEqual({
+      tag: '${{ needs.publish.outputs.vtag }}',
+      'release-sha': '${{ needs.publish.outputs.release_sha }}',
+    });
     expect(jobs.docker.permissions?.actions).toBe('read');
   });
 });
