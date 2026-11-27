@@ -58,6 +58,26 @@ const CASES = [
       'struct A {\n  struct Inner {\n    func foo() -> Int { return 1 }\n  }\n}\n' +
       'struct B {\n  struct Inner {\n    func foo() -> Int { return 2 }\n  }\n}\n',
   },
+  {
+    language: 'C#',
+    path: 'C.cs',
+    inner: 'Inner',
+    member: 'Foo',
+    content:
+      'namespace App;\n' +
+      'public class A { public class Inner { public int Foo() { return 1; } } }\n' +
+      'public class B { public class Inner { public int Foo() { return 2; } } }\n',
+  },
+  {
+    language: 'Kotlin',
+    path: 'K.kt',
+    inner: 'Inner',
+    member: 'foo',
+    content:
+      'package app\n' +
+      'class A { class Inner { fun foo(): Int = 1 } }\n' +
+      'class B { class Inner { fun foo(): Int = 2 } }\n',
+  },
 ] as const;
 
 describe('same-tail nested types keep distinct node ids (#4188)', () => {
@@ -86,5 +106,38 @@ describe('same-tail nested types keep distinct node ids (#4188)', () => {
     ]);
     expect(graph.getNode('Class:solo.py:Solo')).toBeDefined();
     expect(graph.getNode('Class:Solo.swift:Solo')).toBeDefined();
+  });
+
+  it('C# and Kotlin: only colliding names are qualified; other ids keep their simple form', async () => {
+    const { graph } = await parseFilesWithWorkers([
+      {
+        path: 'Mixed.cs',
+        content:
+          'namespace App;\n' +
+          'public class A { public class Inner { public void Run() {} } }\n' +
+          'public class B { public class Inner { public void Run() {} } public void Go() {} }\n',
+      },
+      {
+        path: 'Mixed.kt',
+        content:
+          'package app\n' +
+          'class A { class Inner { fun run() {} } }\n' +
+          'class B { class Inner { fun run() {} }\n  fun go() {} }\n',
+      },
+    ]);
+    for (const file of ['Mixed.cs', 'Mixed.kt']) {
+      expect(graph.getNode(`Class:${file}:A`), `${file} A`).toBeDefined();
+      expect(graph.getNode(`Class:${file}:B`), `${file} B`).toBeDefined();
+    }
+    expect(graph.getNode('Method:Mixed.cs:B.Go#0')).toBeDefined();
+    expect(graph.getNode('Method:Mixed.kt:B.go#0')).toBeDefined();
+    expect(nodesNamed(graph, 'Mixed.cs', 'Inner', true)).toEqual([
+      'Class:Mixed.cs:App.A.Inner',
+      'Class:Mixed.cs:App.B.Inner',
+    ]);
+    expect(nodesNamed(graph, 'Mixed.kt', 'Inner', true)).toEqual([
+      'Class:Mixed.kt:app.A.Inner',
+      'Class:Mixed.kt:app.B.Inner',
+    ]);
   });
 });
