@@ -460,13 +460,26 @@ describe('bundled Linux tree-sitter runtime repairs', () => {
     );
   });
 
-  // Highest minor version of a versioned symbol family named in the binary
-  // (e.g. 29 for GLIBCXX_3.4.29), so any version above the ceiling fails.
-  const highestSymbolVersion = (bytes: Buffer, family: string): number => {
-    const pattern = new RegExp(`${family.replaceAll('.', '\\.')}\\.(\\d+)`, 'g');
-    const minors = [...bytes.toString('latin1').matchAll(pattern)].map((m) => Number(m[1]));
-    expect(minors.length).toBeGreaterThan(0);
-    return Math.max(...minors);
+  // Every `NAME_x.y.z` version the binary references must be <= `ceiling`,
+  // whatever its major version, so a stray `GLIBC_3.1` cannot slip past.
+  const expectVersionsWithin = (bytes: Buffer, name: string, ceiling: string): void => {
+    const parse = (v: string) => v.split('.').map(Number);
+    const compare = (a: number[], b: number[]) => {
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const diff = (a[i] ?? 0) - (b[i] ?? 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    };
+    const pattern = new RegExp(`${name}_(\\d+(?:\\.\\d+)*)`, 'g');
+    const versions = [...bytes.toString('latin1').matchAll(pattern)].map((m) => m[1]);
+    // The binary must name the ceiling's own family (e.g. GLIBCXX_3.4.x), as
+    // before, so a scan that finds nothing cannot pass.
+    const family = ceiling.slice(0, ceiling.lastIndexOf('.') + 1);
+    expect(versions.some((v) => v.startsWith(family))).toBe(true);
+    const max = parse(ceiling);
+    const over = [...new Set(versions)].filter((v) => compare(parse(v), max) > 0);
+    expect(over.map((v) => `${name}_${v}`)).toEqual([]);
   };
 
   for (const [tuple, arch, other] of tuples) {
@@ -479,9 +492,9 @@ describe('bundled Linux tree-sitter runtime repairs', () => {
       expect(bytes.includes(NAPI_SYMBOL)).toBe(true);
       // RHEL 9 stops at GLIBCXX_3.4.29; Ubuntu 22.04 and Debian 12 at 3.4.30 (#4165).
       // Same ceilings as scripts/rebuild-runtime-prebuild.cjs.
-      expect(highestSymbolVersion(bytes, 'GLIBCXX_3.4')).toBeLessThanOrEqual(29);
-      expect(highestSymbolVersion(bytes, 'CXXABI_1.3')).toBeLessThanOrEqual(9);
-      expect(highestSymbolVersion(bytes, 'GLIBC_2')).toBeLessThanOrEqual(17);
+      expectVersionsWithin(bytes, 'GLIBCXX', '3.4.29');
+      expectVersionsWithin(bytes, 'CXXABI', '1.3.9');
+      expectVersionsWithin(bytes, 'GLIBC', '2.17');
     });
 
     it(`${tuple}: installed runtime prebuild is the bundled replacement`, () => {
