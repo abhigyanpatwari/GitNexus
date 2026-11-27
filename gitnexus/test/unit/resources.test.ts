@@ -260,7 +260,7 @@ describe('readResource', () => {
     const start = result.indexOf('guard_clauses');
     expect(start).toBeGreaterThan(-1);
     const example = result.slice(start);
-    expect(example).toContain("dep.id STARTS WITH 'BasicBlock:");
+    expect(example).toContain("dep.id STARTS WITH 'BasicBlock:src/auth/login.ts:'");
     expect(example).toMatch(/LIMIT \d+/);
   });
 

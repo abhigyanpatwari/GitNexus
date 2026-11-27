@@ -35,9 +35,10 @@ All three are `BasicBlock → BasicBlock` edges in the single `CodeRelation` tab
 ## The two modes
 
 - `pdg_query({ mode: 'controls', target })` — CDG. For the anchored function,
-  each edge: controlling predicate block → dependent block + branch sense in
-  `reason` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through). An
-  edge into an early-return/throw block is flagged `guard: true`.
+  each edge returns the controlling predicate, the dependent block, and the
+  branch sense in `label` (`'T'` for true, `'F'` for false). The graph stores
+  that value in `r.reason`. A dependent block starting with `return`, `throw`,
+  `continue`, or `break` has `guard: true`.
 - `pdg_query({ mode: 'flows', target, variable? })` — REACHING_DEF def→use
   edges; `variable` filters to one binding.
 
@@ -52,7 +53,8 @@ Use `pdg_query` first. It requires a `target` and bounds the page for you:
 pdg_query({ mode: 'controls', target: 'src/auth/login.ts' })
 ```
 
-Edges into an early-return/throw block come back with `guard: true`.
+Filter the results for `guard: true`. For function exits only, also check that
+`dependent.text` starts with `return` or `throw`.
 
 If you must use raw Cypher, anchor it on one file's BasicBlock id-prefix and
 add a `LIMIT`. The RFC #567 §2 form (`[:CDG {label:'F'}]`) does **not** run as
@@ -64,6 +66,7 @@ MATCH (pred:BasicBlock)-[r:CodeRelation {type: 'CDG'}]->(dep:BasicBlock)
 WHERE dep.id STARTS WITH 'BasicBlock:src/auth/login.ts:'
   AND (dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw')
 RETURN pred.startLine, r.reason AS branch, dep.startLine, dep.text
+ORDER BY dep.startLine, pred.startLine, dep.id, pred.id
 LIMIT 50
 ```
 
