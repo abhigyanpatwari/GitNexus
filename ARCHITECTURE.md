@@ -342,9 +342,14 @@ The bundle's `imports` field is an `ImportVisibility` (`gitnexus-shared`,
 `scope-resolution/import-visibility.ts`), the only way to ask what a scope
 imports. A reader that needs every file a scope reaches asks `reaches`,
 `membership` or `forEachTarget`; a reader that picks an import by name,
-definition or kind uses `edgesAt`. How finalize stores imports is not visible to
-either, so no reader can hold a collection that omits part of what a scope
-reaches.
+definition or kind uses `statementsAt`, which lists each group of a module
+import as one statement edge, with its files from `importEdgeFiles` (`edgesAt`
+leaves groups out), and asks `importEdgeNamesFiles` rather than `targetFile`.
+A reader that follows these rules answers the same for both storage forms; the
+reader-parity harness (`test/integration/resolvers/import-reader-parity.test.ts`)
+checks the scope-resolution readers over both, and
+`test/unit/rename-swift-module-import.test.ts` checks semantic rename, because
+a wrong answer need not show in the graph.
 
 This read-only model handle restricts registry writes. It does not freeze every
 scope map: imported-return propagation and precise call-result binding deliberately
@@ -557,6 +562,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `onDemandImportTargets?(parsed, indexes, parsedFileOf)` | Files a source file reaches through its on-demand imports (wildcards, or module imports such as Swift `import X`); narrows persisted File→File `IMPORTS` edges of the kinds in `onDemandImportEdgeKinds` only — `undefined` keeps every edge, and a target whose evidence is missing or incomplete must be kept. `parsedFileOf` reads a target's own capture facts; `graph-bridge/on-demand-targets.ts` selects targets by a provider predicate, with an optional one-hop `follow` among the candidates of the same import statement. Swift matches names a target declares against names the importer writes, by how each is reached, follows one hop from a top-level `typealias` to the file of the same import statement declaring the aliased type at top level, and drops the edge for uses it cannot tie to a file, alias shapes the hop does not follow included (the known drops are listed in `languages/swift/on-demand-imports.ts`). Default: no narrowing |
 | `onDemandImportEdgeKinds?` | Finalized import-edge kinds `onDemandImportTargets` governs. Default `['wildcard-expanded']`; Swift lists `['namespace']` |
 | `groupsWildcardImportTargets?`                          | Store a wildcard import that resolves to a list of files as one group over that list instead of one import edge per file. Applies when finalize creates no per-name wildcard bindings; later name resolution uses `ImportVisibility`. Default: one edge per file |
+| `groupsImportTargetKinds?` | `ParsedImport` kinds besides `wildcard` finalize may store as groups under the same rules; a file through which a `namespace` statement binds a definition keeps its own edge, the files between such files are grouped. Readers select a grouped module import through `ImportVisibility.statementsAt` and `importEdgeFiles`; check a new opt-in with the reader-parity harness and the rename parity test, not only through the pipeline. Default: none; Swift lists `['namespace']` |
 
 ### Per-language registration
 
