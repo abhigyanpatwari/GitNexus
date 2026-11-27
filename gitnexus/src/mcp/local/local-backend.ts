@@ -1888,9 +1888,11 @@ export class LocalBackend {
   private contextCache: Map<string, CodebaseContext> = new Map();
   /**
    * Process-local `repo_overview` cache. Keys are
-   * `${lbugPath}\u0000${sha256(publication identity)}`; one in-flight promise
-   * per key gives single-flight behavior, and a cache hit issues zero Cypher
-   * queries. Staleness is always recomputed outside this cache by callTool.
+   * `${lbugPath}\u0000${sha256(publication identity)}\u0000${sha256(repo identity)}`;
+   * the second hash keeps handle-specific names/paths from aliasing when two
+   * checkouts share one graph. One in-flight promise per key gives single-flight
+   * behavior, and a cache hit issues zero Cypher queries. Staleness is always
+   * recomputed outside this cache by callTool.
    */
   private readonly repoOverviewCache = new Map<string, Promise<unknown>>();
   private initializedRepos: Set<string> = new Set();
@@ -1957,7 +1959,16 @@ export class LocalBackend {
       dbIdentity,
       ftsStatus,
     ]);
-    return `${repo.lbugPath}\u0000${createHash('sha256').update(publication).digest('hex')}`;
+    // Shared checkouts can point at the same immutable graph while keeping
+    // distinct identities. The overview payload embeds those identities, so
+    // they must participate in the key even when the publication is identical.
+    const subject = JSON.stringify({
+      id: repo.id,
+      name: repo.name,
+      repoPath: repo.repoPath,
+      stats: repo.stats ?? null,
+    });
+    return `${repo.lbugPath}\u0000${createHash('sha256').update(publication).digest('hex')}\u0000${createHash('sha256').update(subject).digest('hex')}`;
   }
 
   /** Generate once per publication; concurrent callers share one promise. */

@@ -178,6 +178,31 @@ describe('repo_overview backend cache and dispatch', () => {
     expect(second.staleness).toBeDefined();
   });
 
+  it('keys the cache by repository identity when handles share one graph', async () => {
+    const { entry } = makeIndexedRepo();
+    const siblingPath = mkdtempSync(path.join(os.tmpdir(), 'gnx-repo-overview-sibling-'));
+    tempDirs.push(siblingPath);
+    const sibling = { ...entry, name: 'sibling', path: siblingPath };
+    (listRegisteredRepos as any).mockResolvedValue([entry, sibling]);
+    await backend.init();
+
+    const handles = Array.from((backend as any).repos.values()) as Array<{
+      lbugPath: string;
+      name: string;
+    }>;
+    expect(handles).toHaveLength(2);
+    expect(new Set(handles.map((handle) => handle.lbugPath)).size).toBe(1);
+
+    const first = await backend.callTool('repo_overview', { repo: 'demo' });
+    const second = await backend.callTool('repo_overview', { repo: 'sibling' });
+
+    expect(first).toMatchObject({ name: 'demo', repoPath: entry.path });
+    expect(second).toMatchObject({ name: 'sibling', repoPath: sibling.path });
+    expect(second).not.toEqual(first);
+    expect(generatorGate.entered).toBe(2);
+    expect((executeParameterized as any).mock.calls.length).toBe(2 * EMPTY_GRAPH_QUERY_COUNT);
+  });
+
   it('shares one in-flight generation between concurrent callers', async () => {
     await initBackend(makeIndexedRepo().entry);
     let release!: () => void;
@@ -186,13 +211,22 @@ describe('repo_overview backend cache and dispatch', () => {
       release = resolve;
     });
 
+    const overviewCache = (backend as any).repoOverviewCache as Map<string, Promise<unknown>>;
+    let cacheLookups = 0;
+    const originalGet = overviewCache.get.bind(overviewCache);
+    (overviewCache as any).get = (key: string) => {
+      cacheLookups += 1;
+      return originalGet(key);
+    };
+
     const first = backend.callTool('repo_overview', {});
     const second = backend.callTool('repo_overview', {});
-    // Hold the generator open until both callers have had a chance to reach
-    // the cache check. Without single-flight this would generate twice.
+    // Hold the generator open until both callers have actually reached the
+    // cache lookup. Without single-flight this would generate twice.
     try {
-      await waitFor(() => generatorGate.entered === 1);
+      await waitFor(() => generatorGate.entered === 1 && cacheLookups >= 2);
       expect(generatorGate.entered).toBe(1);
+      expect(cacheLookups).toBe(2);
       expect(executeParameterized).not.toHaveBeenCalled();
     } finally {
       generatorGate.promise = null;
@@ -201,6 +235,7 @@ describe('repo_overview backend cache and dispatch', () => {
 
     const [a, b] = await Promise.all([first, second]);
     expect(generatorGate.entered).toBe(1);
+    expect(cacheLookups).toBe(2);
     expect((executeParameterized as any).mock.calls.length).toBe(EMPTY_GRAPH_QUERY_COUNT);
     expect(b).toEqual(a);
   });

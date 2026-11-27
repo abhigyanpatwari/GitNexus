@@ -96,7 +96,7 @@ function richRouter(cypher: string, params: Record<string, unknown>): unknown[] 
   }
   if (OUTGOING_CALL_QUERIES.has(cypher) || INCOMING_CALL_QUERIES.has(cypher)) {
     const seedId = String(params.seedId);
-    const prefix = cypher === q.outgoingCalls ? 'out' : 'in';
+    const prefix = OUTGOING_CALL_QUERIES.has(cypher) ? 'out' : 'in';
     return Array.from({ length: 8 }, (_, i) => ({
       id: `${prefix}:${seedId}:${i}`,
       name: `${prefix}Neighbor${i}`,
@@ -107,11 +107,36 @@ function richRouter(cypher: string, params: Record<string, unknown>): unknown[] 
   throw new Error(`unexpected query: ${cypher}`);
 }
 
+function singleCallRouter(cypher: string): unknown[] {
+  const q = REPO_OVERVIEW_QUERIES;
+  if (cypher === q.files) {
+    return [
+      { id: 'f1', name: 'a.ts', filePath: 'src/a/s1.ts' },
+      { id: 'f2', name: 'out.ts', filePath: 'src/b/out.ts' },
+      { id: 'f3', name: 'in.ts', filePath: 'src/c/in.ts' },
+    ];
+  }
+  if (cypher === q.initialSymbols) {
+    return [{ id: 's1', name: 'S1', filePath: 'src/a/s1.ts', label: 'Function', fileId: 'f1' }];
+  }
+  if (cypher === q.communities || cypher === q.processHeaders) return [];
+  if (OUTGOING_CALL_QUERIES.has(cypher)) {
+    return [{ id: 'out:1', name: 'OutNeighbor', filePath: 'src/b/out.ts', label: 'Method' }];
+  }
+  if (INCOMING_CALL_QUERIES.has(cypher)) {
+    return [{ id: 'in:1', name: 'InNeighbor', filePath: 'src/c/in.ts', label: 'Class' }];
+  }
+  throw new Error(`unexpected query: ${cypher}`);
+}
+
 describe('moduleFromPath', () => {
   it('uses a stable two-segment directory prefix', () => {
     expect(moduleFromPath('src/mcp/local/repo-map.ts')).toBe('src/mcp');
     expect(moduleFromPath('packages\\cli\\src\\index.ts')).toBe('packages/cli');
     expect(moduleFromPath('auth.ts')).toBe('(root)');
+    expect(moduleFromPath('Makefile')).toBe('(root)');
+    expect(moduleFromPath('tools/Makefile')).toBe('tools');
+    expect(moduleFromPath('src/Dockerfile')).toBe('src');
     expect(moduleFromPath('')).toBe('(root)');
   });
 });
@@ -210,6 +235,24 @@ describe('generateRepoOverview', () => {
       }
     }
 
+    const evidenceDirections = new Set<string>();
+    for (const hub of overview.architecturalHubs) {
+      for (const responsibility of hub.responsibilities) {
+        for (const evidence of responsibility.evidence) {
+          const direction = evidence.startsWith('outNeighbor')
+            ? 'out'
+            : evidence.startsWith('inNeighbor')
+              ? 'in'
+              : null;
+          if (direction) evidenceDirections.add(`${direction}:${responsibility.kind}`);
+        }
+      }
+    }
+    expect(evidenceDirections).toContain('out:calls_into');
+    expect(evidenceDirections).toContain('in:called_from');
+    expect(evidenceDirections).not.toContain('in:calls_into');
+    expect(evidenceDirections).not.toContain('out:called_from');
+
     expect(overview.workflows).toHaveLength(8);
     expect(overview.workflows[0]).toMatchObject({
       processId: expect.any(String),
@@ -277,6 +320,45 @@ describe('generateRepoOverview', () => {
     expect(
       log.filter((e) => e.cypher === REPO_OVERVIEW_QUERIES.incomingCalls).map((e) => e.params),
     ).toEqual([{ seedId: 's2', limit: 8 }]);
+  });
+
+  it('preserves file and label metadata for symbols discovered via CALLS edges', async () => {
+    const { deps } = createExecutor(singleCallRouter);
+    const overview = await generateRepoOverview({ name: 'metadata' }, deps);
+    const hubs = new Map(overview.architecturalHubs.map((hub) => [hub.id, hub]));
+
+    expect(hubs.get('s1')).toMatchObject({
+      filePath: 'src/a/s1.ts',
+      label: 'Function',
+    });
+    expect(hubs.get('out:1')).toMatchObject({
+      filePath: 'src/b/out.ts',
+      label: 'Method',
+    });
+    expect(hubs.get('in:1')).toMatchObject({
+      filePath: 'src/c/in.ts',
+      label: 'Class',
+    });
+    expect(overview.modules.map((module) => [module.path, module.topSymbols])).toEqual([
+      ['src/a', ['S1']],
+      ['src/b', ['OutNeighbor']],
+      ['src/c', ['InNeighbor']],
+    ]);
+  });
+
+  it('keeps sampled call direction distinct in hub responsibilities', async () => {
+    const { deps } = createExecutor(singleCallRouter);
+    const overview = await generateRepoOverview({ name: 'directions' }, deps);
+    const hub = overview.architecturalHubs.find((candidate) => candidate.id === 's1');
+    if (!hub) throw new Error('missing sampled hub s1');
+
+    expect(hub).toMatchObject({ sampledIncoming: 1, sampledOutgoing: 1 });
+    expect(hub.responsibilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'calls_into', evidence: ['OutNeighbor'] }),
+        expect.objectContaining({ kind: 'called_from', evidence: ['InNeighbor'] }),
+      ]),
+    );
   });
 
   it('runs independent seed lookups with bounded concurrency', async () => {

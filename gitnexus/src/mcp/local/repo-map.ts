@@ -317,9 +317,13 @@ interface SymbolSeed {
 interface CallEdge {
   fromId: string;
   fromName: string;
+  fromFilePath: string;
+  fromLabel: string;
   fromModule: string;
   toId: string;
   toName: string;
+  toFilePath: string;
+  toLabel: string;
   toModule: string;
 }
 
@@ -402,8 +406,9 @@ function normalizePath(filePath: string): string {
 export function moduleFromPath(filePath: string): string {
   let parts = normalizePath(filePath).split('/').filter(Boolean);
   if (parts.length === 0) return '(root)';
-  // The final segment is a file name, not a module directory.
-  if (parts[parts.length - 1].includes('.')) parts = parts.slice(0, -1);
+  // The final segment is a file name, not a module directory. Extensionless
+  // root files (Makefile, Dockerfile, ...) must not become module buckets.
+  parts = parts.slice(0, -1);
   if (parts.length === 0) return '(root)';
   if (parts.length === 1) return parts[0];
   return parts.slice(0, 2).join('/');
@@ -688,9 +693,13 @@ export async function generateRepoOverview(
     callEdges.push({
       fromId: fromSymbol.id,
       fromName: fromSymbol.name,
+      fromFilePath: fromSymbol.filePath,
+      fromLabel: fromSymbol.label,
       fromModule: fromSymbol.module,
       toId: toSymbol.id,
       toName: toSymbol.name,
+      toFilePath: toSymbol.filePath,
+      toLabel: toSymbol.label,
       toModule: toSymbol.module,
     });
     addSeed(to);
@@ -739,20 +748,27 @@ export async function generateRepoOverview(
   const allSymbols = new Map<string, SymbolSeed>();
   for (const seed of symbolSeeds) allSymbols.set(seed.id, seed);
   for (const edge of callEdges) {
-    allSymbols.set(edge.fromId, {
-      id: edge.fromId,
-      name: edge.fromName,
-      filePath: '',
-      label: '',
-      module: edge.fromModule,
-    });
-    allSymbols.set(edge.toId, {
-      id: edge.toId,
-      name: edge.toName,
-      filePath: '',
-      label: '',
-      module: edge.toModule,
-    });
+    // Never overwrite a richer seed (initial symbol, community member, or
+    // process step) with the edge's copy — both carry the same metadata, but
+    // only fill endpoints that were not already sampled as seeds.
+    if (!allSymbols.has(edge.fromId)) {
+      allSymbols.set(edge.fromId, {
+        id: edge.fromId,
+        name: edge.fromName,
+        filePath: edge.fromFilePath,
+        label: edge.fromLabel,
+        module: edge.fromModule,
+      });
+    }
+    if (!allSymbols.has(edge.toId)) {
+      allSymbols.set(edge.toId, {
+        id: edge.toId,
+        name: edge.toName,
+        filePath: edge.toFilePath,
+        label: edge.toLabel,
+        module: edge.toModule,
+      });
+    }
   }
 
   const rankedHubs: HubNode[] = Array.from(allSymbols.values())

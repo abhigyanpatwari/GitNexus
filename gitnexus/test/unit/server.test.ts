@@ -318,6 +318,15 @@ describe('getNextStepHint (via tool call response)', () => {
     expect(hint).toContain('gitnexus://repo/demo/clusters');
   });
 
+  it('repo_overview hint encodes only the repo segment of the resource URI', () => {
+    const repo = '/tmp/my project';
+    const hint = getNextStepHint('repo_overview', { repo });
+    expect(hint).toContain(`query({search_query: "<concept>", repo: "${repo}"})`);
+    expect(hint).toContain(`context({name: "<symbol>", repo: "${repo}"})`);
+    expect(hint).toContain('gitnexus://repo/%2Ftmp%2Fmy%20project/clusters');
+    expect(hint).not.toContain('gitnexus://repo//tmp/my project/clusters');
+  });
+
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
     const backend = createMockBackend({
       callTool: vi
