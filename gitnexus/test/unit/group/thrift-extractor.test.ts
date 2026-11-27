@@ -185,6 +185,43 @@ service OrderService {
 
     expect(contracts).toEqual([]);
   });
+
+  // ─── #1156-followup: thrift extractor must honour .gitnexusignore ────
+  //
+  // Both the `.thrift` IDL glob (in `buildThriftContext`) and the
+  // source-scan glob (in `extract`) used a hardcoded ignore array that
+  // bypassed `IgnoreService`. Both globs now consume the shared filter
+  // so any `.gitnexusignore` pattern is honoured.
+  describe('respects .gitnexusignore (#1156-followup)', () => {
+    it('thrift IDL glob skips files matched by .gitnexusignore', async () => {
+      writeFile(
+        'idl/order.thrift',
+        `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+      );
+      writeFile(
+        'mentor_env/lib/leaked.thrift',
+        `namespace java leaked.v1
+
+service LeakedService {
+  LeakedResponse Ping(1: LeakedRequest request)
+}`,
+      );
+      writeFile('.gitnexusignore', 'mentor_env/\n');
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(
+        contracts.find((c) => c.contractId === 'thrift::billing.v1.OrderService/PlaceOrder'),
+      ).toBeDefined();
+      expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+      expect(
+        contracts.find((c) => c.contractId === 'thrift::leaked.v1.LeakedService/Ping'),
+      ).toBeUndefined();
+    });
+  });
 });
 
 describe('buildThriftContext', () => {
@@ -228,6 +265,32 @@ service OrderService {
 
     expect(context.namespacesByThrift.size).toBe(0);
     expect(context.servicesByName.size).toBe(0);
+  });
+
+  it('skips .thrift files under .gitnexusignore paths (#1156-followup)', async () => {
+    await fsp.mkdir(path.join(tmpDir, 'idl'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+    await fsp.mkdir(path.join(tmpDir, 'third_party'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'third_party', 'leaked.thrift'),
+      `namespace java leaked.v1
+
+service LeakedService {
+  LeakedResponse Ping(1: LeakedRequest request)
+}`,
+    );
+    await fsp.writeFile(path.join(tmpDir, '.gitnexusignore'), 'third_party/\n');
+
+    const context = await buildThriftContext(tmpDir);
+    expect(context.servicesByName.has('OrderService')).toBe(true);
+    expect(context.servicesByName.has('LeakedService')).toBe(false);
   });
 });
 
