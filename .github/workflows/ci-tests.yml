@@ -558,13 +558,11 @@ jobs:
           fi
       - name: Download verified PR package reports
         if: contains(fromJSON(inputs.plan).reused, 'cli') || contains(fromJSON(inputs.plan).reused, 'web')
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: coverage-reports
           path: ${{ runner.temp }}/pr-packages
-          github-token: ${{ github.token }}
           run-id: ${{ fromJSON(inputs.plan).source }}
-          digest-mismatch: error
       - name: Restore selected PR reports
         if: contains(fromJSON(inputs.plan).reused, 'cli') || contains(fromJSON(inputs.plan).reused, 'web')
         env:
@@ -2114,22 +2112,18 @@ jobs:
           merge-multiple: true
       - name: Download verified PR pytest receipt
         if: contains(fromJSON(inputs.plan).reused, 'eval')
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: execution-pytest-locked
           path: ${{ runner.temp }}/pr-pytest
-          github-token: ${{ github.token }}
           run-id: ${{ fromJSON(inputs.plan).source }}
-          digest-mismatch: error
       - name: Download verified PR preflight receipt
         if: contains(fromJSON(inputs.plan).reused, 'eval')
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: execution-preflight
           path: ${{ runner.temp }}/pr-preflight
-          github-token: ${{ github.token }}
           run-id: ${{ fromJSON(inputs.plan).source }}
-          digest-mismatch: error
       - name: Include PR receipts in release audit
         if: contains(fromJSON(inputs.plan).reused, 'eval')
         run: |

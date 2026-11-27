@@ -166,7 +166,7 @@ describe('release reuse', () => {
       tree: { sha: git('rev-parse', 'HEAD^{tree}') },
       parents: [{ sha: git('rev-parse', 'HEAD^1') }, { sha: 'pr-head' }],
     };
-    const artifact = {
+    const artifact: { name: string; expired: boolean; expires_at?: string } = {
       name: 'coverage-reports',
       expired: false,
       expires_at: new Date(Date.now() + 5 * 86_400_000).toISOString(),
@@ -357,6 +357,34 @@ describe('release reuse', () => {
     expect(result.reused).toEqual([]);
     expect(Object.values(result.run).every(Boolean)).toBe(true);
   });
+
+  const hoursFromNow = (hours: number) =>
+    new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  it.each([
+    ['coverage-reports', undefined, true, false],
+    ['coverage-reports', 'invalid', true, false],
+    ['coverage-reports', hoursFromNow(23), true, false],
+    ['execution-pytest-locked', hoursFromNow(23), false, true],
+    ['execution-preflight', hoursFromNow(23), false, true],
+    ['execution-preflight', hoursFromNow(25), false, false],
+  ] as const)(
+    'checks expiry of %s (%s) before reusing its suite',
+    async (target, expires_at, web, evalSuite) => {
+      writeFileSync(path.join(cwd, 'ci-input'), '');
+      git('add', '.');
+      git('commit', '-qm', 'select package and eval suites', '--no-gpg-sign');
+      const api = fixture();
+      api.jobs.push({ name: 'tests / eval / locked pytest', conclusion: 'success' });
+      api.rest.actions.listWorkflowRunArtifacts.mockResolvedValue(
+        ['coverage-reports', 'execution-pytest-locked', 'execution-preflight'].map((name) => ({
+          ...api.artifact,
+          name,
+          expires_at: name === target ? expires_at : api.artifact.expires_at,
+        })),
+      );
+      expect((await api.select()).run).toMatchObject({ web, eval: evalSuite });
+    },
+  );
 
   it('reruns suites with expired evidence or a skipped job', async () => {
     const api = fixture();

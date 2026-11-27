@@ -169,7 +169,13 @@ async function plan({ github, context, core }) {
             filter: 'latest',
           }),
         ]);
-        const available = new Set(artifacts.filter((a) => !a.expired).map((a) => a.name));
+        // The release audit can start hours after the planner.
+        const neededUntil = Date.now() + 24 * 60 * 60 * 1000;
+        const available = new Set(
+          artifacts
+            .filter((a) => !a.expired && Date.parse(a.expires_at) >= neededUntil)
+            .map((a) => a.name),
+        );
         const passed = new Set(jobs.filter((j) => j.conclusion === 'success').map((j) => j.name));
         for (const lane of changed) {
           if (!passed.has('CI Gate') || !checks[lane].every((name) => passed.has(name))) continue;

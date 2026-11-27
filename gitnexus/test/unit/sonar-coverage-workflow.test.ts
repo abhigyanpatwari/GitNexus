@@ -187,6 +187,17 @@ describe.skipIf(process.platform === 'win32')('selected CI checks', () => {
       expect(job.permissions).toMatchObject({ 'pull-requests': 'read', actions: 'read' });
     }
   });
+
+  it('pins each cross-run download to the PR run the release planner verified', () => {
+    const audit = readWorkflow('ci-tests').jobs['test-completeness'].steps ?? [];
+    for (const step of [
+      namedStep(producer, 'Download verified PR package reports'),
+      namedStep(audit, 'Download verified PR pytest receipt'),
+      namedStep(audit, 'Download verified PR preflight receipt'),
+    ]) {
+      expect(step.with?.['run-id']).toBe('${{ fromJSON(inputs.plan).source }}');
+    }
+  });
 });
 
 describe('SonarQube coverage handoff', () => {

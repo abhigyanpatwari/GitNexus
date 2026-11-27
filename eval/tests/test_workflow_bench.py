@@ -465,13 +465,27 @@ def test_test_artifact_download_retries_require_a_verified_artifact():
     assert len({step["uses"] for step in (first, second, final)}) == 1
     for step in (first, second, final):
         assert re.fullmatch(r"actions/download-artifact@[a-f0-9]{40}", step["uses"])
-        # Every attempt must fetch and verify the same artifact in this run;
-        # no pattern, alternate run, or relaxed digest check may substitute it.
+        # Every attempt must verify the same named artifact in the same source run.
         assert step["with"] == {
             "name": "${{ inputs.name }}",
             "path": "${{ inputs.path }}",
+            "run-id": "${{ inputs.run-id || github.run_id }}",
+            "github-token": "${{ inputs.run-id && github.token || '' }}",
             "digest-mismatch": "error",
         }
+
+
+@pytest.mark.parametrize(("job", "name"), [
+    ("coverage-merge", "coverage-reports"),
+    ("test-completeness", "execution-pytest-locked"),
+    ("test-completeness", "execution-preflight"),
+])
+def test_reused_artifacts_retry_the_verified_pr_run(ci_test_jobs, job, name):
+    steps = [step for step in ci_test_jobs[job]["steps"]
+             if step.get("with", {}).get("name") == name and "Download verified PR" in step.get("name", "")]
+    assert len(steps) == 1
+    assert steps[0]["uses"] == "./.github/actions/download-test-artifact"
+    assert steps[0]["with"]["run-id"] == "${{ fromJSON(inputs.plan).source }}"
 
 
 @pytest.mark.parametrize("job_name", ["tests", "coverage-merge", "shard-plan", "cross-platform", "native-timings"])
