@@ -2,7 +2,7 @@
  * `classifyIndexedImages` (#4136): which side of each modified file's diff the
  * index holds, decided from `meta.fileHashes` against a real git repository.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'fs';
@@ -19,10 +19,27 @@ const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).di
 const BEFORE = 'a\nb\nc\n';
 const AFTER = 'a\nc\n';
 
+// Windows Git ships `core.autocrlf=true` globally, so a checkout of an LF
+// commit is CRLF. Run every case under that config: a fixture that hashes LF
+// literals must pin LF in its own repo rather than inherit the host's EOLs.
+beforeAll(() => {
+  const config = path.join(tempDirs.dir(), 'gitconfig');
+  writeFileSync(config, '[core]\n\tautocrlf = true\n');
+  vi.stubEnv('GIT_CONFIG_GLOBAL', config);
+  vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+});
+afterAll(() => vi.unstubAllEnvs());
+
+/** A repo whose checkouts keep the committed LF bytes, whatever the host. */
+function initRepo(dir: string): void {
+  initGitRepo(dir);
+  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: dir });
+}
+
 /** A repo with `f.ts` committed as BEFORE and edited to AFTER. */
 function editedRepo(configure?: (dir: string) => void): string {
   const dir = tempDirs.dir();
-  initGitRepo(dir);
+  initRepo(dir);
   configure?.(dir);
   writeFileSync(path.join(dir, 'f.ts'), BEFORE);
   commitAll(dir, 'init');
@@ -78,7 +95,7 @@ describe('classifyIndexedImages', () => {
 
   it('does not read an inherited object key as a recorded hash', async () => {
     const dir = tempDirs.dir();
-    initGitRepo(dir);
+    initRepo(dir);
     writeFileSync(path.join(dir, 'constructor'), BEFORE);
     commitAll(dir, 'init');
     writeFileSync(path.join(dir, 'constructor'), AFTER);
@@ -89,7 +106,7 @@ describe('classifyIndexedImages', () => {
 
   it('hashes the old side under the pre-rename path', async () => {
     const dir = tempDirs.dir();
-    initGitRepo(dir);
+    initRepo(dir);
     const lines = Array.from({ length: 12 }, (_, i) => `export const v${i} = ${i};`);
     const before = lines.join('\n') + '\n';
     writeFileSync(path.join(dir, 'old.ts'), before);

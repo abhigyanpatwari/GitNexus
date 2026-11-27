@@ -145,6 +145,8 @@ withTestLbugDB(
       const repoDir = tempDirs.dir();
       writeFileSync(path.join(repoDir, 'util.ts'), UTIL);
       initGitRepo(repoDir);
+      // The recorded hash is of LF UTIL; keep checkouts LF on autocrlf hosts.
+      execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: repoDir });
       commitAll(repoDir, 'init');
       // What `analyze` records: the SHA-256 of the exact bytes it indexed.
       writeFileSync(
