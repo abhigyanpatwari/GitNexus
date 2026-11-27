@@ -16,7 +16,7 @@ All notable changes to GitNexus will be documented in this file.
 
 ### Fixed
 
-- **Read-only database buffer pool is bounded by the container limit and the query memory budget** — the default pool of each read-only database is sized from the cgroup-aware memory limit and kept under `GITNEXUS_QUERY_MAX_RSS_MB`, which stops pool growth from pushing the process to the container limit (a 1 GiB container now gets 384 MiB instead of 2 GiB). Writable opens keep min(2 GiB, 80% of memory), now counting the container limit. Each open database also holds fixed native memory outside the pool, so large indexes in ~1 GiB containers can still exceed the guard. `GITNEXUS_LBUG_BUFFER_POOL_SIZE` still overrides
+- **Read-only database buffer pool is bounded by the container limit and the query memory budget** — the default pool of each read-only database is sized from the cgroup-aware memory limit and kept under `GITNEXUS_QUERY_MAX_RSS_MB`, which stops pool growth from pushing the process to the container limit (a 1 GiB container now gets 384 MiB instead of 2 GiB). Writable opens keep min(2 GiB, 80% of memory), now counting the container limit. Each open database also holds fixed native memory outside the pool, so large indexes in ~1 GiB containers can still exceed the guard. `GITNEXUS_LBUG_BUFFER_POOL_SIZE` still overrides (#4211)
 
 ## [1.6.12] - 2026-09-12
 
