@@ -21,6 +21,8 @@
  */
 
 import {
+  importEdgeFiles,
+  importEdgeNamesFiles,
   importNameFiltersAllow,
   importTargetDirectory,
   lookupLexicalName,
@@ -86,7 +88,8 @@ export function lookupNameClaim(
     name,
     {
       scopes: scopes.scopeTree,
-      importsAt: (scope) => scopes.imports?.edgesAt(scope.id) ?? scope.imports,
+      // A grouped module import is one statement edge here (`statementsAt`).
+      importsAt: (scope) => scopes.imports?.statementsAt(scope.id) ?? scope.imports,
       bindingsAt: (scope, spelling) => {
         const local = compatibleClassBindings(
           scope.bindings.get(spelling) ?? EMPTY_BINDINGS,
@@ -463,7 +466,7 @@ export function isNamespaceNameShadowed(
   if (hasExplicitNameClaim(claim, rootName)) {
     return !claim.imports.some(
       (edge) =>
-        edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved',
+        edge.kind === 'namespace' && importEdgeNamesFiles(edge) && edge.linkStatus !== 'unresolved',
     );
   }
   let currentId: ScopeId | null = inScope;
@@ -1060,8 +1063,10 @@ export function findClassBindingInScope(
       // A non-namespace or unresolved owner still blocks the global name index.
       const targetFiles = new Set(
         rootClaim.imports.flatMap((edge) =>
-          edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved'
-            ? [edge.namespaceTargetFile ?? edge.targetFile]
+          edge.kind === 'namespace' && edge.linkStatus !== 'unresolved'
+            ? edge.targetFile !== null && edge.namespaceTargetFile !== undefined
+              ? [edge.namespaceTargetFile]
+              : importEdgeFiles(edge, scopes.imports)
             : [],
         ),
       );
@@ -1997,10 +2002,10 @@ export function isClassFileImportGrounded(
   if (callerFile !== undefined && classDef.filePath === callerFile) return true;
   if (callerModule === null) return false;
   if (scopes.imports.reaches(callerModule, classDef.filePath)) return true;
-  for (const edge of scopes.imports.edgesAt(callerModule) ?? []) {
+  for (const edge of scopes.imports.statementsAt(callerModule) ?? []) {
     if (edge.targetDefId !== undefined && edge.targetDefId === classDef.nodeId) return true;
     if (
-      edge.targetFile !== null &&
+      importEdgeNamesFiles(edge) &&
       importedName.length > 0 &&
       edge.targetExportedName === importedName
     )
@@ -2556,7 +2561,8 @@ export function namespaceImportAllowsMember(
 ): boolean {
   const imports = lookupNameClaim(inScope, prefix, scopes, { position }).imports.filter(
     (edge) =>
-      edge.kind === 'namespace' && (targetFile === undefined || edge.targetFile === targetFile),
+      edge.kind === 'namespace' &&
+      (targetFile === undefined || importEdgeFiles(edge, scopes.imports).includes(targetFile)),
   );
   return (
     imports.length === 0 || imports.some((edge) => importNameFiltersAllow(edge.nameFilters, member))

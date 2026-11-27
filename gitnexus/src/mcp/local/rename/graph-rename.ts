@@ -436,7 +436,9 @@ export async function planGraphRename(
     add(source, occurrence, selected, [def.nodeId]);
   }
   for (const scopeId of indexes.imports.scopes()) {
-    const imports = indexes.imports.edgesAt(scopeId) ?? [];
+    // A grouped module import is one statement edge: its per-file edges would
+    // all select the same occurrences.
+    const imports = indexes.imports.statementsAt(scopeId) ?? [];
     const scope = indexes.scopeTree.getScope(scopeId);
     const source = scope && files.get(scope.filePath);
     if (!source) continue;

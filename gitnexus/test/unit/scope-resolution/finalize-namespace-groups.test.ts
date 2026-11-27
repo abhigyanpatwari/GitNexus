@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createEagerImportVisibility,
+  createGroupedImportVisibility,
   finalize,
+  importTargetDirectory,
   type FinalizeFile,
   type FinalizeHooks,
   type FinalizeOutput,
@@ -10,7 +13,7 @@ import {
   type ScopeId,
   type SymbolDefinition,
 } from 'gitnexus-shared';
-import { prng } from '../../helpers/import-visibility-contract.js';
+import { observeAsked, prng } from '../../helpers/import-visibility-contract.js';
 
 /**
  * `FinalizeHooks.groupedImportKinds` lets a namespace import (`import X` of a
@@ -141,6 +144,50 @@ function observed(workspace: Workspace, result: ReturnType<typeof run>) {
     bindings: [...result.output.bindings].map(([scope, byName]) => [scope, [...byName]]),
     imports: [...writtenOut(workspace, result.output)],
   };
+}
+
+const visibilityOf = (output: FinalizeOutput) =>
+  output.importEntries === undefined
+    ? createEagerImportVisibility(output.imports)
+    : createGroupedImportVisibility(output.importEntries, output.imports);
+
+/** What a reader sees through `ImportVisibility`. `statementsAt` is compared
+ *  written out: each statement edge as one edge per file of `groupTargets`. */
+function observedVisibility(workspace: Workspace, output: FinalizeOutput) {
+  const visibility = visibilityOf(output);
+  const known = new Set(workspace.files.map((file) => file.filePath));
+  const files = [
+    ...new Set([
+      ...workspace.files.map((file) => file.filePath),
+      ...[...workspace.modules.values()].flat(),
+      'never/Imported.swift',
+    ]),
+  ];
+  const scopes = [...new Set([...output.imports.keys(), 'scope:absent' as ScopeId])];
+  const { selectable: _edgesAt, ...asked } = observeAsked(
+    { scopes, files, directories: [...new Set(files.map(importTargetDirectory))] },
+    visibility,
+  );
+  const statements = scopes.map((scope) => {
+    const listed = visibility.statementsAt(scope);
+    return [
+      scope,
+      listed?.flatMap((edge) =>
+        (visibility.groupTargets(edge) ?? [edge.targetFile]).map((targetFile) =>
+          visibility.groupTargets(edge) === undefined
+            ? edge
+            : {
+                ...perFile(edge),
+                targetFile,
+                ...(targetFile !== null && known.has(targetFile)
+                  ? { targetModuleScope: moduleScope(targetFile) }
+                  : {}),
+              },
+        ),
+      ),
+    ];
+  });
+  return { ...asked, statements };
 }
 
 const groupsIn = (output: FinalizeOutput): number =>
@@ -305,6 +352,45 @@ describe('finalize: grouped namespace imports change storage, not answers', () =
     expect(observed(workspace, run(workspace, true))).toEqual(
       observed(workspace, run(workspace, false)),
     );
+  });
+
+  it.each([...workspaces, ...generatedWorkspaces])(
+    'answers the same through ImportVisibility: $name',
+    (workspace) => {
+      expect(observedVisibility(workspace, run(workspace, true).output)).toEqual(
+        observedVisibility(workspace, run(workspace, false).output),
+      );
+    },
+  );
+
+  it('lists a grouped statement once in statementsAt and never in edgesAt', () => {
+    const output = run(workspaces[1]!, true).output;
+    const visibility = visibilityOf(output);
+    const scope = moduleScope('App/View.swift');
+    expect((visibility.edgesAt(scope) ?? []).map((edge) => edge.localName)).toEqual([
+      'One',
+      'Gone',
+      'Two',
+    ]);
+    const statements = visibility.statementsAt(scope) ?? [];
+    expect(statements.map((edge) => edge.localName)).toEqual([
+      'One',
+      'Net',
+      'Gone',
+      'DTO',
+      'Net',
+      'Two',
+    ]);
+    expect(statements.map((edge) => visibility.groupTargets(edge))).toEqual([
+      undefined,
+      NET,
+      undefined,
+      DTO,
+      NET,
+      undefined,
+    ]);
+    // Same object every time, so name-keyed caches over it stay warm.
+    expect(visibility.statementsAt(scope)).toBe(statements);
   });
 
   it('stores one group per statement and no edge per module file', () => {

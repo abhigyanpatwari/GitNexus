@@ -68,6 +68,7 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
+import { importEdgeFiles, importEdgeNamesFiles } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -464,8 +465,11 @@ function namesLibraryType(
  *   unresolved third-party package and an in-program module the resolver
  *   missed look the same here.
  * - `bound` — anything else: a parameter, a local, a resolved import.
+ *
+ * Exported for the reader-parity tests, which compare grouped and per-file
+ * import storage.
  */
-function baseRooting(
+export function baseRooting(
   inScope: ScopeId,
   base: string,
   scopes: ScopeResolutionIndexes,
@@ -476,10 +480,26 @@ function baseRooting(
   const owner = claim.scope;
   if (owner === undefined || claim.bindings.length > 0) return 'bound';
   const edges = claim.imports;
-  if (edges.length === 0 || edges.some((edge) => edge.targetFile !== null)) return 'bound';
+  if (edges.length === 0 || edges.some(importEdgeNamesFiles)) return 'bound';
   return evidence.importsLibraryModule?.(owner.filePath, base) === true
     ? 'library-import'
     : 'unresolved-import';
+}
+
+/** The files a module scope imports as a namespace under `name`, in
+ * statement order, each once. */
+export function namespaceImportTargets(
+  moduleScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly string[] {
+  const out: string[] = [];
+  for (const edge of scopes.imports.statementsAt(moduleScope) ?? []) {
+    if (edge.kind !== 'namespace' || edge.localName !== name) continue;
+    for (const targetFile of importEdgeFiles(edge, scopes.imports))
+      if (!out.includes(targetFile)) out.push(targetFile);
+  }
+  return out;
 }
 
 /**
@@ -921,14 +941,7 @@ function emitReceiverBoundCallsInPass(
       return namespaceTarget === undefined ? [] : [namespaceTarget];
     }
     const moduleScope = index.moduleScopeByFile.get(file);
-    if (moduleScope === undefined) return [];
-    const out: string[] = [];
-    for (const edge of scopes.imports.edgesAt(moduleScope.id) ?? []) {
-      if (edge.kind !== 'namespace' || edge.localName !== name || edge.targetFile === null)
-        continue;
-      if (!out.includes(edge.targetFile)) out.push(edge.targetFile);
-    }
-    return out;
+    return moduleScope === undefined ? [] : namespaceImportTargets(moduleScope.id, name, scopes);
   };
   type ChainCursor =
     | { readonly files: readonly string[] }

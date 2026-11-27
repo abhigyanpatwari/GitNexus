@@ -35,6 +35,7 @@
  */
 
 import type { ParsedFile, ScopeId, SourcePosition, ImportEdge } from 'gitnexus-shared';
+import { importEdgeFiles } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { lookupNameClaim } from './walkers.js';
@@ -76,13 +77,21 @@ export function collectNamespaceTargets(
     scopeId = scope?.lookupPolicy?.parentScope ?? scope?.parent ?? null;
   }
 
+  // A module import can name hundreds of files: dedupe through a set, not by
+  // scanning the list, while keeping first-seen order.
+  const added = new Map<string, Set<string>>();
   const addTarget = (key: string, targetFile: string): void => {
     let targets = out.get(key);
-    if (targets === undefined) {
+    let seen = added.get(key);
+    if (targets === undefined || seen === undefined) {
       targets = [];
+      seen = new Set();
       out.set(key, targets);
+      added.set(key, seen);
     }
-    if (!targets.includes(targetFile)) targets.push(targetFile);
+    if (seen.has(targetFile)) return;
+    seen.add(targetFile);
+    targets.push(targetFile);
   };
 
   const moduleFileExists = options?.moduleFileExists ?? ((): boolean => false);
@@ -90,7 +99,10 @@ export function collectNamespaceTargets(
   const selectionCache = new Map<string, ReturnType<typeof lookupNameClaim>>();
   const initialScope = options?.inScope ?? parsed.moduleScope;
   const useClaims = scopes.scopeTree?.getScope(initialScope)?.bindings !== undefined;
-  const edgeVisible = (edge: ImportEdge): boolean => {
+  // Asked per (edge, file): a grouped module import (`statementsAt`) stands
+  // for one edge per file, and each is visible exactly when its per-file edge
+  // would be.
+  const edgeVisible = (edge: ImportEdge, targetFile: string | null): boolean => {
     if (edge.typeOnly === true) return false;
     if (!useClaims) return true; // compatibility with legacy import-only index views
     let claim = selectionCache.get(edge.localName);
@@ -108,14 +120,14 @@ export function collectNamespaceTargets(
     if (
       claim.status !== 'resolved' ||
       options?.bindingIdentity === undefined ||
-      edge.targetFile === null ||
+      targetFile === null ||
       edge.kind !== 'namespace'
     )
       return false;
     const identity = options.bindingIdentity({
       localName: edge.localName,
       importPath: edge.targetExportedName,
-      targetFile: edge.targetFile,
+      targetFile,
       explicitAlias: edge.explicitAlias,
     });
     return (
@@ -123,28 +135,36 @@ export function collectNamespaceTargets(
       claim.imports.some(
         (candidate) =>
           candidate.kind === 'namespace' &&
-          candidate.targetFile !== null &&
-          options.bindingIdentity!({
-            localName: candidate.localName,
-            importPath: candidate.targetExportedName,
-            targetFile: candidate.targetFile,
-            explicitAlias: candidate.explicitAlias,
-          }) === identity,
+          importEdgeFiles(candidate, scopes.imports).some(
+            (candidateFile) =>
+              options.bindingIdentity!({
+                localName: candidate.localName,
+                importPath: candidate.targetExportedName,
+                targetFile: candidateFile,
+                explicitAlias: candidate.explicitAlias,
+              }) === identity,
+          ),
       )
     );
   };
   const claimedNames = new Map<string, string | undefined>();
   for (const id of scopeIds) {
-    const edges = (scopes.imports.edgesAt(id) ?? []).filter(edgeVisible);
+    // Each edge with the file it names; a grouped module import once per file.
+    const edges = (scopes.imports.statementsAt(id) ?? []).flatMap((edge) =>
+      edge.groupsFiles === true
+        ? importEdgeFiles(edge, scopes.imports).map((targetFile) => ({ edge, targetFile }))
+        : [{ edge, targetFile: edge.targetFile }],
+    );
     const namesHere = new Map<string, string | undefined>();
     const conflictingNames = new Set<string>();
-    const candidates = edges.map((edge) => {
+    const candidates = edges.flatMap(({ edge, targetFile }) => {
+      if (!edgeVisible(edge, targetFile)) return [];
       const namespace =
-        edge.targetFile !== null && edge.kind === 'namespace' && edge.linkStatus !== 'unresolved'
+        targetFile !== null && edge.kind === 'namespace' && edge.linkStatus !== 'unresolved'
           ? {
               localName: edge.localName,
               importPath: edge.targetExportedName,
-              targetFile: edge.namespaceTargetFile ?? edge.targetFile,
+              targetFile: edge.namespaceTargetFile ?? targetFile,
               explicitAlias: edge.explicitAlias,
             }
           : undefined;
@@ -154,7 +174,7 @@ export function collectNamespaceTargets(
         namesHere.set(edge.localName, undefined);
         conflictingNames.add(edge.localName);
       }
-      return { edge, namespace, identity };
+      return [{ edge, namespace, identity }];
     });
     // Resolve ownership before emitting: import order alone cannot distinguish
     // rebinding from conditional alternatives. Providers without an identity

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createEagerImportVisibility,
+  createGroupedImportVisibility,
   type ImportEdge,
   type ParsedFile,
   type ScopeId,
@@ -101,4 +102,36 @@ describe('onDemandTargets', () => {
     );
   });
 
+  it('asks the predicate once per distinct target, also across statements and groups', () => {
+    const via: ImportEdge = {
+      kind: 'namespace',
+      localName: 'Mod',
+      targetExportedName: 'Mod',
+      targetFile: null,
+      groupsFiles: true,
+    };
+    const indexes = indexesWith(
+      createGroupedImportVisibility(
+        new Map([
+          [
+            MODULE,
+            [
+              { via, targetFiles: ['Mod/A.swift', 'Mod/B.swift'] },
+              edge('namespace', 'Mod/A.swift'),
+              { via: { ...via }, targetFiles: ['Mod/B.swift', 'Mod/C.swift'] },
+            ],
+          ],
+        ]),
+      ),
+    );
+    const keep = vi.fn((_file: string) => true);
+    expect(onDemandTargets(importer, indexes, NAMESPACE, keep)).toEqual(
+      new Set(['Mod/A.swift', 'Mod/B.swift', 'Mod/C.swift']),
+    );
+    expect(keep.mock.calls.map(([file]) => file)).toEqual([
+      'Mod/A.swift',
+      'Mod/B.swift',
+      'Mod/C.swift',
+    ]);
+  });
 });

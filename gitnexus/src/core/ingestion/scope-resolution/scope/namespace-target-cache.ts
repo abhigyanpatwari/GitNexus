@@ -1,4 +1,5 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SourcePosition } from 'gitnexus-shared';
+import { importEdgeNamesFiles } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { collectNamespaceTargets, type NamespaceTargetOptions } from './namespace-targets.js';
 
@@ -51,10 +52,14 @@ export function createNamespaceTargetCache(
     }
     fileScopes.set(id, scope);
     if (scope.nameClaims !== undefined) requiresLexicalLookup = true;
-    for (const edge of scopes.imports?.edgesAt(id) ?? scope.imports) {
+    for (const edge of scopes.imports?.statementsAt(id) ?? scope.imports) {
       scopesWithImports.add(id);
       importNames.add(edge.localName);
-      if (edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved')
+      if (
+        edge.kind === 'namespace' &&
+        importEdgeNamesFiles(edge) &&
+        edge.linkStatus !== 'unresolved'
+      )
         hasNamespaceImports = true;
     }
     for (const namespace of scopes.accessibleNamespacesByScope?.get(id) ?? []) {

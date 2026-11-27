@@ -11,6 +11,7 @@ import type {
   SourcePosition,
   TypeRef,
 } from './types.js';
+import { importEdgeNamesFiles } from './import-visibility.js';
 
 export interface ScopeClaimSelection {
   readonly status: 'absent' | 'blocked' | 'selected' | 'module';
@@ -422,7 +423,8 @@ export function lookupLexicalName(
         status:
           usable.length > 0 ||
           imports.some(
-            (e) => e.kind === 'namespace' && e.targetFile !== null && e.linkStatus !== 'unresolved',
+            (e) =>
+              e.kind === 'namespace' && importEdgeNamesFiles(e) && e.linkStatus !== 'unresolved',
           )
             ? 'resolved'
             : 'blocked',

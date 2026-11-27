@@ -144,6 +144,8 @@ export { createGroupedImportVisibility } from './scope-resolution/import-groups.
 export {
   createEagerImportVisibility,
   importTargetDirectory,
+  importEdgeFiles,
+  importEdgeNamesFiles,
   isSelectableImport,
 } from './scope-resolution/import-visibility.js';
 export type {

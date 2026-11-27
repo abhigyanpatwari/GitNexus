@@ -74,6 +74,67 @@ describe('ImportVisibility contract: shared import groups', () => {
     ).toThrow('Import group must be a nameless wildcard');
   });
 
+  it('returns edgesAt itself from statementsAt when no module import is grouped', () => {
+    for (const relation of [...namedRelations, ...generatedRelations]) {
+      const visibility = grouped(relation);
+      for (const scope of relation.scopes) {
+        expect(visibility.statementsAt(scope.id)).toBe(visibility.edgesAt(scope.id));
+        for (const edge of visibility.edgesAt(scope.id) ?? [])
+          expect(visibility.groupTargets(edge)).toBeUndefined();
+      }
+    }
+  });
+
+  it('lists a module import group as one statement edge with its files', () => {
+    const files = ['DTO/A.swift', 'DTO/B.swift'];
+    const via = {
+      localName: 'DTO',
+      targetExportedName: 'DTO',
+      kind: 'namespace',
+      targetFile: null,
+      groupsFiles: true,
+    } as const;
+    const named = {
+      localName: 'X',
+      targetExportedName: 'X',
+      kind: 'named',
+      targetFile: 'x.swift',
+    } as const;
+    const visibility = createGroupedImportVisibility(
+      new Map([['m' as ScopeId, [named, { via, targetFiles: files }]]]),
+    );
+    expect(visibility.edgesAt('m' as ScopeId)).toEqual([named]);
+    expect(visibility.statementsAt('m' as ScopeId)).toEqual([named, via]);
+    expect(visibility.groupTargets(via)).toBe(files);
+    expect(visibility.groupTargets(named)).toBeUndefined();
+    expect(visibility.reaches('m' as ScopeId, 'DTO/B.swift')).toBe(true);
+  });
+
+  it('refuses a module import group that links a definition', () => {
+    expect(() =>
+      createGroupedImportVisibility(
+        new Map([
+          [
+            'm' as ScopeId,
+            [
+              {
+                via: {
+                  localName: 'DTO',
+                  targetExportedName: 'DTO',
+                  kind: 'namespace',
+                  targetFile: null,
+                  groupsFiles: true,
+                  targetDefId: 'def:DTO',
+                },
+                targetFiles: ['a.swift'],
+              },
+            ],
+          ],
+        ]),
+      ),
+    ).toThrow('Import group must be a nameless wildcard or a module import');
+  });
+
   it('exercises groups in the generated relations', () => {
     const statements = generatedRelations.flatMap((relation) =>
       relation.scopes.flatMap((scope) => scope.statements),
