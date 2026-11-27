@@ -65,7 +65,6 @@ export const kotlinClassConfig: ClassExtractionConfig = {
   typeDeclarationNodes: ['class_declaration', 'object_declaration', 'companion_object'],
   fileScopeNodeTypes: ['package_header'],
   ancestorScopeNodeTypes: ['class_declaration', 'object_declaration', 'companion_object'],
-  qualifiedNodeId: true,
   extractType(node) {
     if (node.type !== 'class_declaration') return undefined;
     return node.children.some((child) => child?.text === 'interface') ? 'Interface' : 'Class';
