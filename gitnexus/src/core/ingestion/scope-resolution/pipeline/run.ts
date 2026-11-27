@@ -69,7 +69,7 @@ import {
   DEFAULT_PDG_MAX_TAINT_HOPS,
   type TaintEmitLimits,
 } from '../../taint/emit.js';
-import { discoverProtoGuardCallees } from '../../taint/barrier-guards.js';
+import { discoverProtoGuardRefs } from '../../taint/barrier-guards.js';
 import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
 import { createMemoizedRefinement } from '../../taint/guard-refinement.js';
 import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
@@ -2085,13 +2085,12 @@ export function runScopeResolution(
     // harvest needs it for EVERY language (it is pure data-dependence, no taint
     // model), and the taint summary harvest reuses it when taintSpec is present.
     const fnNodeIndex = input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph);
-    // Cross-file proto-reject helper *declared names*: discover once over
-    // every emit-safe CFG. emitFileTaint scopes these per file — only imports
-    // of a repo proto helper (plus same-file discovery) enter exclusions, so
-    // an unrelated genuine isValidKey elsewhere is not disabled.
-    // Per-element try mirrors the in-loop isEmitSafeCfg filter — a throwing
-    // getter must skip that CFG, not abort runScopeResolution.
-    const repoProtoGuardCallees = discoverProtoGuardCallees(
+    // Cross-file proto-reject helpers (name + filePath): discover once over
+    // every emit-safe CFG. emitFileTaint scopes by import target so a proto
+    // isValidKey in module A does not disable a genuine isValidKey from B.
+    // Per-element try + discoverProtoGuardRefs' own try: throwing getters
+    // (including block.text) skip that CFG, not abort runScopeResolution.
+    const repoProtoGuards = discoverProtoGuardRefs(
       emitParsedFiles.flatMap((pf) => {
         const side = pf.cfgSideChannel;
         if (!Array.isArray(side)) return [];
@@ -2245,7 +2244,7 @@ export function runScopeResolution(
             rdSolve,
             pf,
             refine,
-            repoProtoGuardCallees,
+            repoProtoGuards,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;

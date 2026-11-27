@@ -1327,6 +1327,32 @@ function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
   if (parent.type === 'assignment_expression') {
     const left = parent.childForFieldName('left');
     if (left?.type === 'identifier') return left.text;
+    // validators.isValidKey = function helper() { … } → isValidKey (call-site leaf)
+    if (left?.type === 'member_expression') {
+      const prop = left.childForFieldName('property');
+      if (
+        prop &&
+        (prop.type === 'property_identifier' ||
+          prop.type === 'identifier' ||
+          prop.type === 'private_property_identifier')
+      ) {
+        return prop.text;
+      }
+      return undefined;
+    }
+    // validators['isValidKey'] = …
+    if (left?.type === 'subscript_expression') {
+      const index = left.childForFieldName('index');
+      if (index?.type === 'string') {
+        const raw = index.text;
+        if (
+          (raw.startsWith('"') && raw.endsWith('"')) ||
+          (raw.startsWith("'") && raw.endsWith("'"))
+        ) {
+          return raw.slice(1, -1);
+        }
+      }
+    }
     return undefined;
   }
 

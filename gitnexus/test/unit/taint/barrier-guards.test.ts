@@ -14,12 +14,20 @@ import { computeTaintFlows } from '../../../src/core/ingestion/taint/propagate.j
 import {
   buildBarrierGuardIndex,
   discoverProtoGuardCallees,
+  discoverProtoGuardRefs,
   functionContainsProtoGuard,
   isBarrierCalleeName,
   isBarrierGuarded,
   resolveBarrierExclusions,
+  type ProtoGuardRef,
   validatedLabelForCondition,
 } from '../../../src/core/ingestion/taint/barrier-guards.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+
+/** Retarget CFG filePath for cross-module exclusion tests. */
+function withFilePath(cfgs: readonly FunctionCfg[], filePath: string): FunctionCfg[] {
+  return cfgs.map((c) => ({ ...c, filePath }));
+}
 
 const MECH: SourceSinkSanitizerSpec = {
   sources: [
@@ -38,8 +46,8 @@ function analyze(
   fnIndex = 0,
   opts?: {
     excludeBarrierCallees?: ReadonlySet<string>;
-    extraCfgs?: ReturnType<typeof cfgsOf>;
-    repoProtoGuardCallees?: ReadonlySet<string>;
+    extraCfgs?: readonly FunctionCfg[];
+    repoProtoGuards?: readonly ProtoGuardRef[];
   },
 ) {
   const cfgs = cfgsOf(code);
@@ -48,8 +56,7 @@ function analyze(
   const defUse = computeReachingDefs(cfg);
   const matches = matchFunctionSites(cfg, MECH, buildTaintImportIndex(importsFor(code)));
   const repoProto =
-    opts?.repoProtoGuardCallees ??
-    (opts?.extraCfgs ? discoverProtoGuardCallees(opts.extraCfgs) : undefined);
+    opts?.repoProtoGuards ?? (opts?.extraCfgs ? discoverProtoGuardRefs(opts.extraCfgs) : undefined);
   const excludeBarrierCallees =
     opts?.excludeBarrierCallees ?? resolveBarrierExclusions(cfgs, importsFor(code), repoProto);
   return {
@@ -636,10 +643,40 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       }
     `;
     const { flows } = analyze(genuine, 1, {
-      repoProtoGuardCallees: discoverProtoGuardCallees(cfgsOf(protoOnly)),
+      repoProtoGuards: discoverProtoGuardRefs(withFilePath(cfgsOf(protoOnly), 'other.ts')),
     });
     expect(flows.findings).toHaveLength(0);
     expect(flows.kills.length).toBeGreaterThan(0);
+  });
+
+  it('keeps a genuine imported isValidKey when another module has a proto-only same name', () => {
+    const protoMod = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const genuineMod = `
+      export function isValidKey(key: string) {
+        return /^[a-z0-9._-]+$/i.test(key);
+      }
+    `;
+    const caller = `
+      import { isValidKey } from './validators';
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const repo = [
+      ...discoverProtoGuardRefs(withFilePath(cfgsOf(protoMod), 'proto.ts')),
+      ...discoverProtoGuardRefs(withFilePath(cfgsOf(genuineMod), 'validators.ts')),
+    ];
+    expect(repo.some((r) => r.name === 'isValidKey' && r.filePath === 'proto.ts')).toBe(true);
+    expect(repo.some((r) => r.filePath === 'validators.ts')).toBe(false);
+    const excluded = resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo);
+    expect([...excluded]).not.toContain('isValidKey');
+    const { flows } = analyze(caller, 0, { repoProtoGuards: repo });
+    expect(flows.findings).toHaveLength(0);
   });
 
   it('does not kind-blind suppress imported proto-only isValidKey from another file', () => {
@@ -656,9 +693,30 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         exec(req.body);
       }
     `;
-    const helperCfgs = cfgsOf(helper);
+    const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
     expect([...discoverProtoGuardCallees(cfgsOf(caller))]).not.toContain('isValidKey');
-    expect([...discoverProtoGuardCallees([...helperCfgs, ...cfgsOf(caller)])]).toContain(
+    expect([...discoverProtoGuardCallees(helperCfgs)]).toContain('isValidKey');
+    const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('does not kind-blind suppress namespace-imported proto-only helper', () => {
+    const helper = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const caller = `
+      import * as guards from './helpers';
+      function write(req: any) {
+        if (!guards.isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
+    const repo = discoverProtoGuardRefs(helperCfgs);
+    expect([...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo)]).toContain(
       'isValidKey',
     );
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
@@ -680,14 +738,36 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         exec(req.body);
       }
     `;
-    const helperCfgs = cfgsOf(helper);
-    const repo = discoverProtoGuardCallees(helperCfgs);
-    expect([...repo]).toContain('isValidKey');
-    expect([...repo]).not.toContain('isValidHostName');
+    const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
+    const repo = discoverProtoGuardRefs(helperCfgs);
+    expect(repo.some((r) => r.name === 'isValidKey')).toBe(true);
     expect([...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo)]).toContain(
       'isValidHostName',
     );
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('discovers member-assigned proto guards by property name', () => {
+    const code = `
+      const validators: any = {};
+      validators.isValidKey = function helper(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      };
+      function write(req: any) {
+        if (!validators.isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+    expect(cfgs.some((c) => c.functionName === 'helper')).toBe(false);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
+    const { flows } = analyze(
+      code,
+      cfgs.findIndex((c) => c.functionName === 'write'),
+    );
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
     expect(flows.kills).toHaveLength(0);
   });

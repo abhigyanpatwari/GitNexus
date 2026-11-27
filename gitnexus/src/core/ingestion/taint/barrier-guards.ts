@@ -161,39 +161,79 @@ export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
   return false;
 }
 
+/** Proto-reject helper keyed by declared name + defining file. */
+export interface ProtoGuardRef {
+  readonly name: string;
+  readonly filePath: string;
+}
+
 /**
- * Discover same-file functions whose body guards against `__proto__`
- * (#3913 proposal §2). Requires `functionName` on the CFG (TS/JS harvest).
+ * Discover functions whose body guards against `__proto__` (#3913 §2).
+ * Per-CFG try: a throwing `block.text` getter must skip that CFG, not abort.
+ * Requires `functionName` on the CFG (TS/JS harvest).
  */
-export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): ReadonlySet<string> {
-  const out = new Set<string>();
+export function discoverProtoGuardRefs(cfgs: readonly FunctionCfg[]): readonly ProtoGuardRef[] {
+  const out: ProtoGuardRef[] = [];
   for (const cfg of cfgs) {
     if (!cfg.functionName) continue;
-    if (functionContainsProtoGuard(cfg)) out.add(cfg.functionName);
+    try {
+      if (functionContainsProtoGuard(cfg)) {
+        out.push({ name: cfg.functionName, filePath: cfg.filePath });
+      }
+    } catch {
+      // Malformed CFG — skip (same isolation intent as emit-safe filtering).
+    }
   }
   return out;
 }
 
+/** Declared names only (same-file / simple callers). */
+export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): ReadonlySet<string> {
+  return new Set(discoverProtoGuardRefs(cfgs).map((r) => r.name));
+}
+
+/** Relative import target may resolve to this file (basename / suffix match). */
+function importTargetMatchesFile(targetRaw: string, filePath: string): boolean {
+  const stripExt = (s: string): string => s.replace(/\.(tsx?|jsx?|mjs|cjs)$/i, '');
+  const target = stripExt(targetRaw.replace(/^\.\//, '').replace(/\\/g, '/'));
+  const file = stripExt(filePath.replace(/\\/g, '/'));
+  if (file === target || file.endsWith(`/${target}`)) return true;
+  const targetBase = target.split('/').pop() ?? target;
+  const fileBase = file.split('/').pop() ?? file;
+  return fileBase.length > 0 && fileBase === targetBase;
+}
+
 /**
- * Per-file barrier exclusions: same-file proto-reject helpers, plus only those
- * repo-wide proto helpers this file actually imports (with local aliases).
- * Unrelated same-named helpers in other files must not disable a genuine
- * local `isValid*` barrier.
+ * Per-file barrier exclusions: same-file proto-reject helpers, plus repo
+ * proto helpers this file imports from a *matching module* (named/alias local
+ * names, and namespace import leaves). Same-named helpers in unrelated modules
+ * must not disable a genuine imported validator.
  */
 export function resolveBarrierExclusions(
   localCfgs: readonly FunctionCfg[],
   imports: readonly ParsedImport[],
-  repoProtoGuards?: ReadonlySet<string>,
+  repoProtoGuards?: readonly ProtoGuardRef[],
 ): ReadonlySet<string> {
   const out = new Set(discoverProtoGuardCallees(localCfgs));
-  if (!repoProtoGuards || repoProtoGuards.size === 0) return out;
+  if (!repoProtoGuards || repoProtoGuards.length === 0) return out;
   for (const imp of imports) {
-    if (imp.kind !== 'named' && imp.kind !== 'alias') continue;
+    if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') continue;
     if (imp.typeOnly === true) continue;
-    const imported = imp.importedName;
-    if (!imported || !repoProtoGuards.has(imported)) continue;
-    out.add(imported);
-    if (imp.localName) out.add(imp.localName);
+    if (imp.kind === 'named' || imp.kind === 'alias') {
+      const imported = imp.importedName;
+      if (!imported) continue;
+      const hit = repoProtoGuards.some(
+        (r) => r.name === imported && importTargetMatchesFile(imp.targetRaw, r.filePath),
+      );
+      if (!hit) continue;
+      out.add(imported);
+      if (imp.localName) out.add(imp.localName);
+    } else {
+      // import * as guards → guards.isValidKey; exclude by leaf name.
+      for (const r of repoProtoGuards) {
+        if (importTargetMatchesFile(imp.targetRaw, r.filePath)) out.add(r.name);
+      }
+    }
   }
   return out;
 }
