@@ -24,11 +24,38 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
-import { groupSwiftFilesByModule } from './target-grouping.js';
+import {
+  DEFAULT_SWIFT_MODULE,
+  groupSwiftFilesByModule,
+  swiftModuleKeysOf,
+} from './target-grouping.js';
 
 /** Namespace-channel key of a Swift module. */
 export function swiftModuleNamespace(moduleKey: string): string {
   return `swift-module:${moduleKey}`;
+}
+
+// A target with one source file has membership but needs no sibling namespace table.
+const workspaceConfigByIndex = new WeakMap<ScopeResolutionIndexes, unknown>();
+
+/** Module and import visibility for owner-scoped lookups. Unknown membership
+ * leaves the decision to the ordinary resolver rules. */
+export function swiftCanAccessFile(
+  callerFile: string,
+  targetFile: string,
+  indexes: ScopeResolutionIndexes,
+): boolean {
+  if (callerFile === targetFile) return true;
+  const config = workspaceConfigByIndex.get(indexes);
+  const callerModules = swiftModuleKeysOf(callerFile, config);
+  const targetModules = swiftModuleKeysOf(targetFile, config);
+  const callerScope = indexes.moduleScopes.byFilePath.get(callerFile);
+  return (
+    callerModules.includes(DEFAULT_SWIFT_MODULE) ||
+    targetModules.includes(DEFAULT_SWIFT_MODULE) ||
+    targetModules.some((module) => callerModules.includes(module)) ||
+    (callerScope !== undefined && indexes.imports.reaches(callerScope, targetFile))
+  );
 }
 
 /**
@@ -58,6 +85,7 @@ export function populateSwiftTargetSiblings(
     readonly resolutionConfig?: unknown;
   },
 ): void {
+  workspaceConfigByIndex.set(indexes, ctx.resolutionConfig);
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
   for (const group of groupSwiftFilesByModule(
     parsedFiles,
@@ -210,7 +238,7 @@ const EXTENSION_OWNER = new RegExp(
   'u',
 );
 
-function swiftExtensionOwner(
+export function swiftExtensionOwner(
   source: string,
   scope: Scope,
   lineStarts?: readonly number[],
@@ -222,7 +250,7 @@ function swiftExtensionOwner(
 }
 
 /** `Scope.range` is 1-based on lines. Columns are Tree-sitter UTF-8 bytes. */
-function lineStartsOf(source: string): number[] {
+export function lineStartsOf(source: string): number[] {
   const starts = [0, 0];
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] === '\n') starts.push(index + 1);

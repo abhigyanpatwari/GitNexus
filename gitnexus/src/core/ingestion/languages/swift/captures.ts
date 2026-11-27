@@ -29,7 +29,9 @@
  * hoist onto `Foo`'s scope (`populateClassOwnedMembers` completes the
  * ownership stamp) — the same mechanism C# uses for `partial class`.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Capture output is deterministic for the input source text. The provider's
+ * capture-side-channel collector serializes the current file's overload-label
+ * metadata onto ParsedFile before the next file is extracted. No I/O.
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
@@ -56,6 +58,11 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import {
+  beginSwiftOverloadLabelCapture,
+  captureSwiftArgumentLabels,
+  captureSwiftParameterLabels,
+} from './overload-labels.js';
 
 /**
  * Name of the type that lexically owns `node` — the nearest enclosing
@@ -139,7 +146,7 @@ const RECEIVER_NODE_TYPES = [
 
 export function emitSwiftScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
@@ -161,6 +168,7 @@ export function emitSwiftScopeCaptures(
 
   const rawMatches = getSwiftScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  const overloadLabels = beginSwiftOverloadLabelCapture(filePath);
   // Dedup genuine field reads by span — tree-sitter-swift can match the
   // same navigation_expression twice (stacked nodes with identical spans).
   const seenReadSpans = new Set<string>();
@@ -350,6 +358,9 @@ export function emitSwiftScopeCaptures(
       if (ownerTag !== undefined && declaredName !== undefined && declNode != null) {
         const owner = swiftEnclosingTypeName(declNode);
         if (owner !== null) {
+          // The vendored Swift grammar places parameters directly on this
+          // declaration. overload-labels.test.ts checks that AST and its labels.
+          captureSwiftParameterLabels(overloadLabels, declNode, grouped[ownerTag].range);
           grouped['@declaration.qualified_name'] = syntheticCapture(
             '@declaration.qualified_name',
             declNode,
@@ -446,6 +457,12 @@ export function emitSwiftScopeCaptures(
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
       const callNode = nodeIfType(nodeMap[callTag], 'call_expression');
       if (callNode !== null) {
+        if (
+          callTag === '@reference.call.free' &&
+          findEnclosingTypeDeclaration(callNode)?.childForFieldName('name')?.type === 'user_type'
+        ) {
+          captureSwiftArgumentLabels(overloadLabels, callNode, grouped[callTag].range);
+        }
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
           callNode,

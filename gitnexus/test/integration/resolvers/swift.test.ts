@@ -17,6 +17,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -359,6 +360,194 @@ describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)
           outcome.name === 'execute',
       ),
     ).toBe(false);
+  });
+});
+
+describe.skipIf(!swiftAvailable)('Swift cross-file extension ownership (#3426)', () => {
+  const result = useFixture('swift-extension-owner-collision', {
+    'Types.swift': `
+enum Handler {
+    static func run() -> Int { makeValue(input: 1) }
+}
+
+enum Container {
+    enum Handler {
+        static func runNested() -> Int { makeValue(input: 2) }
+    }
+}
+`,
+    'HandlerExtension.swift': `
+extension Handler {
+    static func makeValue(input: Int) -> Int { input }
+}
+`,
+    'NestedHandlerExtension.swift': `
+extension Container.Handler {
+    static func makeValue(input: Int) -> Int { input + 10 }
+    static func describeValue(input: Int) -> Int { input }
+    static func choose(input value: Int) -> Int { value }
+    static func chooseUnlabeled(_ value: Int) -> Int { value }
+    static func chooseByResult(input: Int) -> Int { input }
+    static func chooseOnlyInput(input: Int) -> Int { input }
+}
+`,
+    'OtherNestedExtension.swift': `
+extension Container.Handler {
+    func describeValue(instance: Int) -> Int { instance }
+    static func choose(other input: Int) -> Int { input }
+    static func chooseUnlabeled(value: Int) -> Int { value }
+    static func chooseByResult(input: Int) -> String { String(input) }
+}
+`,
+    'ExtensionCallers.swift': `
+extension Container.Handler {
+    static func runFromExtension() -> Int { makeValue(input: 3) }
+    static func runTypeMethod() -> Int { describeValue(input: 5) }
+    func runInstanceMethod() -> Int { describeValue(instance: 5) }
+    static func runWithOverloads() -> Int { choose(input: 6) }
+    static func runWithOtherLabel() -> Int { choose(other: 6) }
+    static func runWithUnlabeledArgument() -> Int { chooseUnlabeled(7) }
+    static func runWithAmbiguousResult() { _ = chooseByResult(input: 6) }
+    static func runWithWrongLabel() -> Int { chooseOnlyInput(other: 6) }
+
+    static func runWithLocalHelper() -> Int {
+        func makeValue(input: Int) -> Int { input + 20 }
+        return makeValue(input: 4)
+    }
+}
+`,
+    'Unrelated.swift': `
+enum Unrelated {
+    static func makeValue(other: Int) -> Int { other - 1 }
+}
+`,
+  });
+
+  it.each([
+    ['run', 'makeValue', 'HandlerExtension.swift'],
+    ['runNested', 'makeValue', 'NestedHandlerExtension.swift'],
+    ['runFromExtension', 'makeValue', 'NestedHandlerExtension.swift'],
+    ['runTypeMethod', 'describeValue', 'NestedHandlerExtension.swift'],
+    ['runInstanceMethod', 'describeValue', 'OtherNestedExtension.swift'],
+    ['runWithLocalHelper', 'makeValue', 'ExtensionCallers.swift'],
+    ['runWithOverloads', 'choose', 'NestedHandlerExtension.swift'],
+    ['runWithOtherLabel', 'choose', 'OtherNestedExtension.swift'],
+    ['runWithUnlabeledArgument', 'chooseUnlabeled', 'NestedHandlerExtension.swift'],
+  ])('resolves %s to %s in %s', (caller, callee, targetPath) => {
+    const calls = getRelationships(result(), 'CALLS').filter(
+      (call) => call.source === caller && call.target === callee,
+    );
+    expect(calls.map((call) => call.targetFilePath)).toEqual([targetPath]);
+  });
+
+  it('records ambiguity when overloads differ only by return type without a result context', () => {
+    const calls = getRelationships(result(), 'CALLS').filter(
+      (call) => call.source === 'runWithAmbiguousResult' && call.target === 'chooseByResult',
+    );
+    expect(calls).toEqual([]);
+    expect(result().resolutionOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'suppressed',
+          reason: 'member-lookup-ambiguous',
+          filePath: 'ExtensionCallers.swift',
+          name: 'chooseByResult',
+        }),
+      ]),
+    );
+  });
+
+  it('keeps a label mismatch unresolved through the free-call fallback', () => {
+    const graph = result();
+    expect(
+      getRelationships(graph, 'CALLS').filter((call) => call.source === 'runWithWrongLabel'),
+    ).toEqual([]);
+    expect(graph.resolutionOutcomes).toContainEqual(
+      expect.objectContaining({
+        kind: 'suppressed',
+        reason: 'overload-inapplicable',
+        filePath: 'ExtensionCallers.swift',
+        name: 'chooseOnlyInput',
+      }),
+    );
+  });
+});
+
+describe.skipIf(!swiftAvailable)('Swift Xcode extension call visibility (#3426)', () => {
+  const result = useFixture('swift-xcode-extension-visibility', {
+    'Demo.xcodeproj/project.pbxproj': `
+{
+  objects = {
+    PROJECT = { isa = PBXProject; mainGroup = ROOT; targets = ( APP, WIDGET ); };
+    ROOT = { isa = PBXGroup; children = ( SHARED, APPMAIN, APPHELPERS, WIDGETMAIN ); sourceTree = "<group>"; };
+    SHARED = { isa = PBXFileReference; path = "Shared/Handler.swift"; sourceTree = SOURCE_ROOT; };
+    APPMAIN = { isa = PBXFileReference; path = "App/AppMain.swift"; sourceTree = SOURCE_ROOT; };
+    APPHELPERS = { isa = PBXFileReference; path = "App/Helpers.swift"; sourceTree = SOURCE_ROOT; };
+    WIDGETMAIN = { isa = PBXFileReference; path = "Widget/WidgetMain.swift"; sourceTree = SOURCE_ROOT; };
+    APP = { isa = PBXNativeTarget; name = App; productType = "com.apple.product-type.application"; buildPhases = ( APP_SOURCES ); };
+    WIDGET = { isa = PBXNativeTarget; name = Widget; productType = "com.apple.product-type.app-extension"; buildPhases = ( WIDGET_SOURCES ); };
+    APP_SOURCES = { isa = PBXSourcesBuildPhase; files = ( APP_SHARED, APP_MAIN, APP_HELPERS ); };
+    WIDGET_SOURCES = { isa = PBXSourcesBuildPhase; files = ( WIDGET_SHARED, WIDGET_MAIN ); };
+    APP_SHARED = { isa = PBXBuildFile; fileRef = SHARED; };
+    WIDGET_SHARED = { isa = PBXBuildFile; fileRef = SHARED; };
+    APP_MAIN = { isa = PBXBuildFile; fileRef = APPMAIN; };
+    APP_HELPERS = { isa = PBXBuildFile; fileRef = APPHELPERS; };
+    WIDGET_MAIN = { isa = PBXBuildFile; fileRef = WIDGETMAIN; };
+  };
+  rootObject = PROJECT;
+}
+`,
+    'Shared/Handler.swift': 'struct Handler {}\n',
+    'App/AppMain.swift': `
+extension Handler {
+    static func runFromExtension() -> Int { makeValue() }
+    static func runInApp() -> Int { sharedValue() }
+    static func runWithFreeFunction() -> Int { fallbackValue() }
+}
+`,
+    'App/Helpers.swift': `
+extension Handler {
+    static func sharedValue() -> Int { 1 }
+}
+
+func fallbackValue() -> Int { 2 }
+`,
+    'Widget/WidgetMain.swift': `
+extension Handler {
+    static func makeValue() -> Int { 3 }
+    static func sharedValue() -> Int { 4 }
+    static func fallbackValue() -> Int { 5 }
+    static func runInWidget() -> Int { sharedValue() }
+    static func runWidgetOnly() -> Int { makeValue() }
+}
+`,
+  });
+
+  it('excludes a Widget-only helper from an App extension with the same owner', () => {
+    const graph = result();
+    const app = moduleHubsOf(graph, 'App/AppMain.swift');
+    const widget = moduleHubsOf(graph, 'Widget/WidgetMain.swift');
+    expect(app).toHaveLength(1);
+    expect(widget).toHaveLength(1);
+    expect(app).not.toEqual(widget);
+    expect(moduleHubsOf(graph, 'Shared/Handler.swift')).toEqual([...app, ...widget].sort());
+    expect(
+      getRelationships(graph, 'CALLS').filter(
+        (call) => call.source === 'runFromExtension' && call.target === 'makeValue',
+      ),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['runInApp', 'sharedValue', 'App/Helpers.swift'],
+    ['runInWidget', 'sharedValue', 'Widget/WidgetMain.swift'],
+    ['runWidgetOnly', 'makeValue', 'Widget/WidgetMain.swift'],
+    ['runWithFreeFunction', 'fallbackValue', 'App/Helpers.swift'],
+  ])('resolves %s to %s in %s', (caller, callee, targetPath) => {
+    const calls = getRelationships(result(), 'CALLS').filter(
+      (call) => call.source === caller && call.target === callee,
+    );
+    expect(calls.map((call) => call.targetFilePath)).toEqual([targetPath]);
   });
 });
 

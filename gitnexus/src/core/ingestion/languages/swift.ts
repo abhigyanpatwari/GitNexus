@@ -37,6 +37,7 @@ import {
   swiftArityCompatibility,
 } from './swift/index.js';
 import { preprocessSwiftConditionalDirectives } from './swift/conditional-directive-preprocess.js';
+import { collectSwiftOverloadLabels } from './swift/overload-labels.js';
 
 /** Swift init/deinit declarations have special names and Constructor label. */
 const swiftExtractFunctionName = (
@@ -252,6 +253,7 @@ export const swiftProvider = defineLanguage({
   // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #937). See
   //    languages/swift/ for the implementations. ──────────────────────
   emitScopeCaptures: emitSwiftScopeCaptures,
+  collectCaptureSideChannel: collectSwiftOverloadLabels,
   cfgVisitor: createSwiftCfgVisitor(),
   interpretImport: interpretSwiftImport,
   interpretTypeBinding: interpretSwiftTypeBinding,

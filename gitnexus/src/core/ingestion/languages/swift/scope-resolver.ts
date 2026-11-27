@@ -16,9 +16,8 @@
  *     `populateClassOwnedMembers` stamps them with `Foo`'s ownerId — the
  *     same mechanism C# uses for `partial class`. Cross-file extensions
  *     that mint no type def are reconciled by `populateWorkspaceOwners`.
- *   - **Labeled arguments** narrow by ARITY only (count-primary, labels
- *     soft) — see `arity.ts`. Label-precise dispatch is deferred to the
- *     type-binding layer.
+ *   - **Labeled arguments** use the shared arity/type rules. Bare calls in
+ *     extension bodies also use positional external labels when available.
  *   - **Same-module visibility**: every file in a module sees its
  *     siblings' top-level defs without an `import`. A module is a SwiftPM
  *     target (root or nested package) or an Xcode native target, found by
@@ -47,15 +46,25 @@
  *      import` is not a re-export.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
+import { makeScopeId, SupportedLanguages } from 'gitnexus-shared';
 import { loadSwiftWorkspaceConfig } from './workspace-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  lookupBindingsAt,
+  populateClassOwnedMembers,
+} from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
-import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import type {
+  ReceiverMemberResolution,
+  ScopeResolver,
+} from '../../scope-resolution/contract/scope-resolver.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
+import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import {
   canonicalizeWorkspaceBindings,
   canonicalModuleExports,
@@ -74,8 +83,14 @@ import {
 } from './index.js';
 import { stripSwiftTypePreservingDecoration } from './interpret.js';
 import { groupSwiftFilesByModule } from './target-grouping.js';
+import { lineStartsOf, swiftCanAccessFile, swiftExtensionOwner } from './target-siblings.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
+import {
+  indexSwiftOverloadLabels,
+  swiftArgumentLabels,
+  swiftLabelsMatch,
+} from './overload-labels.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
@@ -132,13 +147,29 @@ const swiftScopeResolver: ScopeResolver = {
   // a qualified name (`ExtendedType.member`) but no ownerId. Reconcile those
   // members after all files are available so extensions declared in sibling
   // files work as well as extensions beside the original type.
-  populateWorkspaceOwners: populateSwiftExtensionOwners,
+  populateWorkspaceOwners(parsedFiles, { fileContents, resolutionConfig }) {
+    // A shared file may extend a type compiled only into a later target.
+    // Visit every membership and keep the first matching owner.
+    const filesByTarget = groupSwiftFilesByModule(
+      parsedFiles,
+      (parsed) => parsed.filePath,
+      resolutionConfig,
+      { allMemberships: true },
+    );
+    for (const files of filesByTarget.values()) {
+      stampSwiftExtensionOwnersInTarget(files, fileContents);
+    }
+  },
+  resolveUnqualifiedCall: resolveSwiftExtensionCall,
 
   // `super.method()` dispatches through the superclass chain.
   isSuperReceiver: (text) => text.trim() === 'super',
 
   // Whole-module same-target visibility without `import`.
-  populateNamespaceSiblings: populateSwiftTargetSiblings,
+  populateNamespaceSiblings(parsedFiles, indexes, context) {
+    populateSwiftTargetSiblings(parsedFiles, indexes, context);
+    indexSwiftOverloadLabels(parsedFiles, indexes);
+  },
 
   // Same-target File→File IMPORTS edges (no syntactic `import`). The
   // generic finalized-ImportEdge pipeline has nothing to emit here, so
@@ -249,24 +280,10 @@ function buildSwiftMro(
   return mro;
 }
 
-function populateSwiftExtensionOwners(
+function stampSwiftExtensionOwnersInTarget(
   parsedFiles: readonly ParsedFile[],
-  ctx?: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
+  fileContents: ReadonlyMap<string, string>,
 ): void {
-  // Every membership: a shared file may extend a type compiled only into a
-  // later target. Stamping never overwrites an owner, so the first match wins.
-  const filesByTarget = groupSwiftFilesByModule(
-    parsedFiles,
-    (parsed) => parsed.filePath,
-    ctx?.resolutionConfig,
-    { allMemberships: true },
-  );
-  for (const files of filesByTarget.values()) {
-    stampSwiftExtensionOwnersInTarget(files);
-  }
-}
-
-function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): void {
   const ownersByName = new Map<string, SymbolDefinition[]>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
@@ -282,6 +299,9 @@ function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): 
   // Function — leave those ownerless so they cannot enter implicit-self CALLS.
   for (const parsed of parsedFiles) {
     const byId = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
+    const source = fileContents.get(parsed.filePath);
+    const writtenOwners = new Map<string, string | undefined>();
+    let lineStarts: number[] | undefined;
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Function') continue;
       const parent = scope.parent === null ? undefined : byId.get(scope.parent);
@@ -292,11 +312,19 @@ function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): 
       // not suppress stamping `func added` onto `Foo`.
       if (parent.ownedDefs.some((d) => isClassLike(d.type) && defDeclaresThisClassScope(parent, d)))
         continue;
+      if (source !== undefined && !writtenOwners.has(parent.id)) {
+        lineStarts ??= lineStartsOf(source);
+        writtenOwners.set(parent.id, swiftExtensionOwner(source, parent, lineStarts));
+      }
       for (const def of scope.ownedDefs) {
         if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
         const dot = def.qualifiedName.lastIndexOf('.');
         if (dot <= 0) continue;
-        const owner = uniqueOwnerForExtensionPrefix(ownersByName, def.qualifiedName.slice(0, dot));
+        const owner = uniqueOwnerForExtensionPrefix(
+          ownersByName,
+          def.qualifiedName.slice(0, dot),
+          writtenOwners.get(parent.id),
+        );
         if (owner !== undefined) {
           (def as { ownerId?: string }).ownerId = owner.nodeId;
         }
@@ -314,10 +342,100 @@ function defDeclaresThisClassScope(
   return Number(line[1]) === parent.range.startLine;
 }
 
+function resolveSwiftExtensionCall(
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+  model: SemanticModel,
+): ReceiverMemberResolution | undefined {
+  const { scopeTree } = indexes;
+  let scope = scopeTree.getScope(site.inScope);
+  while (scope !== undefined && scope.kind !== 'Class') {
+    // A local function or value can shadow the implicit receiver's member.
+    if (
+      scope.bindings.has(site.name) ||
+      scope.typeBindings.has(site.name) ||
+      scope.lexicalNames?.has(site.name)
+    )
+      return undefined;
+    const parent = scopeTree.getParent(scope.id);
+    if (scope.kind === 'Function' && parent?.kind === 'Class') {
+      // Type declarations already have an implicit owner in the shared
+      // resolver. An extension supplies it through its enclosing method.
+      if (
+        parent.ownedDefs.some(
+          (def) => isClassLike(def.type) && defDeclaresThisClassScope(parent, def),
+        )
+      )
+        return undefined;
+      const member = scope.ownedDefs.find(
+        (def) => def.type === 'Method' || def.type === 'Constructor',
+      );
+      if (member?.ownerId === undefined) return undefined;
+
+      // A type method and an instance method can share a base name and arity.
+      // The Swift capture pass binds `self` only in instance method bodies.
+      const instanceCaller = scope.typeBindings.get('self')?.source === 'self';
+      const labels = swiftArgumentLabels(indexes, scope.filePath, site.atRange);
+      const matchingReceiver: SymbolDefinition[] = [];
+      const rejectedLabels: string[] = [];
+      for (const candidate of model.methods.lookupAllByOwner(member.ownerId, site.name)) {
+        if (candidate.isExported === false && candidate.filePath !== scope.filePath) continue;
+        if (!swiftCanAccessFile(scope.filePath, candidate.filePath, indexes)) continue;
+        const range = candidate.declarationRange;
+        if (range === undefined) return undefined;
+        const targetScope = scopeTree.getScope(
+          makeScopeId({ filePath: candidate.filePath, range, kind: 'Function' }),
+        );
+        if (targetScope === undefined) return undefined;
+        const instanceTarget = targetScope.typeBindings.get('self')?.source === 'self';
+        if (instanceCaller !== instanceTarget) continue;
+        if (labels !== undefined && !swiftLabelsMatch(indexes, candidate, labels)) {
+          rejectedLabels.push(candidate.nodeId);
+          continue;
+        }
+        matchingReceiver.push(candidate);
+      }
+      if (matchingReceiver.length === 0 && rejectedLabels.length > 0) {
+        // The ordinary namespace lookup can see these same members. Only
+        // defer to it when a file-level function could answer the call.
+        const moduleScope = indexes.moduleScopes.byFilePath.get(scope.filePath);
+        if (
+          moduleScope !== undefined &&
+          !lookupBindingsAt(moduleScope, site.name, indexes).some(
+            ({ def }) => def.type === 'Function' && def.ownerId === undefined,
+          )
+        ) {
+          return { kind: 'inapplicable', candidateIds: rejectedLabels };
+        }
+      }
+      const candidates = narrowOverloadCandidates(
+        matchingReceiver,
+        site.arity,
+        site.argumentTypes,
+        { argumentTypeClasses: site.argumentTypeClasses },
+      );
+      if (candidates.length > 1) {
+        return { kind: 'ambiguous', candidateIds: candidates.map((def) => def.nodeId) };
+      }
+      const definition = candidates[0];
+      return definition === undefined ? undefined : { kind: 'resolved', definition };
+    }
+    scope = parent;
+  }
+  return undefined;
+}
+
 function uniqueOwnerForExtensionPrefix(
   ownersByName: ReadonlyMap<string, readonly SymbolDefinition[]>,
   prefix: string,
+  writtenOwner: string | undefined,
 ): SymbolDefinition | undefined {
+  // Member defs keep the short owner spelling for graph-id lookup. The
+  // extension header distinguishes `Handler` from `Container.Handler`.
+  const exactOwner =
+    writtenOwner !== undefined && (writtenOwner === prefix || writtenOwner.endsWith('.' + prefix))
+      ? writtenOwner
+      : undefined;
   const seen = new Set<string>();
   const matches: SymbolDefinition[] = [];
   const consider = (defs: readonly SymbolDefinition[] | undefined): void => {
@@ -328,8 +446,8 @@ function uniqueOwnerForExtensionPrefix(
       matches.push(def);
     }
   };
-  consider(ownersByName.get(prefix));
-  if (!prefix.includes('.')) {
+  consider(ownersByName.get(exactOwner ?? prefix));
+  if (exactOwner === undefined && !prefix.includes('.')) {
     for (const [qn, defs] of ownersByName) {
       if (qn !== prefix && qn.endsWith('.' + prefix)) consider(defs);
     }

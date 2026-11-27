@@ -1,12 +1,17 @@
 import {
   buildDefIndex,
+  createEagerImportVisibility,
+  type ImportEdge,
   type ParsedFile,
   type ScopeId,
   type SymbolDefinition,
   type TypeRef,
 } from 'gitnexus-shared';
 import { describe, expect, it } from 'vitest';
-import { populateSwiftTargetSiblings } from '../../../../src/core/ingestion/languages/swift/target-siblings.js';
+import {
+  populateSwiftTargetSiblings,
+  swiftCanAccessFile,
+} from '../../../../src/core/ingestion/languages/swift/target-siblings.js';
 import { mirrorSwiftSiblingTypeBindings } from '../../../../src/core/ingestion/languages/swift/sibling-type-bindings.js';
 import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../../../src/core/ingestion/scope-resolution/workspace-index.js';
@@ -55,6 +60,38 @@ function parsedFile(
 }
 
 describe('Swift target sibling visibility', () => {
+  it.each([false, true])('honors import visibility between singleton targets (%s)', (imported) => {
+    const caller = parsedFile('Builder.swift', [], new Map(), []);
+    const target = parsedFile('Types.swift', [], new Map(), []);
+    const importEdges = new Map<ScopeId, readonly ImportEdge[]>();
+    if (imported) {
+      importEdges.set(caller.moduleScope, [
+        {
+          kind: 'namespace',
+          localName: 'Types',
+          targetExportedName: '*',
+          targetFile: target.filePath,
+        },
+      ]);
+    }
+    const indexes = {
+      ...makeIndexes([], new Map()),
+      imports: createEagerImportVisibility(importEdges),
+    };
+    populateSwiftTargetSiblings([caller, target], indexes, {
+      fileContents: new Map(),
+      resolutionConfig: {
+        moduleNamesComplete: true,
+        modules: [
+          { key: 'Caller', name: 'Caller', files: [caller.filePath], importable: true },
+          { key: 'Types', name: 'Types', files: [target.filePath], importable: true },
+        ],
+      },
+    });
+
+    expect(swiftCanAccessFile(caller.filePath, target.filePath, indexes)).toBe(imported);
+  });
+
   it('binds a nested type into a same-target extension fragment', () => {
     const container: SymbolDefinition = {
       nodeId: 'def:Types.swift:Container',
