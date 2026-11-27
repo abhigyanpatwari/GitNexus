@@ -69,8 +69,9 @@ jobs:
 
             const temp = process.env.RUNNER_TEMP;
             await downloadArtifact('pr-meta', path.join(temp, 'dl'));
-            await downloadArtifact('test-reports', path.join(temp, 'dl'));
-            await downloadArtifact('test-dupes', path.join(temp, 'dl'));
+            for (const name of ['test-reports', 'test-dupes']) {
+              if (allArtifacts.some(a => a.name === name)) await downloadArtifact(name, path.join(temp, 'dl'));
+            }
 
       - name: Extract artifacts
         shell: bash
@@ -125,6 +126,10 @@ jobs:
             echo "quality=$(validate_result "$DIR/quality_result")"
             echo "tests=$(validate_result "$DIR/tests_result")"
             echo "e2e=$(validate_result "$DIR/e2e_result")"
+            counts=$(cat "$DIR/package_counts" 2>/dev/null || true)
+            if [[ "$counts" =~ ^[0-9]{1,9}\ passed,\ [0-9]{1,9}\ skipped$ ]]; then
+              echo "package_counts=$counts"
+            fi
           } >> "$GITHUB_OUTPUT"
 
       - name: Build report
@@ -135,6 +140,7 @@ jobs:
           QUALITY: ${{ steps.meta.outputs.quality }}
           TESTS: ${{ steps.meta.outputs.tests }}
           E2E: ${{ steps.meta.outputs.e2e }}
+          COUNTS: ${{ steps.meta.outputs.package_counts }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           DIR="$RUNNER_TEMP/artifacts"
@@ -187,13 +193,13 @@ jobs:
             case "$1" in
               success) echo "✅" ;;
               failure) echo "❌" ;;
-              cancelled) echo "⏭️" ;;
+              cancelled|skipped) echo "⏭️" ;;
               *) echo "❓" ;;
             esac
           }
 
           # ── Overall status ──
-          if [[ "$QUALITY" == "success" && "$TESTS" == "success" && ("$E2E" == "success" || "$E2E" == "skipped") ]]; then
+          if [[ ("$QUALITY" == "success" || "$QUALITY" == "skipped") && "$TESTS" == "success" && ("$E2E" == "success" || "$E2E" == "skipped") ]]; then
             OVERALL="✅ **Quality, tests and applicable E2E checks passed**"
           else
             OVERALL="❌ **Quality, tests or E2E checks failed or did not finish**"
@@ -210,9 +216,9 @@ jobs:
             echo ""
             echo "| Stage | Status | Details |"
             echo "|-------|--------|---------|"
-            echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
-            echo "| $(status_icon "$TESTS") Tests | \`${TESTS}\` | unit tests, 3 platforms |"
-            echo "| $(status_icon "$E2E") E2E | \`${E2E}\` | gitnexus-web changes only |"
+            echo "| $(status_icon "$QUALITY") Quality | \`${QUALITY}\` | Formatting, lint and selected typechecks |"
+            echo "| $(status_icon "$TESTS") Tests | \`${TESTS}\` | Suites selected for this PR${COUNTS:+. Linux package tests: $COUNTS} |"
+            echo "| $(status_icon "$E2E") E2E | \`${E2E}\` | Chromium for affected web or backend changes |"
             echo ""
 
             if [ "$TOTAL" -gt 0 ] 2>/dev/null; then

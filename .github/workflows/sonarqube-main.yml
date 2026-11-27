@@ -14,9 +14,9 @@ concurrency:
 
 jobs:
   source:
-    # Only trusted pushes to main can supply code and coverage to the OIDC job.
+    # Take code and coverage from the manual Publish run on this repository's main branch.
     if: >-
-      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.path == '.github/workflows/publish.yml' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
