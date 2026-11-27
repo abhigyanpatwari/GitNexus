@@ -37,13 +37,20 @@ interface Reference extends DubboServiceKey {
   fieldType: string;
 }
 
+interface UnsupportedMethod {
+  name: string;
+  /** Minimum argument count; exact unless variadic. */
+  arity: number;
+  variadic: boolean;
+}
+
 export interface JavaType {
   name: string;
   line: number;
   isInterface: boolean;
   supers: string[];
   methods: JavaMethod[];
-  unsupportedMethods: string[];
+  unsupportedMethods: UnsupportedMethod[];
   provider?: DubboServiceKey;
   references: Reference[];
   calls: { field: string; method: string; arity: number; caller: string; line: number }[];
@@ -95,6 +102,70 @@ function descendants(root: Node): Node[] {
 
 function field(node: Node, name: string): string {
   return node.childForFieldName(name)?.text ?? '';
+}
+
+/** Index lexical bindings once per method, retaining where each binding starts. */
+function referenceBindings(member: Node, nodes: Node[]): Map<number, Map<string, number>> {
+  const scopes = new Map<number, Map<string, number>>();
+  const bind = (scope: Node | null, name: string, start: number) => {
+    if (!scope || !name) return;
+    const names = scopes.get(scope.id) ?? new Map<string, number>();
+    names.set(name, Math.min(names.get(name) ?? start, start));
+    scopes.set(scope.id, names);
+  };
+  const parameters = (params: Node | null, scope: Node | null) => {
+    if (!params || !scope) return;
+    const entries = params.type === 'identifier' ? [params] : params.namedChildren;
+    for (const param of entries) {
+      const name =
+        param.type === 'identifier'
+          ? param.text
+          : field(param, 'name') ||
+            field(
+              param.namedChildren.find((n) => n.type === 'variable_declarator') ?? param,
+              'name',
+            );
+      bind(scope, name, scope.startIndex);
+    }
+  };
+  parameters(member.childForFieldName('parameters'), member);
+  for (const node of nodes) {
+    if (node.type === 'local_variable_declaration') {
+      const parent = node.parent;
+      const scope = parent?.type === 'switch_block_statement_group' ? parent.parent : parent;
+      if (!scope || !['block', 'for_statement', 'switch_block'].includes(scope.type)) continue;
+      for (const decl of node.namedChildren.filter((n) => n.type === 'variable_declarator'))
+        bind(scope, field(decl, 'name'), decl.startIndex);
+    } else if (node.type === 'lambda_expression') {
+      parameters(node.childForFieldName('parameters'), node.childForFieldName('body'));
+    } else if (node.type === 'catch_clause') {
+      const param = node.namedChildren.find((n) => n.type === 'catch_formal_parameter');
+      const body = node.childForFieldName('body');
+      if (param && body) bind(body, field(param, 'name'), body.startIndex);
+    } else if (node.type === 'enhanced_for_statement') {
+      const body = node.childForFieldName('body');
+      if (body) bind(body, field(node, 'name'), body.startIndex);
+    } else if (node.type === 'resource_specification') {
+      const body = node.parent?.childForFieldName('body');
+      for (const resource of node.namedChildren) {
+        bind(node, field(resource, 'name'), resource.startIndex);
+        if (body) bind(body, field(resource, 'name'), body.startIndex);
+      }
+    }
+  }
+  return scopes;
+}
+
+function referenceIsShadowed(
+  call: Node,
+  name: string,
+  scopes: Map<number, Map<string, number>>,
+): boolean {
+  for (let scope: Node | null = call; scope; scope = scope.parent) {
+    const start = scopes.get(scope.id)?.get(name);
+    if (start !== undefined && start <= call.startIndex) return true;
+  }
+  return false;
 }
 
 function literal(node: Node | undefined): string | null {
@@ -208,13 +279,20 @@ export function scanDubboJava(filePath: string, root: Node): JavaFile {
       if (member.type !== 'method_declaration') continue;
       const modifiers = member.namedChildren.find((n) => n.type === 'modifiers');
       if (/\b(?:static|private|protected)\b/.test(modifiers?.text ?? '')) continue;
-      const params = member.childForFieldName('parameters')?.namedChildren ?? [];
+      const params = (member.childForFieldName('parameters')?.namedChildren ?? []).filter(
+        (n) => n.type !== 'receiver_parameter',
+      );
       // Varargs and generic methods need invocation/type inference; do not guess.
       if (
         member.childForFieldName('type_parameters') ||
         params.some((n) => n.type !== 'formal_parameter')
       ) {
-        type.unsupportedMethods.push(field(member, 'name'));
+        const variadic = params.some((n) => n.type === 'spread_parameter');
+        type.unsupportedMethods.push({
+          name: field(member, 'name'),
+          arity: params.length - (variadic ? 1 : 0),
+          variadic,
+        });
         continue;
       }
       type.methods.push({
@@ -228,28 +306,7 @@ export function scanDubboJava(filePath: string, root: Node): JavaFile {
     // Calls in private helpers are still consumers; the provider visibility filter above does not apply.
     for (const member of body.namedChildren.filter((n) => n.type === 'method_declaration')) {
       const nodes = descendants(member);
-      const shadowed = new Set(
-        nodes
-          .filter((n) =>
-            [
-              'formal_parameter',
-              'spread_parameter',
-              'variable_declarator',
-              'catch_formal_parameter',
-              'inferred_parameters',
-              'enhanced_for_statement',
-            ].includes(n.type),
-          )
-          .flatMap((n) =>
-            n.type === 'inferred_parameters'
-              ? n.namedChildren.map((c) => c.text)
-              : [field(n, 'name')],
-          ),
-      );
-      for (const lambda of nodes.filter((n) => n.type === 'lambda_expression')) {
-        const parameter = lambda.childForFieldName('parameters');
-        if (parameter?.type === 'identifier') shadowed.add(parameter.text);
-      }
+      const bindings = referenceBindings(member, nodes);
       for (const call of nodes.filter((n) => n.type === 'method_invocation')) {
         const object = call.childForFieldName('object');
         const explicit = object?.type === 'field_access' && field(object, 'object') === 'this';
@@ -259,7 +316,7 @@ export function scanDubboJava(filePath: string, root: Node): JavaFile {
             : object?.type === 'identifier'
               ? object.text
               : '';
-        if (!receiver || (!explicit && shadowed.has(receiver))) continue;
+        if (!receiver || (!explicit && referenceIsShadowed(call, receiver, bindings))) continue;
         type.calls.push({
           field: receiver,
           method: field(call, 'name'),
@@ -318,24 +375,26 @@ export function buildDubboSites(files: JavaFile[]): Map<JavaFile, DubboSite[]> {
       f.types.map((t) => (f.packageName ? `${f.packageName}.${t.name}` : t.name)),
     ),
   );
-  const interfaces = new Map<string, { file: JavaFile; type: JavaType; methods: JavaMethod[] }[]>();
+  const interfaces = new Map<
+    string,
+    { file: JavaFile; type: JavaType; methods: JavaMethod[]; unsupported: UnsupportedMethod[] }[]
+  >();
   const output = new Map(files.map((f) => [f, [] as DubboSite[]]));
   for (const file of files)
     for (const type of file.types) {
       if (!type.isInterface || type.supers.length) continue;
       const service = file.packageName ? `${file.packageName}.${type.name}` : type.name;
-      const blocked = new Set(type.unsupportedMethods);
-      const resolved = type.methods.flatMap((m) => {
+      const unsupported = [...type.unsupportedMethods];
+      const methods = type.methods.flatMap((m) => {
         const params = m.parameters.map((p) => resolveJavaType(p, file, known));
         if (params.some((p) => p === null)) {
-          blocked.add(m.name);
+          unsupported.push({ name: m.name, arity: m.parameters.length, variadic: false });
           return [];
         }
         return [{ ...m, parameters: params as string[] }];
       });
-      const methods = resolved.filter((m) => !blocked.has(m.name));
       const entries = interfaces.get(service) ?? [];
-      entries.push({ file, type, methods });
+      entries.push({ file, type, methods, unsupported });
       interfaces.set(service, entries);
     }
   const used = new Map<string, DubboServiceKey>();
@@ -394,7 +453,12 @@ export function buildDubboSites(files: JavaFile[]): Map<JavaFile, DubboSite[]> {
           const candidates = binding.declaration.methods.filter(
             (m) => m.name === call.method && m.parameters.length === call.arity,
           );
-          if (candidates.length !== 1) continue;
+          const ambiguous = binding.declaration.unsupported.some(
+            (m) =>
+              m.name === call.method &&
+              (m.variadic ? call.arity >= m.arity : call.arity === m.arity),
+          );
+          if (candidates.length !== 1 || ambiguous) continue;
           add(binding.key, candidates[0], 'consumer', call.caller, call.line);
           add(binding.key, null, 'consumer', call.caller, call.line);
         }

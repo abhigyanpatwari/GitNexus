@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { parseGroupConfig } from '../../../../dist/core/group/config-parser.js';
 import { syncGroup } from '../../../../dist/core/group/sync.js';
-import { closeLbug } from '../../../../dist/core/lbug/pool-adapter.js';
+import { closeLbug, executeParameterized } from '../../../../dist/core/lbug/pool-adapter.js';
+import { DUBBO_SYMBOL_QUERY } from '../../../../dist/core/group/extractors/dubbo-extractor.js';
 import { closeAllCachedBridges, closeBridgeDb } from '../../../../dist/core/group/bridge-db.js';
 import {
   ensureBridgeReady,
@@ -21,6 +22,7 @@ const SOURCES = {
   api: `package api;
 public interface Account {
   String get(Long id);
+  <T> String get(T id, String tenant);
 }`,
   provider: `package impl;
 import api.Account;
@@ -28,13 +30,18 @@ import org.apache.dubbo.config.annotation.DubboService;
 @DubboService(interfaceClass = Account.class, group = "accounts", version = "1")
 public class AccountService implements Account {
   public String get(Long id) { return "account"; }
+  public <T> String get(T id, String tenant) { return tenant; }
 }`,
   consumer: `package app;
 import api.Account;
 import org.apache.dubbo.config.annotation.DubboReference;
 public class Facade {
   @DubboReference(group = "accounts", version = "1") private Account account;
-  public String load(Long id) { return account.get(id); }
+  public String load(Long id) {
+    String result = account.get(id);
+    Account account = null;
+    return result;
+  }
 }`,
 };
 
@@ -115,6 +122,25 @@ detect:
       assert.equal(caller.symbolRef.name, 'load');
       assert.equal(new Set(methods.map((c) => c.contractId)).size, 1);
       assert.equal(synced.crossLinks.filter((l) => l.contractId === caller.contractId).length, 2);
+
+      for (const contract of synced.contracts) {
+        const poolId = `dubbo-${contract.repo}`;
+        const [symbol] = await executeParameterized(
+          poolId,
+          'MATCH (n) WHERE n.id = $uid RETURN labels(n) AS label, n.startLine AS line',
+          { uid: contract.symbolUid },
+        );
+        // LadybugDB returns a scalar label, unlike Neo4j's list-valued labels().
+        assert.ok(['Method', 'Function', 'Class', 'Interface'].includes(symbol.label));
+        const params = { ...contract.symbolRef, line: Number(symbol.line) };
+        assert.deepEqual(await executeParameterized(poolId, DUBBO_SYMBOL_QUERY, params), [
+          { uid: contract.symbolUid },
+        ]);
+        assert.deepEqual(
+          await executeParameterized(poolId, DUBBO_SYMBOL_QUERY, { ...params, line: -1 }),
+          [],
+        );
+      }
 
       const bridge = await ensureBridgeReady(groupDir);
       if ('error' in bridge) assert.fail(bridge.error);

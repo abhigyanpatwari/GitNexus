@@ -53,8 +53,11 @@ contracts. Re-analyze changed member repositories before re-syncing.
   same empty values. Values resolved from external Dubbo configuration are not
   inferred. Different service groups or versions never match by simple name.
 - A consumer call selects a method only when its name and argument count identify
-  one supported declaration. Same-arity overloads, unresolved parameter types,
-  generic service types/methods and varargs are skipped, not guessed.
+  one supported declaration. An unresolved or generic overload blocks only calls
+  with its argument count; a varargs overload blocks its applicable argument
+  counts. Supported interface/provider contracts are retained independently.
+  Same-arity overload inference, generic service types/methods and varargs
+  invocation inference are skipped, not guessed.
 - Interface and implementation methods, plus service-level type anchors, resolve
   to real symbols in each member's index. Interface declarations are exported
   only for services selected by Dubbo annotations. No synthetic graph UIDs are
@@ -72,7 +75,8 @@ This implementation supports top-level Java types with interface source availabl
 in the group. It does not infer inherited interface methods, nested types,
 method/bean injection, XML configuration, generic `$invoke` calls, remote
 interfaces available only as JARs, or runtime-selected group/version values.
-Reassigned or shadowed proxy fields are skipped conservatively. Runtime
+Reassigned proxy fields are skipped conservatively. Parameter and local-variable
+shadowing is checked in the lexical scope of each call. Runtime
 placeholders and wildcard service selectors are also skipped.
 
 Source scans honor the repository ignore rules and file-size limit, reject

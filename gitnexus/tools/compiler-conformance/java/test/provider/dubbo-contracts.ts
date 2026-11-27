@@ -201,6 +201,79 @@ describe('Dubbo cross-repository source facts', () => {
     );
   });
 
+  for (const [label, body, expected] of [
+    [
+      'a later declaration',
+      'String result = account.list(); Account account = null; return result;',
+      true,
+    ],
+    [
+      'an ended inner block',
+      '{ Account account = null; account.list(); } return account.list();',
+      true,
+    ],
+    ['an active inner block', '{ Account account = null; return account.list(); }', false],
+    ['an ended lambda', 'stream.map(account -> account.list()); return account.list();', true],
+    ['a typed lambda parameter', 'return stream.map((Account account) -> account.list());', false],
+    [
+      'an active catch parameter',
+      'try { work(); } catch (Exception account) { return account.list(); } return "";',
+      false,
+    ],
+    [
+      'an ended catch parameter',
+      'try { work(); } catch (Exception account) { account.list(); } return account.list();',
+      true,
+    ],
+    [
+      'an active loop variable',
+      'for (Account account = null; condition; step()) { account.list(); } return "";',
+      false,
+    ],
+    [
+      'an ended loop variable',
+      'for (Account account = null; condition; step()) { account.list(); } return account.list();',
+      true,
+    ],
+    [
+      'an enhanced loop variable',
+      'for (Account account : accounts) { account.list(); } return "";',
+      false,
+    ],
+    [
+      'an enhanced loop iterable',
+      'for (Account account : account.list()) { account.list(); } return "";',
+      true,
+    ],
+    [
+      'an active resource variable',
+      'try (Account account = open()) { return account.list(); }',
+      false,
+    ],
+    [
+      'a resource outside the catch scope',
+      'try (Account account = open()) { work(); } catch (Exception ex) { return account.list(); } return "";',
+      true,
+    ],
+    [
+      'a resource outside the finally scope',
+      'try (Account account = open()) { work(); } finally { account.list(); } return "";',
+      true,
+    ],
+    [
+      'a preceding switch declaration',
+      'switch (n) { case 1: Account account = null; case 2: account.list(); } return "";',
+      false,
+    ],
+  ] as const)
+    it(`resolves field shadowing at the call site: ${label}`, () => {
+      const consumers = sites(CONSUMER.replace('return account.list();', body))[2];
+      assert.equal(
+        consumers.some((s) => s.method === 'list'),
+        expected,
+      );
+    });
+
   it('skips reassigned fields', () => {
     assert.deepEqual(
       sites(
@@ -261,6 +334,34 @@ describe('Dubbo cross-repository source facts', () => {
       )[2],
       [],
     );
+  });
+
+  for (const sibling of [
+    'String get(Unknown id, String tenant);',
+    '<T> String get(T id, String tenant);',
+    'String get(String tenant, String region, String... ids);',
+  ])
+    it(`preserves a supported overload with a different applicable arity: ${sibling}`, () => {
+      const [api, provider, consumer] = sites(
+        CONSUMER.replace('account.list()', 'account.get(1L)'),
+        PROVIDER,
+        API.replace('String get(String id);', sibling),
+      );
+      for (const contracts of [api, provider, consumer])
+        assert.ok(
+          contracts.some((s) => s.method === 'get' && s.parameters[0] === 'java.lang.Long'),
+        );
+    });
+
+  it('keeps provider contracts when a generic sibling makes the consumer ambiguous', () => {
+    const [api, provider, consumer] = sites(
+      CONSUMER.replace('account.list()', 'account.get(1L)'),
+      PROVIDER,
+      API.replace('String get(String id);', '<T> String get(T id);'),
+    );
+    assert.deepEqual(consumer, []);
+    for (const contracts of [api, provider])
+      assert.ok(contracts.some((s) => s.method === 'get' && s.parameters[0] === 'java.lang.Long'));
   });
 
   it('keeps array rank in parameter identities', () => {
