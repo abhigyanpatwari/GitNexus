@@ -52,8 +52,8 @@
     "digest": "81b17a923e6cffb4dc087024844f8e5e83a4ea4aa0d1bfb8e57f92d4a29da71e"
   },
   "csharp-async-binding/Program.cs": {
-    "captureGroups": 37,
-    "digest": "fc6bb5b9887e5193c90c687248d890873f5eb40f6a8e5b597729311dd3cc9f0a"
+    "captureGroups": 38,
+    "digest": "94eff00461058673913be978bc34f6afacc6ae5fc00dc4e40fe5579963bc6245"
   },
   "csharp-async-binding/User.cs": {
     "captureGroups": 9,
@@ -244,8 +244,8 @@
     "digest": "29a9220fcd1726794e0335200048b297d770a2feef9303431097537f8b07eaba"
   },
   "csharp-hello/Hello.cs": {
-    "captureGroups": 23,
-    "digest": "b67606e0b429ecbf9b4e285193d9780f8f952da8a9001c515df702dd5495c9ce"
+    "captureGroups": 24,
+    "digest": "57fd483388180b9f80424af7bcd3cdba7a06b338142d597531b509cf3c21e8ef"
   },
   "csharp-inline-constructor-receiver/src/Runner.cs": {
     "captureGroups": 22,
