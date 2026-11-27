@@ -1434,6 +1434,7 @@ function detectChangesDiffArgs(selection: DetectChangesSelection): string[] {
     '--color=never',
     '--src-prefix=a/',
     '--dst-prefix=b/',
+    '--inter-hunk-context=0',
   ];
   switch (selection.scope) {
     case 'staged':
