@@ -34,7 +34,14 @@ import {
   propertyName,
   scanDataRouteTables,
 } from '../../../ingestion/route-extractors/data-route-table.js';
-import { extractNestRoutes } from '../../../ingestion/route-extractors/nest.js';
+import {
+  extractNestInheritanceFacts,
+  extractNestRoutes,
+} from '../../../ingestion/route-extractors/nest.js';
+import {
+  resolveNestInheritedRoutes,
+  type NestInheritanceFacts,
+} from '../../../ingestion/route-extractors/nest-inherited-routes.js';
 import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
 import {
   buildJsRepoFacts,
@@ -534,14 +541,34 @@ function frameworkDetection(route: FrameworkRoute, facts: FrameworkRouteFacts): 
   };
 }
 
+/** A NestJS route as a provider detection, with the prefix joined the way ingestion joins it. */
+function nestDetection(route: ReturnType<typeof extractNestRoutes>[number]): HttpDetection {
+  return {
+    role: 'provider',
+    framework: 'nest',
+    method: route.httpMethod,
+    // The prefix travels separately at the ingestion layer, so the join is
+    // ours to do — with ingestion's own joiner, so the two layers cannot
+    // disagree about the URL either.
+    path: normalizeExtractedRoutePath(route.routePath, route.prefix ?? null),
+    // A detection names a symbol of its own file. An inherited handler is
+    // declared in another one, so the name is left out rather than offered to
+    // a lookup that could match an unrelated symbol of the controller's file.
+    name: route.handlerFilePath === undefined ? (route.handlerName ?? null) : null,
+    line: route.lineNumber,
+    confidence: 0.8,
+  };
+}
+
 /**
- * What `collect` keeps of one JS/TS file: its framework route facts, or null
- * when it has none. The scope view they are read from is not kept; the import
- * resolvers need only the file paths.
+ * What `collect` keeps of one JS/TS file: its framework route facts and its
+ * NestJS inheritance facts, each null when it has none. The scope view they
+ * are read from is not kept; the import resolvers need only the file paths.
  */
 interface NodeFileFacts {
   readonly filePath: string;
   readonly facts: FrameworkRouteFacts | null;
+  readonly nest: NestInheritanceFacts | null;
 }
 
 /** Reduce one parsed file to its framework route facts. */
@@ -550,16 +577,22 @@ function collectNodeFileFacts(
   repoContext?: RepoContext,
 ): NodeFileFacts {
   const filePath = normalizeRel(rawPath);
+  const none: NodeFileFacts = { filePath, facts: null, nest: null };
   const context = repoContext as NodeRepoContext | undefined;
-  if (context?.configurationAvailable === false) return { filePath, facts: null };
+  if (context?.configurationAvailable === false) return none;
   const provider = getProviderForFile(filePath);
-  if (!provider) return { filePath, facts: null };
+  if (!provider) return none;
   try {
     const parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
-    return { filePath, facts: parsed ? extractFrameworkRouteFacts(tree, parsed) : null };
+    if (!parsed) return none;
+    return {
+      filePath,
+      facts: extractFrameworkRouteFacts(tree, parsed),
+      nest: extractNestInheritanceFacts(tree, filePath, parsed.parsedImports) ?? null,
+    };
   } catch {
     // A malformed file contributes no framework facts; other files survive.
-    return { filePath, facts: null };
+    return none;
   }
 }
 
@@ -573,7 +606,7 @@ function resolveNodeProject(
   const facts = new Map<string, FrameworkRouteFacts>();
   for (const file of collected) if (file.facts) facts.set(file.filePath, file.facts);
   const filePaths = context?.files ?? new Set(collected.map((file) => file.filePath));
-  const routes = resolveFrameworkRoutePaths([...facts.values()], (fromFile, specifier) => {
+  const resolveImportTargets = (fromFile: string, specifier: string): readonly string[] => {
     const resolver =
       getLanguageFromFilename(fromFile) === SupportedLanguages.JavaScript
         ? javascriptScopeResolver
@@ -585,15 +618,27 @@ function resolveNodeProject(
       context?.resolutionConfig,
     );
     return typeof target === 'string' ? [target] : (target ?? []);
-  });
+  };
+  const routes = resolveFrameworkRoutePaths([...facts.values()], resolveImportTargets);
   const detections = new Map<string, HttpDetection[]>();
+  const detect = (filePath: string, detection: HttpDetection): void => {
+    const found = detections.get(filePath) ?? [];
+    found.push(detection);
+    detections.set(filePath, found);
+  };
   for (const route of routes) {
     const fileFacts = facts.get(route.filePath);
-    if (!fileFacts) continue;
-    const found = detections.get(route.filePath) ?? [];
-    found.push(frameworkDetection(route, fileFacts));
-    detections.set(route.filePath, found);
+    if (fileFacts) detect(route.filePath, frameworkDetection(route, fileFacts));
   }
+  // The handlers a NestJS controller inherits from a base class in another
+  // file: the per-file scan cannot see them, and ingestion resolves them from
+  // these same facts with this same function. They land on the controller's
+  // file, at the line of the class.
+  const inherited = resolveNestInheritedRoutes(
+    collected.flatMap((file) => (file.nest ? [{ filePath: file.filePath, facts: file.nest }] : [])),
+    resolveImportTargets,
+  );
+  for (const route of inherited) detect(route.filePath, nestDetection(route));
   return [...detections].map(([filePath, found]) => ({ filePath, detections: found }));
 }
 
@@ -726,20 +771,7 @@ function scanBundle(
   // than losing the routes. `lineOffset` is 0: the group scanner parses whole
   // files, so `lineNumber` is already the absolute 1-based line this
   // `HttpDetection.line` wants.
-  for (const route of extractNestRoutes(tree, fileRel ?? '', 0)) {
-    out.push({
-      role: 'provider',
-      framework: 'nest',
-      method: route.httpMethod,
-      // The prefix travels separately at the ingestion layer, so the join is
-      // ours to do — with ingestion's own joiner, so the two layers cannot
-      // disagree about the URL either.
-      path: normalizeExtractedRoutePath(route.routePath, route.prefix ?? null),
-      name: route.handlerName ?? null,
-      line: route.lineNumber,
-      confidence: 0.8,
-    });
-  }
+  for (const route of extractNestRoutes(tree, fileRel ?? '', 0)) out.push(nestDetection(route));
 
   // Bare single-tree callers retain local framework routes. Repository scans
   // receive only the composed project providers, never a raw-path fallback.

@@ -65,6 +65,51 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     expect(out.has(GET_ORDERS)).toBe(false);
   });
 
+  it('looks the handler up in `handlerFilePath` when the route names one', () => {
+    // A NestJS controller serves a handler its base class declares in another
+    // file: the route is the controller's, the method is not.
+    const model = createSemanticModel();
+    model.symbols.add('src/crud.controller.ts', 'list', 'method:CrudController.list', 'Method');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [decoratorRoute({ handlerFilePath: 'src/crud.controller.ts' })],
+    );
+
+    expect(out.get(GET_ORDERS)).toBe('method:CrudController.list');
+  });
+
+  it('ignores a same-name symbol of the route file when `handlerFilePath` is set', () => {
+    const model = createSemanticModel();
+    model.symbols.add(FILE, 'list', 'function:list', 'Function');
+    model.symbols.add('src/crud.controller.ts', 'list', 'method:CrudController.list', 'Method');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [decoratorRoute({ handlerFilePath: 'src/crud.controller.ts' })],
+    );
+
+    expect(out.get(GET_ORDERS)).toBe('method:CrudController.list');
+  });
+
+  it('ambiguous name in `handlerFilePath` → fail-open, no stamp', () => {
+    const model = createSemanticModel();
+    // The route file would resolve the name; the named file cannot.
+    model.symbols.add(FILE, 'list', 'function:list', 'Function');
+    model.symbols.add('src/crud.controller.ts', 'list', 'method:CrudController.list', 'Method');
+    model.symbols.add('src/crud.controller.ts', 'list', 'method:OtherBase.list', 'Method');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [decoratorRoute({ handlerFilePath: 'src/crud.controller.ts' })],
+    );
+
+    expect(out.has(GET_ORDERS)).toBe(false);
+  });
+
   it('treats an empty routePath as a valid root route when resolving its handler', () => {
     const model = createSemanticModel();
     model.symbols.add(FILE, 'root', 'method:OrderController.root', 'Method');

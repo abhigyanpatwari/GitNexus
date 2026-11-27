@@ -592,7 +592,10 @@ export function resolveRouteHandlerSymbols(
     if (dr.source === DATA_ROUTE_TABLE_SOURCE) return dataHandlerByRoute.get(dr);
     const providerHandler = routeContext?.providerRouteHandler?.(dr.filePath);
     if (providerHandler) return providerHandler(dr, providerContext);
-    return dr.handlerName ? uniqueSymbolId(dr.filePath, dr.handlerName) : undefined;
+    // An inherited handler is declared in another file than the route's own.
+    return dr.handlerName
+      ? uniqueSymbolId(dr.handlerFilePath ?? dr.filePath, dr.handlerName)
+      : undefined;
   };
 
   // Decorator routes (Spring / FastAPI / generic) — the decorated handler in

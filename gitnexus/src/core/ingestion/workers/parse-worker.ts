@@ -352,6 +352,13 @@ export interface ExtractedDecoratorRoute {
    */
   handlerName?: string;
   /**
+   * File that declares {@link handlerName}, when it is not the route's own
+   * file: a NestJS controller serves, under its own prefix, the handlers of a
+   * base class another file declares. The route stays in `filePath`, the file
+   * that mounts it; only the name lookup moves. Absent ⇒ `filePath`.
+   */
+  handlerFilePath?: string;
+  /**
    * Static hint for what the receiver of a qualified {@link handlerName}
    * (`h.Method`, `pkg.Func`) is, read from the registering file's own syntax.
    * The worker sees one file, so it records only what that file says:

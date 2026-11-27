@@ -36,8 +36,8 @@
  * mounts every `@Get`/`@Post` of `CrudController` under the `users` prefix
  * even when the subclass body is empty. Those routes are emitted here for a
  * base class declared in the SAME file; see {@link collectInheritedRoutes}.
- * A base class imported from another file is not followed, so its routes are
- * still missing.
+ * Where the chain leaves the file, {@link extractNestInheritanceFacts} records
+ * what this file knows and `nest-inherited-routes.ts` joins the files.
  *
  * Known limitation: the URLs produced here are CONTROLLER-RELATIVE. A global
  * prefix (`app.setGlobalPrefix('api')`) and URI versioning are applied by the
@@ -51,8 +51,16 @@
  */
 
 import type Parser from 'tree-sitter';
+import type { ParsedImport } from 'gitnexus-shared';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 import { plainString, propertyName } from './data-route-table.js';
+import type {
+  NestBaseRef,
+  NestClassFacts,
+  NestInheritanceFacts,
+  NestOpenController,
+} from './nest-inherited-routes.js';
+import { normalizeExtractedRoutePath } from './route-path.js';
 import { isDev } from '../utils/env.js';
 import { logger } from '../../logger.js';
 
@@ -332,36 +340,41 @@ function controllerPrefix(
   classNode: Parser.SyntaxNode,
   filePath: string,
 ): string | null | undefined {
+  const controller = readController(classNode);
+  // The single funnel for EVERY whole-controller drop — an unreadable
+  // constant (`@Controller(ROUTES.VENUES)`), a multi-path array, an
+  // unreadable array element, and an options object whose `path` another
+  // member could override all read as null. Reporting at the refusal
+  // sites instead would make the rarest cause the loudest, and leave the
+  // motivating one from this module's own header silent.
+  //
+  // `isDev` at `info`, not `debug`: the logger's base level IS `info`, so
+  // an isDev-gated `debug` is gated twice and stays silent in exactly the
+  // dev run it exists for. Same shape the routes phase uses.
+  if (controller?.prefix === null && isDev) {
+    const shape = controller.decorator.text.replace(/\s+/g, ' ');
+    logger.info(
+      `🗺️ NestJS: dropped @Controller in ${filePath} — its prefix is not provable: ${
+        shape.length > DROPPED_CONTROLLER_LOG_LIMIT
+          ? `${shape.slice(0, DROPPED_CONTROLLER_LOG_LIMIT)}…`
+          : shape
+      }`,
+    );
+  }
+  return controller?.prefix;
+}
+
+/** The `@Controller` decorator of a class and the prefix it states, read without reporting. */
+function readController(
+  classNode: Parser.SyntaxNode,
+): { prefix: string | null; decorator: Parser.SyntaxNode } | undefined {
   for (const decorator of classDecorators(classNode)) {
     if (decoratorName(decorator) !== 'Controller') continue;
     const paths = decoratorLiteralPaths(decorator);
     // `@Controller([])` lands here too and needs no answer of its own: a
     // controller mounted at no path serves no route, so "emit nothing for this
     // class" is what both readings of it come to.
-    if (paths === null || paths.length !== 1) {
-      // The single funnel for EVERY whole-controller drop — an unreadable
-      // constant (`@Controller(ROUTES.VENUES)`), a multi-path array, an
-      // unreadable array element, and an options object whose `path` another
-      // member could override all return null here. Reporting at the refusal
-      // sites instead would make the rarest cause the loudest, and leave the
-      // motivating one from this module's own header silent.
-      //
-      // `isDev` at `info`, not `debug`: the logger's base level IS `info`, so
-      // an isDev-gated `debug` is gated twice and stays silent in exactly the
-      // dev run it exists for. Same shape the routes phase uses.
-      if (isDev) {
-        const shape = decorator.text.replace(/\s+/g, ' ');
-        logger.info(
-          `🗺️ NestJS: dropped @Controller in ${filePath} — its prefix is not provable: ${
-            shape.length > DROPPED_CONTROLLER_LOG_LIMIT
-              ? `${shape.slice(0, DROPPED_CONTROLLER_LOG_LIMIT)}…`
-              : shape
-          }`,
-        );
-      }
-      return null;
-    }
-    return paths[0];
+    return { prefix: paths === null || paths.length !== 1 ? null : paths[0], decorator };
   }
   return undefined;
 }
@@ -406,6 +419,235 @@ export function extractNestRoutes(
 
   visit(tree.rootNode);
   return out;
+}
+
+/**
+ * Parse-free gate for {@link extractNestInheritanceFacts}, which every JS/TS
+ * file reaches. A class matters there only when it extends something or
+ * declares a route, so a file with neither word is skipped before any walk.
+ */
+const INHERITANCE_HINT = new RegExp(
+  `\\bextends\\b|@(?:${[...NEST_METHOD_DECORATORS.keys()].join('|')})\\b`,
+);
+
+/** A base class's own names hide nothing from itself; only computed keys drop out. */
+const NOTHING_REDECLARED: ReadonlySet<string> = new Set();
+
+/**
+ * What this file contributes to routes inherited ACROSS files, or `undefined`
+ * when it contributes nothing.
+ *
+ * Three kinds of fact, all plain data:
+ *   - each top-level class that declares routes or extends another class, so
+ *     a controller elsewhere can inherit through it;
+ *   - each controller whose chain of same-file base classes ends at an
+ *     imported class — the point {@link collectInheritedRoutes} stops at;
+ *   - the module's `export … from` statements, so an import that goes through
+ *     a barrel still reaches the file that declares the class.
+ *
+ * Nothing here decides what is inherited: `resolveNestInheritedRoutes` does,
+ * once it holds the facts of every file.
+ */
+export function extractNestInheritanceFacts(
+  tree: Parser.Tree,
+  filePath: string,
+  parsedImports: readonly ParsedImport[],
+  lineOffset = 0,
+): NestInheritanceFacts | undefined {
+  const reexports: NestInheritanceFacts['reexports'][number][] = [];
+  const starExports: string[] = [];
+  for (const parsed of parsedImports) {
+    if (parsed.kind === 'reexport') {
+      reexports.push({
+        name: parsed.localName,
+        source: parsed.targetRaw,
+        imported: parsed.importedName,
+      });
+    } else if (parsed.kind === 'wildcard' && parsed.exportsOnly) {
+      starExports.push(parsed.targetRaw);
+    }
+  }
+
+  let classes: NestClassFacts[] = [];
+  let controllers: NestOpenController[] = [];
+  const text = tree.rootNode.text;
+  if (INHERITANCE_HINT.test(text)) {
+    const byName = indexClassesByName(tree.rootNode);
+    if (byName.size > 0) {
+      classes = classFacts(tree.rootNode, byName, filePath, parsedImports, lineOffset);
+      if (text.includes(CONTROLLER_HINT)) {
+        controllers = openControllers(tree.rootNode, byName, filePath, parsedImports, lineOffset);
+      }
+    }
+  }
+
+  return classes.length + controllers.length + reexports.length + starExports.length === 0
+    ? undefined
+    : { classes, controllers, reexports, starExports };
+}
+
+/** The top-level classes of a file that declare routes or extend another class. */
+function classFacts(
+  root: Parser.SyntaxNode,
+  byName: ReadonlyMap<string, Parser.SyntaxNode | null>,
+  filePath: string,
+  parsedImports: readonly ParsedImport[],
+  lineOffset: number,
+): NestClassFacts[] {
+  const out: NestClassFacts[] = [];
+  // Read on the first class that needs it: most files with classes have none
+  // that extends anything or declares a route.
+  let exportedAs: ReadonlyMap<string, string[]> | undefined;
+
+  for (const [name, node] of byName) {
+    if (node === null) continue;
+    const routes: ExtractedDecoratorRoute[] = [];
+    collectClassRoutes(node, '', filePath, lineOffset, routes, NOTHING_REDECLARED);
+    const base = baseRef(node, byName, parsedImports);
+    if (routes.length === 0 && base === undefined) continue;
+
+    const names = new Set<string>();
+    const readable = addPrototypeNames(node, names);
+    exportedAs ??= exportedClassNames(root);
+    out.push({
+      name,
+      exportedAs: exportedAs.get(name) ?? [],
+      ...(base === undefined ? {} : { base }),
+      names: readable ? [...names] : null,
+      routes: routes.flatMap((route) =>
+        route.handlerName === undefined
+          ? []
+          : [
+              {
+                handlerName: route.handlerName,
+                httpMethod: route.httpMethod,
+                decoratorName: route.decoratorName,
+                routePath: route.routePath,
+              },
+            ],
+      ),
+    });
+  }
+  return out;
+}
+
+/** The controllers of a file whose chain of same-file base classes ends at an import. */
+function openControllers(
+  root: Parser.SyntaxNode,
+  byName: ReadonlyMap<string, Parser.SyntaxNode | null>,
+  filePath: string,
+  parsedImports: readonly ParsedImport[],
+  lineOffset: number,
+): NestOpenController[] {
+  const out: NestOpenController[] = [];
+  for (const node of root.descendantsOfType([...CLASS_DECLARATION_TYPES])) {
+    // Most controllers extend nothing; they are settled before any decorator is read.
+    if (extendedClassName(node) === null) continue;
+    const prefix = readController(node)?.prefix;
+    if (typeof prefix !== 'string') continue;
+    // The same two calls `extractNestRoutes` makes, into a scratch list: what
+    // the file already emits for this controller, and where its chain leaves.
+    const emitted: ExtractedDecoratorRoute[] = [];
+    collectClassRoutes(node, prefix, filePath, lineOffset, emitted);
+    const open = collectInheritedRoutes(node, prefix, filePath, lineOffset, emitted, () => byName);
+    const base = open && importedClass(parsedImports, open.baseName);
+    if (!open || !base) continue;
+    out.push({
+      prefix,
+      // The name, not the node: a decorator belongs to the class node unless
+      // the class is exported, so the node does not start on a fixed line.
+      lineNumber: (node.childForFieldName('name') ?? node).startPosition.row + 1 + lineOffset,
+      redeclared: [...open.redeclared],
+      claimed: [
+        ...new Set(
+          emitted.map(
+            (route) =>
+              `${route.httpMethod} ${normalizeExtractedRoutePath(route.routePath, route.prefix ?? null)}`,
+          ),
+        ),
+      ],
+      base,
+    });
+  }
+  return out;
+}
+
+/** The class a declaration extends, as a reference another pass can follow. */
+function baseRef(
+  classNode: Parser.SyntaxNode,
+  byName: ReadonlyMap<string, Parser.SyntaxNode | null>,
+  parsedImports: readonly ParsedImport[],
+): NestBaseRef | undefined {
+  const baseName = extendedClassName(classNode);
+  if (baseName === null) return undefined;
+  const local = byName.get(baseName);
+  if (local === undefined) return importedClass(parsedImports, baseName);
+  // `null` is a name this file declares twice or only in a nested scope.
+  return local === null ? undefined : { local: baseName };
+}
+
+/**
+ * The import that binds `localName`, when exactly one does and it survives to
+ * run time. `import type` is erased and a namespace import is not a class, so
+ * neither can be what a class extends.
+ */
+function importedClass(
+  parsedImports: readonly ParsedImport[],
+  localName: string,
+): { source: string; name: string } | undefined {
+  let found: { source: string; name: string } | undefined;
+  for (const parsed of parsedImports) {
+    if (parsed.kind !== 'named' && parsed.kind !== 'alias') continue;
+    if (parsed.localName !== localName || parsed.exportsOnly) continue;
+    if (found !== undefined) return undefined;
+    if ('typeOnly' in parsed && parsed.typeOnly) return undefined;
+    found = { source: parsed.targetRaw, name: parsed.importedName };
+  }
+  return found;
+}
+
+/**
+ * The names a module exports each of its classes under, read from its
+ * top-level `export` statements: `export class A`, `export default class A`,
+ * `export { A, A as B }` and `export default A`. Statements with a source are
+ * re-exports of another module and are read from the parsed imports instead.
+ */
+function exportedClassNames(root: Parser.SyntaxNode): Map<string, string[]> {
+  const exportedAs = new Map<string, string[]>();
+  const add = (className: string | undefined, exportName: string | undefined): void => {
+    if (className === undefined || exportName === undefined) return;
+    const names = exportedAs.get(className) ?? [];
+    names.push(exportName);
+    exportedAs.set(className, names);
+  };
+
+  for (const statement of root.namedChildren) {
+    if (statement.type !== 'export_statement') continue;
+    if (statement.childForFieldName('source') !== null) continue;
+    const isDefault = statement.children.some((child) => child.type === 'default');
+
+    const declaration = statement.childForFieldName('declaration');
+    if (declaration !== null) {
+      if (!CLASS_DECLARATION_TYPES.has(declaration.type)) continue;
+      const name = declaration.childForFieldName('name')?.text;
+      add(name, isDefault ? 'default' : name);
+      continue;
+    }
+    const value = statement.childForFieldName('value');
+    if (isDefault && value?.type === 'identifier') {
+      add(value.text, 'default');
+      continue;
+    }
+    for (const clause of statement.namedChildren) {
+      if (clause.type !== 'export_clause') continue;
+      for (const specifier of clause.namedChildren) {
+        if (specifier.type !== 'export_specifier') continue;
+        const name = specifier.childForFieldName('name');
+        add(name?.text, (specifier.childForFieldName('alias') ?? name)?.text);
+      }
+    }
+  }
+  return exportedAs;
 }
 
 /**
@@ -547,6 +789,10 @@ function indexClassesByName(root: Parser.SyntaxNode): Map<string, Parser.SyntaxN
  * decorated, with no route at all when it is not — and an accessor of the same
  * name hides it as well. `redeclared` carries those names up the chain, and
  * the walk ends at the first class whose names cannot all be read.
+ *
+ * Returns where the chain LEAVES the file, when it does: the name it extends
+ * next, which no class of this file declares, and the names redeclared so far.
+ * Another file has to supply that class; this one cannot say more.
  */
 function collectInheritedRoutes(
   controller: Parser.SyntaxNode,
@@ -555,7 +801,7 @@ function collectInheritedRoutes(
   lineOffset: number,
   out: ExtractedDecoratorRoute[],
   classes: () => ReadonlyMap<string, Parser.SyntaxNode | null>,
-): void {
+): { baseName: string; redeclared: ReadonlySet<string> } | undefined {
   const redeclared = new Set<string>();
   // A chain that loops (`A extends B`, `B extends A`) cannot run, but the
   // indexer still has to finish on it. Classes are told apart by position.
@@ -564,12 +810,13 @@ function collectInheritedRoutes(
   let current = controller;
   for (;;) {
     const baseName = extendedClassName(current);
-    if (baseName === null) return;
+    if (baseName === null) return undefined;
     const base = classes().get(baseName);
-    if (!base || walked.has(base.startIndex)) return;
-    walked.add(base.startIndex);
+    if (base === null || (base !== undefined && walked.has(base.startIndex))) return undefined;
 
-    if (!addPrototypeNames(current, redeclared)) return;
+    if (!addPrototypeNames(current, redeclared)) return undefined;
+    if (base === undefined) return { baseName, redeclared };
+    walked.add(base.startIndex);
     collectClassRoutes(base, prefix, filePath, lineOffset, out, redeclared);
     current = base;
   }
