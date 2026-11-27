@@ -32,6 +32,7 @@ import {
   getBackendUrl,
   runQuery as backendRunQuery,
   search as backendSearch,
+  searchWithMetadata as backendSearchWithMetadata,
   grep as backendGrep,
   readFile as backendReadFile,
   startEmbeddings as backendStartEmbeddings,
@@ -44,6 +45,7 @@ import {
   type ConnectResult,
   type GrepOptions,
   type JobProgress,
+  type SearchOptions,
 } from '../services/backend-client';
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import i18n from '../i18n';
@@ -690,7 +692,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
         const backend = {
           executeQuery,
-          search: (query: string, opts?: any) => backendSearch(query, { ...opts, repo }),
+          search: (query: string, opts?: SearchOptions) =>
+            backendSearchWithMetadata(query, { ...opts, repo }),
           grep: (pattern: string, limit?: number, opts?: GrepOptions) =>
             backendGrep(pattern, repo, limit, opts),
           readFile: (filePath: string) =>
