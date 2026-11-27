@@ -138,6 +138,7 @@ import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 import { extractToolDefinitions } from './typescript/tool-definitions.js';
 import { typescriptRenameProvider } from './typescript/rename.js';
+import { shebangClassifier } from './shebang.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
@@ -484,6 +485,8 @@ export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   rename: typescriptRenameProvider,
   extensions: ['.ts', '.tsx', '.mts', '.cts'],
+  // Extensionless scripts run by this interpreter (#2707).
+  ...shebangClassifier(/^(ts-node|tsx)$/),
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {
@@ -588,6 +591,8 @@ export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
   rename: typescriptRenameProvider,
   extensions: ['.js', '.jsx', '.mjs', '.cjs'],
+  // Extensionless scripts run by this interpreter (#2707).
+  ...shebangClassifier(/^(node|nodejs)$/),
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {

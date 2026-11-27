@@ -117,6 +117,13 @@ Ruby, Rust, Swift, TypeScript, Vue and Zig have registered providers. Support
 varies by construct; see the [language inventories](docs/languages/README.md)
 for measured behavior, exclusions and remaining gaps.
 
+Files without an extension are parsed when their first line is a shebang for a
+supported interpreter (`python`/`python3`/`pypy`, `node`, `ts-node`/`tsx`,
+`ruby`, `php`, `Rscript`), directly or through `env`. Shell scripts, other
+interpreters and `deno`/`bun` (which run both JavaScript and TypeScript) are not
+claimed, and a shebang never overrides an extension or a filename such as
+`Rakefile`.
+
 R (experimental) also has a registered provider (`.r` / `.R`, parsed with
 `@eagleoutice/tree-sitter-r`): functions, S4, R6 and RefClass classes with their
 methods and fields, `library()` / `require()` / `source()` imports to local

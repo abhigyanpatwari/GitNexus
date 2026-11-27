@@ -46,6 +46,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { phpCallConfig } from '../call-extractors/configs/php.js';
+import { shebangClassifier } from './shebang.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -269,6 +270,8 @@ export const phpProvider = defineLanguage({
   rename: phpRenameProvider,
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
+  // Extensionless scripts run by this interpreter (#2707).
+  ...shebangClassifier(/^php(\d+(\.\d+)?)?$/),
   entryPointPatterns: [
     /Controller$/,
     /^handle$/,

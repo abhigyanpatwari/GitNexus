@@ -28,6 +28,7 @@ import {
 import { isRNonNamingArgumentCapture } from './r/naming-argument.js';
 import { createRCfgVisitor } from '../cfg/visitors/r.js';
 import { rRenameProvider } from './r/rename.js';
+import { shebangClassifier } from './shebang.js';
 
 const R_BUILT_INS: ReadonlySet<string> = new Set([
   // Base R
@@ -183,6 +184,8 @@ const R_BUILT_INS: ReadonlySet<string> = new Set([
 export const rProvider = defineLanguage({
   id: SupportedLanguages.R,
   extensions: ['.R', '.r'],
+  // Extensionless scripts run by this interpreter (#2707).
+  ...shebangClassifier(/^Rscript$/),
   entryPointPatterns: [],
   astFrameworkPatterns: [],
   treeSitterQueries: R_QUERIES,

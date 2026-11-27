@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { classifyContentLanguages } from '../../src/core/ingestion/content-language-classification.js';
-import { getLanguageForFileContent } from '../../src/core/ingestion/languages/index.js';
+import {
+  getLanguageForFileContent,
+  needsContentLanguageClassification,
+} from '../../src/core/ingestion/languages/index.js';
 
 describe('content language classification', () => {
   let repoDir = '';
@@ -66,5 +69,47 @@ describe('content language classification', () => {
     expect(getLanguageForFileContent('Gemfile', 'source "https://rubygems.org"\n')).toBe(
       SupportedLanguages.Ruby,
     );
+  });
+
+  it('classifies extensionless scripts by their shebang interpreter', () => {
+    const cases: Array<[string, string, SupportedLanguages | null]> = [
+      ['scripts/deploy', '#!/usr/bin/env python3\nprint(1)\n', SupportedLanguages.Python],
+      ['scripts/legacy', '#!/usr/bin/python2.7\n', SupportedLanguages.Python],
+      ['scripts/fast', '#!/usr/bin/env -S python3 -u\n', SupportedLanguages.Python],
+      ['scripts/env', '#!/usr/bin/env PYTHONPATH=. python3\n', SupportedLanguages.Python],
+      ['bin/release', '#!/usr/bin/env node\nconsole.log(1);\n', SupportedLanguages.JavaScript],
+      ['bin/codegen', '#!/usr/bin/env tsx\n', SupportedLanguages.TypeScript],
+      ['bin/migrate', '#!/usr/bin/env ruby\n', SupportedLanguages.Ruby],
+      ['bin/console', '#!/usr/bin/env php\n<?php echo 1;\n', SupportedLanguages.PHP],
+      ['bin/report', '#!/usr/bin/env Rscript\n', SupportedLanguages.R],
+    ];
+    for (const [filePath, content, language] of cases) {
+      expect(getLanguageForFileContent(filePath, content), filePath).toBe(language);
+    }
+  });
+
+  it('leaves scripts alone when the shebang does not name a supported interpreter', () => {
+    expect(getLanguageForFileContent('scripts/setup', '#!/bin/bash\necho hi\n')).toBeNull();
+    expect(getLanguageForFileContent('scripts/run', '#!/usr/bin/env deno\n')).toBeNull();
+    expect(getLanguageForFileContent('scripts/empty', '#!\n')).toBeNull();
+    expect(getLanguageForFileContent('scripts/notes', 'python3 is mentioned here\n')).toBeNull();
+    // Only the first line counts.
+    expect(getLanguageForFileContent('scripts/doc', '\n#!/usr/bin/env python3\n')).toBeNull();
+  });
+
+  it('never lets a shebang override an extension or a filename language', () => {
+    expect(getLanguageForFileContent('tool.sh', '#!/usr/bin/env python3\n')).toBeNull();
+    expect(getLanguageForFileContent('tool.rb', '#!/usr/bin/env python3\n')).toBe(
+      SupportedLanguages.Ruby,
+    );
+    expect(getLanguageForFileContent('Rakefile', '#!/usr/bin/env python3\n')).toBe(
+      SupportedLanguages.Ruby,
+    );
+  });
+
+  it('reads only extensionless scripts for shebang classification', () => {
+    expect(needsContentLanguageClassification('scripts/deploy')).toBe(true);
+    expect(needsContentLanguageClassification('scripts/deploy.py')).toBe(false);
+    expect(needsContentLanguageClassification('Gemfile')).toBe(false);
   });
 });

@@ -48,6 +48,7 @@ import { assertCloneable } from '../workers/clone-safety.js';
 import { collectPythonCaptureSideChannel } from './python/module-accessors.js';
 import { pythonRenameProvider } from './python/rename.js';
 import { synthesizePythonInstanceFields } from './python/instance-fields.js';
+import { shebangClassifier } from './shebang.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -224,6 +225,8 @@ export const pythonProvider = defineLanguage({
   // Notebook captures map JSON rows but retain extracted Python columns.
   referenceSourceText: (_text, filePath) => (isNotebookFilename(filePath) ? null : undefined),
   extensions: ['.py', '.ipynb'],
+  // Extensionless scripts run by this interpreter (#2707).
+  ...shebangClassifier(/^(python([23](\.\d+)?)?|pypy3?)$/),
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [
     {

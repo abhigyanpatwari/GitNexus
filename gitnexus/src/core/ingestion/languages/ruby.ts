@@ -41,6 +41,7 @@ import {
   interpretRubyImport,
   interpretRubyTypeBinding,
 } from './ruby/index.js';
+import { shebangClassifier } from './shebang.js';
 
 /**
  * Ruby label override. Applied to:
@@ -180,6 +181,8 @@ export const rubyProvider = defineLanguage({
   rename: rubyRenameProvider,
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
+  // Extensionless scripts run by this interpreter (#2707).
+  ...shebangClassifier(/^(ruby|jruby)$/),
   entryPointPatterns: [/^call$/, /^perform$/, /^execute$/],
   astFrameworkPatterns: [
     {
