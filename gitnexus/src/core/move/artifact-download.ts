@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { rename, rm } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { open, rename, rm, type FileHandle } from 'node:fs/promises';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { get as httpsGet, type RequestOptions } from 'node:https';
 import { Transform } from 'node:stream';
@@ -185,10 +185,20 @@ export const downloadToFile = async (
   }
 };
 
-export const sha256File = async (file: string): Promise<string> => {
+export const sha256FileHandle = async (handle: FileHandle): Promise<string> => {
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  // autoClose: false — the caller owns the handle and closes it.
+  for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
   return hash.digest('hex');
+};
+
+export const sha256File = async (file: string): Promise<string> => {
+  const handle = await open(file, 'r');
+  try {
+    return await sha256FileHandle(handle);
+  } finally {
+    await handle.close();
+  }
 };
 
 export const expectedSha = (sumsText: string, assetName: string): string | null => {
