@@ -487,6 +487,8 @@ program
     '--lang <lang>',
     'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
   )
+  .option('--retry-failed', 'Regenerate only modules that failed in the previous run')
+  .option('--include-failed-details', 'Include error details in the failed modules log')
   .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
