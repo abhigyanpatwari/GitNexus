@@ -269,6 +269,17 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not suppress after a same-statement comma rebinding before the sink', () => {
+    // Rebind and sink share one program point — text order must invalidate.
+    const { flows } = analyze(`
+      function f(req: any, other: any) {
+        if (!isValidHostName(req.body)) return;
+        (req = other, exec(req.body));
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('barrier kill records only the suppressed sink kind', () => {
     const { flows } = analyze(`
       function f(req: any) {

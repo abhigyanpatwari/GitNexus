@@ -611,7 +611,9 @@ export function computeTaintFlows(
       memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint, sinkSiteIndex)
     )
       return false;
-    if (subjectBindingAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
+    if (
+      subjectBindingAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint, sinkSiteIndex)
+    )
       return false;
     // Record only the suppressed sink kind — not KIND_ORDER (validators are
     // not kind-blind sanitizers of every sink class).

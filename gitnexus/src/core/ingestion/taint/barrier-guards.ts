@@ -551,36 +551,6 @@ function statementDefines(
 }
 
 /**
- * True when the subject object binding is redefined on the validated branch
- * before the sink (`req = other` after validating `req.body`).
- */
-export function subjectBindingAssignedOnValidatedPath(
-  cfg: FunctionCfg,
-  index: BarrierGuardIndex,
-  controller: BarrierController,
-  sinkPoint: ProgramPoint,
-): boolean {
-  const b = controller.subjectBinding;
-  for (const blockIndex of validatedRegionBlocks(index, controller)) {
-    const block = cfg.blocks[blockIndex];
-    const stmts = block?.statements;
-    if (!stmts) continue;
-    if (block.index === sinkPoint.blockIndex) {
-      for (let i = 0; i < sinkPoint.stmtIndex && i < stmts.length; i++) {
-        if (statementDefines(stmts[i], b)) return true;
-      }
-      continue;
-    }
-    if (blockMayPrecedeSink(block, sinkPoint)) {
-      for (const stmt of stmts) {
-        if (statementDefines(stmt, b)) return true;
-      }
-    }
-  }
-  return false;
-}
-
-/**
  * Index of the *sink* call in `block.text` (not merely the first call).
  * Prefers `call.at` when present; otherwise the nth same-callee occurrence
  * matching `sinkSiteIndex` among this statement's call sites.
@@ -629,6 +599,58 @@ function sinkCallTextIndex(
     seen++;
   }
   return -1;
+}
+
+/**
+ * True when the subject object binding is redefined on the validated branch
+ * before the sink (`req = other` after validating `req.body`).
+ *
+ * Same-statement comma / sequence forms (`(req = other, exec(req.body))`)
+ * share one program point — compare bare-binding assign vs sink-call text
+ * order (mirrors {@link memberPropertyAssignedOnValidatedPath}).
+ */
+export function subjectBindingAssignedOnValidatedPath(
+  cfg: FunctionCfg,
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+  sinkPoint: ProgramPoint,
+  sinkSiteIndex?: number,
+): boolean {
+  const b = controller.subjectBinding;
+  const receiver = cfg.bindings?.[b]?.name;
+  const escapedRecv = receiver?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Bare binding assign only — `req.body =` / `req[k] =` are member writes.
+  const assignOp = '(?:\\+|-|\\*|\\/|%|\\*\\*|<<|>>>|>>|&|\\||\\^|&&|\\|\\||\\?\\?)?=(?!=)';
+  const assignRe =
+    escapedRecv !== undefined
+      ? new RegExp(`(?<![A-Za-z0-9_$])${escapedRecv}\\s*${assignOp}`)
+      : null;
+
+  for (const blockIndex of validatedRegionBlocks(index, controller)) {
+    const block = cfg.blocks[blockIndex];
+    const stmts = block?.statements;
+    if (!stmts) continue;
+    if (block.index === sinkPoint.blockIndex) {
+      for (let i = 0; i < sinkPoint.stmtIndex && i < stmts.length; i++) {
+        if (statementDefines(stmts[i], b)) return true;
+      }
+      // Same statement: rebind and sink share one point (comma / sequence).
+      if (sinkSiteIndex !== undefined && assignRe && block.text) {
+        const assignIdx = block.text.search(assignRe);
+        if (assignIdx >= 0) {
+          const sinkIdx = sinkCallTextIndex(block, sinkPoint, sinkSiteIndex);
+          if (sinkIdx < 0 || assignIdx < sinkIdx) return true;
+        }
+      }
+      continue;
+    }
+    if (blockMayPrecedeSink(block, sinkPoint)) {
+      for (const stmt of stmts) {
+        if (statementDefines(stmt, b)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
