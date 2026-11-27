@@ -58,7 +58,8 @@ function analyze(
   const repoProto =
     opts?.repoProtoGuards ?? (opts?.extraCfgs ? discoverProtoGuardRefs(opts.extraCfgs) : undefined);
   const excludeBarrierCallees =
-    opts?.excludeBarrierCallees ?? resolveBarrierExclusions(cfgs, importsFor(code), repoProto);
+    opts?.excludeBarrierCallees ??
+    resolveBarrierExclusions(cfgs, importsFor(code), repoProto, cfg.filePath);
   return {
     cfg,
     flows: computeTaintFlows(
@@ -673,10 +674,48 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     ];
     expect(repo.some((r) => r.name === 'isValidKey' && r.filePath === 'proto.ts')).toBe(true);
     expect(repo.some((r) => r.filePath === 'validators.ts')).toBe(false);
-    const excluded = resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo);
+    const excluded = resolveBarrierExclusions(
+      cfgsOf(caller),
+      importsFor(caller),
+      repo,
+      'fixture.ts',
+    );
     expect([...excluded]).not.toContain('isValidKey');
     const { flows } = analyze(caller, 0, { repoProtoGuards: repo });
     expect(flows.findings).toHaveLength(0);
+  });
+
+  it('resolves relative proto imports against the importing file path', () => {
+    const proto = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const caller = `
+      import { isValidKey } from './guards';
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const repo = [
+      ...discoverProtoGuardRefs(withFilePath(cfgsOf(proto), 'current/guards.ts')),
+      ...discoverProtoGuardRefs(withFilePath(cfgsOf(proto), 'other/guards.ts')),
+    ];
+    const fromCurrent = resolveBarrierExclusions(
+      withFilePath(cfgsOf(caller), 'current/app.ts'),
+      importsFor(caller),
+      repo,
+      'current/app.ts',
+    );
+    expect([...fromCurrent]).toContain('isValidKey');
+    const fromOther = resolveBarrierExclusions(
+      withFilePath(cfgsOf(caller), 'elsewhere/app.ts'),
+      importsFor(caller),
+      repo,
+      'elsewhere/app.ts',
+    );
+    expect([...fromOther]).not.toContain('isValidKey');
   });
 
   it('does not kind-blind suppress imported proto-only isValidKey from another file', () => {
@@ -716,7 +755,12 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     `;
     const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
     const repo = discoverProtoGuardRefs(helperCfgs);
-    const excluded = resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo);
+    const excluded = resolveBarrierExclusions(
+      cfgsOf(caller),
+      importsFor(caller),
+      repo,
+      'fixture.ts',
+    );
     expect([...excluded]).toContain('guards.isValidKey');
     expect([...excluded]).not.toContain('isValidKey');
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
@@ -767,7 +811,12 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       ...discoverProtoGuardRefs(withFilePath(cfgsOf(protoA), 'a/helpers.ts')),
       ...discoverProtoGuardRefs(withFilePath(cfgsOf(protoB), 'b/helpers.ts')),
     ];
-    const excluded = resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo);
+    const excluded = resolveBarrierExclusions(
+      cfgsOf(caller),
+      importsFor(caller),
+      repo,
+      'fixture.ts',
+    );
     expect([...excluded]).not.toContain('isValidKey');
   });
 
@@ -788,9 +837,9 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
     const repo = discoverProtoGuardRefs(helperCfgs);
     expect(repo.some((r) => r.name === 'isValidKey')).toBe(true);
-    expect([...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo)]).toContain(
-      'isValidHostName',
-    );
+    expect([
+      ...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo, 'fixture.ts'),
+    ]).toContain('isValidHostName');
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
     expect(flows.kills).toHaveLength(0);
@@ -820,9 +869,10 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
   });
 
   it('decodes unicode escapes in computed member-assigned proto guards', () => {
-    const code = `
+    for (const prop of ['isValid\\u004bey', 'isValid\\u{4b}ey']) {
+      const code = `
       const validators: any = {};
-      validators["isValid\\u004bey"] = function helper(key: string) {
+      validators["${prop}"] = function helper(key: string) {
         return key !== "__proto__" && key !== "constructor";
       };
       function write(req: any) {
@@ -830,15 +880,16 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         exec(req.body);
       }
     `;
-    const cfgs = cfgsOf(code);
-    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
-    expect(cfgs.some((c) => (c.functionName ?? '').includes('u004b'))).toBe(false);
-    const { flows } = analyze(
-      code,
-      cfgs.findIndex((c) => c.functionName === 'write'),
-    );
-    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
-    expect(flows.kills).toHaveLength(0);
+      const cfgs = cfgsOf(code);
+      expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+      expect(cfgs.some((c) => /u0?04b|u\{/i.test(c.functionName ?? ''))).toBe(false);
+      const { flows } = analyze(
+        code,
+        cfgs.findIndex((c) => c.functionName === 'write'),
+      );
+      expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+      expect(flows.kills).toHaveLength(0);
+    }
   });
 
   it('suppresses when isValidKey vouchers the value (not proto-only)', () => {

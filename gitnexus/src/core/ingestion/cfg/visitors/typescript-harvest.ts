@@ -1325,6 +1325,21 @@ function decodeJsStringLiteral(raw: string): string | undefined {
     }
     const next = raw[i + 1];
     if (next === undefined) return undefined;
+    // \u{1F600} code-point form (must precede fixed-width \uXXXX).
+    if (next === 'u' && raw[i + 2] === '{') {
+      const end = raw.indexOf('}', i + 3);
+      if (end > i + 3) {
+        const hex = raw.slice(i + 3, end);
+        if (/^[0-9a-fA-F]{1,6}$/.test(hex)) {
+          const cp = parseInt(hex, 16);
+          if (cp <= 0x10ffff) {
+            out += String.fromCodePoint(cp);
+            i = end;
+            continue;
+          }
+        }
+      }
+    }
     if (next === 'u' && /^[0-9a-fA-F]{4}/.test(raw.slice(i + 2, i + 6))) {
       out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16));
       i += 5;

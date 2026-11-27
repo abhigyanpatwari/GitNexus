@@ -197,7 +197,9 @@ export function emitFileTaint(
   const maxHops = limits?.maxHops ?? DEFAULT_PDG_MAX_TAINT_HOPS;
   const maxFacts = limits?.maxFacts ?? DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION;
   // Proto-reject helpers (even if named isValid*) must not KIND_ORDER-suppress.
-  const excluded = resolveBarrierExclusions(cfgs, parsedImports, repoProtoGuards);
+  // Resolve relative imports against this file's path (parsed or CFG anchor).
+  const importerFilePath = parsed?.filePath ?? cfgs.find((c) => c.filePath)?.filePath;
+  const excluded = resolveBarrierExclusions(cfgs, parsedImports, repoProtoGuards, importerFilePath);
   const barrierOptions = excluded.size > 0 ? { excludeBarrierCallees: excluded } : undefined;
 
   // Defensive cross-CFG id guard: finding identity is unique WITHIN a

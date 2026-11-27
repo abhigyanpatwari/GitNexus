@@ -192,28 +192,69 @@ export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): Readonl
   return new Set(discoverProtoGuardRefs(cfgs).map((r) => r.name));
 }
 
-/**
- * Relative import target may resolve to this file (exact or path-suffix).
- * No bare-basename fallback — `a/helpers.ts` and `b/helpers.ts` must not
- * both match `./helpers` via basename alone.
- */
-function importTargetMatchesFile(targetRaw: string, filePath: string): boolean {
-  const stripExt = (s: string): string => s.replace(/\.(tsx?|jsx?|mjs|cjs)$/i, '');
-  const target = stripExt(targetRaw.replace(/^\.\//, '').replace(/\\/g, '/'));
-  const file = stripExt(filePath.replace(/\\/g, '/'));
-  if (target.length === 0) return false;
-  return file === target || file.endsWith(`/${target}`);
+const stripModuleExt = (s: string): string => s.replace(/\.(tsx?|jsx?|mjs|cjs)$/i, '');
+
+function dirnamePosix(filePath: string): string {
+  const n = filePath.replace(/\\/g, '/');
+  const i = n.lastIndexOf('/');
+  return i < 0 ? '' : n.slice(0, i);
 }
 
 /**
- * Unique file among `candidates` that matches `targetRaw`, or undefined when
- * none / ambiguous (multiple same-suffix modules).
+ * Resolve a relative import specifier against the importing file's directory
+ * (`current/app.ts` + `./guards` → `current/guards`). Non-relative targets
+ * (bare package names) return the stripped specifier as-is.
+ */
+export function resolveImportTargetFromImporter(
+  importerFilePath: string,
+  targetRaw: string,
+): string {
+  const target = targetRaw.replace(/\\/g, '/');
+  if (!target.startsWith('./') && !target.startsWith('../')) {
+    return stripModuleExt(target);
+  }
+  const dir = dirnamePosix(importerFilePath);
+  const parts = [...(dir ? dir.split('/') : []), ...target.split('/')];
+  const stack: string[] = [];
+  for (const p of parts) {
+    if (p === '' || p === '.') continue;
+    if (p === '..') {
+      if (stack.length > 0) stack.pop();
+      continue;
+    }
+    stack.push(p);
+  }
+  return stripModuleExt(stack.join('/'));
+}
+
+/**
+ * Relative import target resolves to this file from `importerFilePath`.
+ * `./guards` from `current/app.ts` matches `current/guards.ts`, not
+ * `other/guards.ts`. Non-relative targets require an exact stripped match.
+ */
+function importTargetMatchesFile(
+  targetRaw: string,
+  filePath: string,
+  importerFilePath: string,
+): boolean {
+  const file = stripModuleExt(filePath.replace(/\\/g, '/'));
+  const resolved = resolveImportTargetFromImporter(importerFilePath, targetRaw);
+  if (resolved.length === 0 || file.length === 0) return false;
+  return file === resolved;
+}
+
+/**
+ * Unique file among `candidates` that matches `targetRaw` from the importer,
+ * or undefined when none / ambiguous.
  */
 function uniqueFileForImportTarget(
   targetRaw: string,
   candidates: readonly string[],
+  importerFilePath: string,
 ): string | undefined {
-  const hits = [...new Set(candidates.filter((f) => importTargetMatchesFile(targetRaw, f)))];
+  const hits = [
+    ...new Set(candidates.filter((f) => importTargetMatchesFile(targetRaw, f, importerFilePath))),
+  ];
   return hits.length === 1 ? hits[0] : undefined;
 }
 
@@ -234,21 +275,24 @@ export function calleeIsExcludedBarrier(
 
 /**
  * Per-file barrier exclusions: same-file proto-reject helpers, plus repo
- * proto helpers this file imports from a *uniquely matching* module
- * (named/alias local names; namespace as `ns.name` only).
+ * proto helpers this file imports from a module resolved relative to
+ * `importerFilePath` (named/alias local names; namespace as `ns.name` only).
  */
 export function resolveBarrierExclusions(
   localCfgs: readonly FunctionCfg[],
   imports: readonly ParsedImport[],
   repoProtoGuards?: readonly ProtoGuardRef[],
+  importerFilePath?: string,
 ): ReadonlySet<string> {
   const out = new Set(discoverProtoGuardCallees(localCfgs));
   if (!repoProtoGuards || repoProtoGuards.length === 0) return out;
+  const importer = importerFilePath ?? localCfgs.find((c) => c.filePath)?.filePath ?? '';
+  if (!importer) return out;
   const candidateFiles = repoProtoGuards.map((r) => r.filePath);
   for (const imp of imports) {
     if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') continue;
     if (imp.typeOnly === true) continue;
-    const file = uniqueFileForImportTarget(imp.targetRaw, candidateFiles);
+    const file = uniqueFileForImportTarget(imp.targetRaw, candidateFiles, importer);
     if (!file) continue;
     if (imp.kind === 'named' || imp.kind === 'alias') {
       const imported = imp.importedName;
