@@ -2184,6 +2184,13 @@ export interface ScopeResolver {
   readonly stripReceiverCastExpressions?: boolean;
 
   /**
+   * Optional: with `stripReceiverCastExpressions`, a cast whose target type names no
+   * class resolves nothing, rather than the operand's own declared type. Default
+   * `false`.
+   */
+  readonly unresolvedCastTargetResolvesNothing?: boolean;
+
+  /**
    * Optional: detect structural (duck-typing) interface implementations.
    * Languages like Go use structural typing — a struct satisfies an
    * interface if its method set is a superset, without an explicit

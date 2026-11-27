@@ -225,6 +225,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'reportedUnboundReceiverNames'
   | 'hoistedTypeBindingsRequireOwner'
   | 'stripReceiverCastExpressions'
+  | 'unresolvedCastTargetResolvesNothing'
   | 'constructionSyntax'
   | 'isTypeApplicationCall'
   | 'stripTypePreservingDecoration'
@@ -1106,6 +1107,7 @@ function emitReceiverBoundCallsInPass(
     lookupOwnedMethods: (ownerId: string, memberName: string) =>
       model.methods.lookupAllByOwner(ownerId, memberName),
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
+    unresolvedCastTargetResolvesNothing: provider.unresolvedCastTargetResolvesNothing === true,
     constructionSyntax: provider.constructionSyntax,
     isTypeApplicationCall: provider.isTypeApplicationCall,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,

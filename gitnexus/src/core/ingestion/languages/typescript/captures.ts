@@ -55,6 +55,7 @@ import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captur
 import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
 import { synthesizeTsLocalImports } from './local-loaders.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { unwrapTransparentReceiver } from '../../utils/call-analysis.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -361,6 +362,27 @@ function findSelfOrAncestorOfType(node: SyntaxNode | undefined, type: string): S
     current = current.parent;
   }
   return null;
+}
+
+/**
+ * Receiver text in the `(Type) operand` shape for a TypeScript cast whose target is
+ * a plain type name: `x as Svc` and `<Svc>x`. `undefined` for anything else
+ * (`as const`, `as unknown`, generic, qualified or array targets, `satisfies`).
+ */
+function castReceiverText(node: SyntaxNode): string | undefined {
+  let typeNode: SyntaxNode | undefined | null;
+  let operand: SyntaxNode | undefined | null;
+  if (node.type === 'as_expression') {
+    operand = node.namedChildren.find((c) => c !== null);
+    typeNode = node.namedChildren[node.namedChildren.length - 1];
+  } else if (node.type === 'type_assertion') {
+    typeNode = node.namedChildren.find((c) => c?.type === 'type_arguments')?.namedChildren[0];
+    operand = node.namedChildren[node.namedChildren.length - 1];
+  } else {
+    return undefined;
+  }
+  if (!operand || !typeNode || typeNode.type !== 'type_identifier') return undefined;
+  return `(${typeNode.text}) ${unwrapTransparentReceiver(operand).text}`;
 }
 
 /** Walks the parent chain from `node` (inclusive), returning the first node
@@ -732,6 +754,25 @@ export function emitTsScopeCaptures(
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
     addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
+    // A receiver that is only a transparent wrapper around a bare name (`s!.run()`,
+    // `(s).run()`) carries the wrapper in its text, so the text lookup finds no
+    // binding named `s!`. The chain synthesizer mints nothing for a wrapper with no
+    // chain steps, so hand the resolver the operand's text instead.
+    const receiverNode = groupedNodes['@reference.receiver'];
+    if (receiverNode !== undefined && receiverNode !== null) {
+      const operand = unwrapTransparentReceiver(receiverNode);
+      // `(x as Svc).run()` / `(<Svc>x).run()`: the cast names the receiver's type, so
+      // hand the resolver the `(Svc) x` shape its cast peeler reads. Only a plain
+      // type name is rewritten; any other target leaves the receiver text unchanged.
+      const receiverText = castReceiverText(operand) ?? operand.text;
+      if (receiverText !== receiverNode.text && grouped['@reference.receiver'] !== undefined) {
+        grouped['@reference.receiver'] = syntheticCapture(
+          '@reference.receiver',
+          receiverNode,
+          receiverText,
+        );
+      }
+    }
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 

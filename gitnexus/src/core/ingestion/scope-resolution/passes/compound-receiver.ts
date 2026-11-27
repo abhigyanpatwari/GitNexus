@@ -150,6 +150,12 @@ interface ResolveCompoundReceiverOptions {
    *  `ScopeResolver` contract toggle of the same name for the
    *  classifier grammar and per-language opt-in rules. */
   readonly stripReceiverCastExpressions?: boolean;
+  /**
+   * With `stripReceiverCastExpressions`: when a cast's target type names no class,
+   * resolve nothing instead of falling back to the operand's own declared type.
+   * The cast replaces that type, so the fallback would guess. Default `false`.
+   */
+  readonly unresolvedCastTargetResolvesNothing?: boolean;
   /** Surface syntax this language uses to construct a value, so an
    *  inline constructor receiver can be typed. Derived from the contract
    *  rather than re-declared, so a future sub-field cannot be added there
@@ -1277,6 +1283,7 @@ export function resolveCompoundReceiverClass(
         purpose: 'value',
       });
       if (cls !== undefined) return cls;
+      if (options.unresolvedCastTargetResolvesNothing === true) return undefined;
     }
   }
 
