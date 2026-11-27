@@ -696,6 +696,21 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toBeUndefined();
   });
 
+  it('a throw inside a caught try still guards the rest of that try body', () => {
+    const source = `<?php
+try {
+  if ($x) throw new Exception();
+  require __DIR__ . '/../routes/web.php';
+} catch (Throwable $e) {}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once)?.unguarded).toBe(false);
+    expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
   it('a type-restricted catch does not treat a throw as handled', () => {
     const source = `<?php
 try { throw new RuntimeException(); } catch (Error $e) {}

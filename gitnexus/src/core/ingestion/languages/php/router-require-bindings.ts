@@ -227,11 +227,10 @@ function collectMayExit(root: SyntaxNode): Set<number> {
       continue;
     }
     if (HARD_EXIT_NODE_TYPES.has(frame.node.type)) {
-      if (frame.node.type === 'throw_expression' && throwIsDefinitelyCaught(frame.node)) {
-        continue;
-      }
       mayExit.add(frame.node.id);
-      hard.add(frame.node.id);
+      if (!(frame.node.type === 'throw_expression' && throwIsDefinitelyCaught(frame.node))) {
+        hard.add(frame.node.id);
+      }
       continue;
     }
     let childHard = false;
@@ -244,7 +243,11 @@ function collectMayExit(root: SyntaxNode): Set<number> {
     if (childHard) {
       mayExit.add(frame.node.id);
       hard.add(frame.node.id);
-    } else if (childLocal && !LOOP_OR_SWITCH_TYPES.has(frame.node.type)) {
+    } else if (
+      childLocal &&
+      !LOOP_OR_SWITCH_TYPES.has(frame.node.type) &&
+      !(frame.node.type === 'try_statement' && tryCatchesAllThrows(frame.node))
+    ) {
       mayExit.add(frame.node.id);
     }
   }
