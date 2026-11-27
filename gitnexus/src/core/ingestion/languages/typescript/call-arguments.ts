@@ -21,7 +21,11 @@ import {
 } from '../../scope-resolution/scope/walkers.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
-import { overloadNameTable, receiverTypeIsOutOfScope } from './global-declarations.js';
+import {
+  callStrictNullChecks,
+  overloadNameTable,
+  receiverTypeIsOutOfScope,
+} from './global-declarations.js';
 import {
   acceptsArgumentEvidence,
   callRangeKey,
@@ -66,6 +70,10 @@ const primitiveTypes = new Set([
   'null',
   'undefined',
 ]);
+
+function isNullish(type: string): boolean {
+  return type === 'null' || type === 'undefined';
+}
 
 /** Join worker facts after imports and their local aliases have been bound. */
 export function indexTsCallArguments(
@@ -351,6 +359,7 @@ function fixedPrimitiveTuple(spelling?: string): string[] | undefined {
 function acceptsPrimitiveArguments(
   signature: SymbolDefinition,
   types: string[],
+  strictNullChecks: boolean,
   indexes: ScopeResolutionIndexes,
   evidence?: readonly (ArgumentEvidence | null)[],
   enumArguments?: ReadonlyMap<number, NonNullable<ReturnType<typeof enumArgument>>>,
@@ -409,8 +418,26 @@ function acceptsPrimitiveArguments(
   for (const [i, type] of types.entries()) {
     const annotation = annotations[i] ?? restElement;
     if (annotation === undefined) return undefined;
-    if (annotation.startsWith('[') && primitiveTypes.has(type) && fixedPrimitiveTuple(annotation))
+    const looseNull = !strictNullChecks && isNullish(type);
+    if (
+      type === 'undefined' &&
+      i >= (signature.requiredParameterCount ?? Infinity) &&
+      signature.parameterCount !== undefined
+    )
+      continue;
+    if (annotation.startsWith('[') && primitiveTypes.has(type) && fixedPrimitiveTuple(annotation)) {
+      if (looseNull) continue;
       return false;
+    }
+    if (
+      looseNull &&
+      (isLiteralParameter(annotation) ||
+        annotation === 'object' ||
+        annotation === 'void' ||
+        /^\{[^{}]*\}$/u.test(annotation) ||
+        /^\([^()]*\)\s*=>/u.test(annotation))
+    )
+      continue;
     const enumValue = enumArguments?.get(i);
     const checked = enumValue
       ? acceptsEnum(annotation, enumValue, signature, scope.id, indexes)
@@ -437,7 +464,12 @@ function acceptsPrimitiveArguments(
       unknown = true;
       continue;
     }
-    if (alternatives.some((part) => part === type || part === 'unknown' || part === 'any'))
+    if (
+      alternatives.some(
+        (part) =>
+          part === type || part === 'unknown' || part === 'any' || (looseNull && part !== 'never'),
+      )
+    )
       continue;
     return false;
   }
@@ -484,7 +516,10 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
     );
     if (methods.length) return resolveTsOverloadSet(methods, site, indexes, declarations);
   }
-  if ((!argumentsByCall.has(site) && !evidenceByCall.has(site)) || !site.argumentTypes)
+  if (
+    !site.argumentTypes ||
+    (!argumentsByCall.has(site) && !evidenceByCall.has(site) && !site.argumentTypes.some(isNullish))
+  )
     return undefined;
   let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
   if (!methods.length) {
@@ -498,7 +533,9 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   const signatures = methods.filter((def) => def.isOverloadSignature);
   // Static and instance overload families can share an owner and a spelling.
   if (signatures.length < 2 || methods.length - signatures.length > 1) return undefined;
-  const selected = selectTsPrimitiveOverload(signatures, site, indexes);
+  const selected = selectProjectOverload(signatures, site, indexes);
+  if (selected === 'project-dependent')
+    return { kind: 'unknown', candidateIds: signatures.map((sig) => sig.nodeId) };
   if (selected) return { kind: 'resolved', definition: selected };
   if (selected === null)
     return { kind: 'inapplicable', candidateIds: signatures.map((sig) => sig.nodeId) };
@@ -513,7 +550,9 @@ export function resolveTsOverloadSet(
   indexes: ScopeResolutionIndexes,
   declarations?: ReadonlyMap<string, number>,
 ): ReceiverMemberResolution {
-  const selected = selectTsPrimitiveOverload(signatures, site, indexes, declarations);
+  const selected = selectProjectOverload(signatures, site, indexes, declarations);
+  if (selected === 'project-dependent')
+    return { kind: 'unknown', candidateIds: signatures.map((sig) => sig.nodeId) };
   if (selected) return { kind: 'resolved', definition: selected };
   const spread = hasSpreadArguments(site);
   let candidates: readonly SymbolDefinition[] = [];
@@ -532,13 +571,23 @@ export function resolveTsOverloadSet(
   };
 }
 
-/** Null means every signature was disproved; undefined means the evidence was incomplete. */
+/** Null means every signature was disproved; undefined means no unique selection is known. */
 export function selectTsPrimitiveOverload(
   signatures: SymbolDefinition[],
   site: ReferenceSite,
   indexes: ScopeResolutionIndexes,
   declarations?: ReadonlyMap<string, number>,
 ): SymbolDefinition | null | undefined {
+  const selected = selectProjectOverload(signatures, site, indexes, declarations);
+  return selected === 'project-dependent' ? undefined : selected;
+}
+
+function selectProjectOverload(
+  signatures: SymbolDefinition[],
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+  declarations?: ReadonlyMap<string, number>,
+): SymbolDefinition | null | undefined | 'project-dependent' {
   if (!site.argumentTypes) return undefined;
   let types = [...site.argumentTypes];
   let enumArguments: Map<number, NonNullable<ReturnType<typeof enumArgument>>> | undefined;
@@ -597,23 +646,31 @@ export function selectTsPrimitiveOverload(
     return undefined;
   signatures.sort(
     (a, b) =>
-      Number(b.parameterTypes?.some(isLiteralParameter) ?? false) -
-        Number(a.parameterTypes?.some(isLiteralParameter) ?? false) ||
+      Number((b.declaredParameterTypes ?? b.parameterTypes)?.some(isLiteralParameter) ?? false) -
+        Number((a.declaredParameterTypes ?? a.parameterTypes)?.some(isLiteralParameter) ?? false) ||
       (declarations?.get(a.ownerId ?? '') ?? 0) - (declarations?.get(b.ownerId ?? '') ?? 0) ||
       byPosition(a.declarationRange!, b.declarationRange!),
   );
-  let firstAssignable: SymbolDefinition | undefined;
-  for (const signature of signatures) {
-    const applicable = acceptsPrimitiveArguments(
-      signature,
-      types,
-      indexes,
-      evidence,
-      enumArguments,
-    );
-    if (applicable === undefined) return undefined;
-    if (applicable === true) return signature;
-    if (applicable === 'assignable') firstAssignable ??= signature;
+  const mode = types.some(isNullish) ? callStrictNullChecks(site, indexes) : true;
+  if (mode !== 'mixed') return select(mode);
+  const strict = select(true);
+  return strict === select(false) ? strict : 'project-dependent';
+
+  function select(strictNullChecks: boolean) {
+    let firstAssignable: SymbolDefinition | undefined;
+    for (const signature of signatures) {
+      const applicable = acceptsPrimitiveArguments(
+        signature,
+        types,
+        strictNullChecks,
+        indexes,
+        evidence,
+        enumArguments,
+      );
+      if (applicable === undefined) return undefined;
+      if (applicable === true) return signature;
+      if (applicable === 'assignable') firstAssignable ??= signature;
+    }
+    return firstAssignable ?? null;
   }
-  return firstAssignable ?? null;
 }

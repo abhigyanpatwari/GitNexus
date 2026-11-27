@@ -587,6 +587,40 @@ function createInstanceofNarrowingCollector() {
   };
 }
 
+/** Immutable aliases read the wrapper at their declaration, even if it is reassigned later. */
+function indexConstWrapperAliases(
+  declarations: readonly LocatedNode[],
+  moduleScope: LexicalScope,
+  escaped: ReturnType<typeof indexEscapedNames>,
+) {
+  const aliases = new Map<LexicalScope, Map<string, number>>();
+  for (const { node, scope } of declarations) {
+    if (node.parent?.childForFieldName('kind')?.type !== 'const') continue;
+    const name = node.childForFieldName('name');
+    const value = unwrapWriteTarget(node.childForFieldName('value'));
+    if (
+      name?.type !== 'identifier' ||
+      value?.type !== 'identifier' ||
+      canonicalTypeScriptName(value.text) !== 'module'
+    )
+      continue;
+    const owner = bindingOwner(scope, 'module', escaped);
+    if (owner && owner !== moduleScope) continue;
+    let local = aliases.get(scope);
+    if (!local) {
+      local = new Map();
+      aliases.set(scope, local);
+    }
+    local.set(canonicalTypeScriptName(name.text), node.endIndex);
+  }
+  return aliases;
+}
+
+export interface LocalImportFacts {
+  readonly validRequireCalls: ReadonlyMap<number, ReadonlySet<string>>;
+  readonly wrapperWrites: readonly { node: SyntaxNode; savedAt?: number }[];
+}
+
 /**
  * Add scope facts and imports in one AST pass. Returned identities and blocked
  * binding names let CommonJS forwarding reject shadowed loaders and written handles.
@@ -597,7 +631,7 @@ export function synthesizeTsLocalImports(
   filePath: string,
   out: CaptureMatch[],
   onModuleBindingWrite?: (name: string, write: SyntaxNode) => void,
-): ReadonlyMap<number, ReadonlySet<string>> {
+): LocalImportFacts {
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
   const calls: LocatedNode[] = [];
@@ -631,7 +665,7 @@ export function synthesizeTsLocalImports(
     }
   }
   const module = scopes.get(scopeKey(rangeOf(root), 'Module'));
-  if (!module) return new Map();
+  if (!module) return { validRequireCalls: new Map(), wrapperWrites: [] };
 
   const add = (
     scope: LexicalScope,
@@ -819,15 +853,30 @@ export function synthesizeTsLocalImports(
   // An assignment to an actual local shadow does not mutate the ambient loader.
   // A write to the ambient loader makes its identity unknown for this file.
   let ambientLoaderWritten = false;
-  const escaped =
-    onModuleBindingWrite && writes.length ? indexEscapedNames(scopes.values()) : undefined;
+  const wrapperWrites: { node: SyntaxNode; savedAt?: number }[] = [];
+  let wrapperAliases: ReturnType<typeof indexConstWrapperAliases> | undefined;
+  let escaped: ReturnType<typeof indexEscapedNames> | undefined;
   for (const { node, scope, names } of writes) {
     for (const name of names) {
       const owner = bindingOwner(scope, name.text);
-      if (onModuleBindingWrite) {
-        const canonical = canonicalTypeScriptName(name.text);
-        if (bindingOwner(scope, canonical, escaped) === module)
-          onModuleBindingWrite(canonical, node);
+      const canonical = canonicalTypeScriptName(name.text);
+      if (onModuleBindingWrite || canonical === 'module') {
+        escaped ??= indexEscapedNames(scopes.values());
+        const canonicalOwner = bindingOwner(scope, canonical, escaped);
+        if (canonicalOwner === module) onModuleBindingWrite?.(canonical, node);
+        if (canonical === 'module' && (!canonicalOwner || canonicalOwner === module)) {
+          const rhs = unwrapWriteTarget(node.childForFieldName('right'));
+          let savedAt: number | undefined;
+          if (rhs?.type === 'identifier' && canonicalTypeScriptName(rhs.text) !== 'module') {
+            const alias = canonicalTypeScriptName(rhs.text);
+            const owner = bindingOwner(scope, alias, escaped);
+            if (owner) {
+              wrapperAliases ??= indexConstWrapperAliases(declarations, module, escaped);
+              savedAt = wrapperAliases.get(owner)?.get(alias);
+            }
+          }
+          wrapperWrites.push({ node, savedAt });
+        }
       }
       if (name.text === 'require' && !owner) ambientLoaderWritten = true;
       if (owner) bindingWrites.push({ node, scope: owner, name: name.text });
@@ -1062,5 +1111,5 @@ export function synthesizeTsLocalImports(
       },
     };
   }
-  return validRequireCalls;
+  return { validRequireCalls, wrapperWrites };
 }

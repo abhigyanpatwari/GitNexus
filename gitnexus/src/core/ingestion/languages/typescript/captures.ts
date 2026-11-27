@@ -941,7 +941,7 @@ export function emitTsScopeCaptures(
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  const validRequireCalls = synthesizeTsLocalImports(
+  const localImports = synthesizeTsLocalImports(
     tree.rootNode,
     filePath,
     out,
@@ -977,7 +977,7 @@ export function emitTsScopeCaptures(
     );
   }
   recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out, callArguments, enumValues);
-  synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out, localImports);
 
   recordConditionalEsmExports(filePath, exportEvidence?.conditionalEsmExports, out);
   return out;

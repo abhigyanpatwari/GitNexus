@@ -575,6 +575,14 @@ export interface ScopeResolver {
     filePaths: readonly string[],
   ): Promise<unknown> | unknown;
 
+  /** Optional file-local discriminator for captures that depend on captured
+   * project metadata. The same tag reaches the worker and keys its cached facts. */
+  fileParseContext?(
+    filePath: string,
+    source: string,
+    resolutionConfig: unknown,
+  ): string | undefined;
+
   /**
    * Per-scope binding-merge precedence. The shared finalize pass
    * collects bindings from multiple sources (local declarations,

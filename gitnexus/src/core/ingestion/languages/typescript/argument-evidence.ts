@@ -73,7 +73,8 @@ function literalValue(spelling: string): string | number | bigint | boolean | un
 }
 
 export function isLiteralParameter(type: string): boolean {
-  return literalValue(type.trim()) !== undefined;
+  const annotation = type.trim();
+  return annotation === 'null' || literalValue(annotation) !== undefined;
 }
 
 /** Return undefined for an annotation outside the forms compared here. */

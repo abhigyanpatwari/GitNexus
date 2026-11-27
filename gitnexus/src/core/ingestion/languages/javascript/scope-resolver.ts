@@ -40,6 +40,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
 import { javascriptProvider } from '../typescript.js';
+import { javascriptParseContext } from './parse-context.js';
 import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
@@ -85,6 +86,8 @@ const javascriptScopeResolver: ScopeResolver = {
   // outright. Without them a bare specifier used to fall through to suffix
   // matching (#2953); now it simply does not resolve.
   loadResolutionConfig,
+  captureResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
+  fileParseContext: javascriptParseContext,
   refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
 
   // JavaScript LEGB — same tier ordering as TypeScript; no declaration-

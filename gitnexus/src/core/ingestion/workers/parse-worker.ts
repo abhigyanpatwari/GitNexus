@@ -112,6 +112,7 @@ import {
   shouldHarvestModuleConstants,
 } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
+import { setTreeParseContext } from '../file-parse-context.js';
 import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
 import {
   persistParsedFileShardSync,
@@ -549,14 +550,15 @@ export interface ParseWorkerResult {
   fileCount: number;
 }
 
-export interface ParseWorkerInput {
+export interface ParseWorkerInput<Content extends string | Uint8Array = string> {
   path: string;
-  content: string;
+  content: Content;
   cacheKey?: string;
+  parseContext?: string;
 }
 
 type WorkerIncomingMessage =
-  | { type: 'sub-batch'; files: ParseWorkerInput[] }
+  | { type: 'sub-batch'; files: ParseWorkerInput<string | Uint8Array>[] }
   | { type: 'flush'; chunkHash?: string };
 
 // ============================================================================
@@ -1658,6 +1660,7 @@ const processFileGroupFiles = (
       continue;
     }
 
+    if (file.parseContext !== undefined) setTreeParseContext(tree, file.parseContext);
     result.fileCount++;
     onFileProcessed?.();
 
@@ -1703,7 +1706,7 @@ const processFileGroupFiles = (
         reportWarning(message);
       },
       tree,
-      scopeSourceKind,
+      { sourceKind: scopeSourceKind, parseContext: file.parseContext },
       notebookSegments,
       lineOffset,
       scriptLanguage,
@@ -3342,12 +3345,11 @@ const sharedContentDecoder = new TextDecoder('utf-8');
  * the UTF-8 decode happens — runs on the worker thread in parallel with
  * continued main-thread work.
  */
-function decodeSubBatchFiles(
-  files: Array<{ path: string; content: Uint8Array | string; cacheKey?: string }>,
-): ParseWorkerInput[] {
+function decodeSubBatchFiles(files: ParseWorkerInput<string | Uint8Array>[]): ParseWorkerInput[] {
   return files.map((f) => ({
     path: f.path,
     ...(f.cacheKey === undefined ? {} : { cacheKey: f.cacheKey }),
+    ...(f.parseContext === undefined ? {} : { parseContext: f.parseContext }),
     // Test scaffolding (the writeReadyWorker preamble that wraps
     // parentPort.on) may already convert content to string before
     // calling here; tolerate both shapes so the same worker code
@@ -3365,9 +3367,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
-      const files = decodeSubBatchFiles(
-        msg.files as Array<{ path: string; content: Uint8Array | string; cacheKey?: string }>,
-      );
+      const files = decodeSubBatchFiles(msg.files);
       if (FILE_RESULTS_ENABLED) {
         // Scheduling remains batched. Extraction and encoding are file-local,
         // so neither worker assignment nor a neighbour's edit changes ownership.

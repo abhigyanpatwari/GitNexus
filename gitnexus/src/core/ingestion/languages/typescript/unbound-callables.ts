@@ -15,7 +15,10 @@ const moduleBoundaries = new Set([
 const repeatedBindings = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
 
 function moduleBindingScope(declaration: SyntaxNode): 'module' | 'block' | undefined {
-  let block = false;
+  // A let/const initializer belongs to the for loop, outside its body block.
+  let block =
+    declaration.parent?.type === 'lexical_declaration' &&
+    declaration.parent.parent?.type === 'for_statement';
   for (let parent = declaration.parent; parent; parent = parent.parent) {
     if (moduleBoundaries.has(parent.type)) return undefined;
     if (parent.type === 'statement_block' || parent.type === 'switch_body') block = true;

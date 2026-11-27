@@ -949,6 +949,11 @@ export function runScopeResolution(
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
       let extractionWarned = false;
+      const parseContext = provider.fileParseContext?.(
+        file.path,
+        file.content,
+        input.resolutionConfig,
+      );
       parsed = extractParsedFile(
         provider.languageProvider,
         file.content,
@@ -958,6 +963,7 @@ export function runScopeResolution(
           onWarn(warning);
         },
         cachedTree,
+        { parseContext },
       );
       if (parsed === undefined) {
         filesSkipped++;

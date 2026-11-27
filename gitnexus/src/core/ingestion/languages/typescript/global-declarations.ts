@@ -28,6 +28,26 @@ type Projects = {
   nodeWorkspacePackages: NodeWorkspacePackages | null;
 };
 const projectsByFiles = new WeakMap<readonly ParsedFile[], Projects | undefined>();
+// TypeScript 7 enables strict checking by default. Keep only files for which
+// resolution can differ, using the same program membership as global names.
+type NullChecks = boolean | 'mixed';
+const nullChecksByScopeTree = new WeakMap<
+  ScopeResolutionIndexes['scopeTree'],
+  Map<string, false | 'mixed'>
+>();
+
+function strictNullChecks(project: TsconfigScope | string): boolean {
+  return typeof project === 'string' || (project.strictNullChecks ?? project.strict ?? true);
+}
+
+export function callStrictNullChecks(
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+): NullChecks {
+  const overrides = nullChecksByScopeTree.get(indexes.scopeTree);
+  return overrides?.get(indexes.scopeTree.getScope(site.inScope)?.filePath ?? '') ?? true;
+}
+
 const scriptDeclarations = new WeakSet<SymbolDefinition>();
 const visibleGlobals = new WeakMap<ParsedFile, ReadonlyMap<string, readonly BindingRef[]>>();
 
@@ -125,6 +145,7 @@ export function rememberDeclarationProjects(
   config: Projects | undefined,
 ) {
   if (
+    config?.tsconfigs?.scopes.some((scope) => !strictNullChecks(scope)) ||
     files.some((file) => {
       const scope = declarationScope(file.captureSideChannel);
       return scope && (scope.globalNames.length || scope.scriptNames?.length);
@@ -281,6 +302,7 @@ export function bindGlobalDeclarations(
   files: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
 ) {
+  nullChecksByScopeTree.delete(indexes.scopeTree);
   if (!projectsByFiles.has(files)) return;
   const config = projectsByFiles.get(files);
   const projectOf = (file: ParsedFile) =>
@@ -290,6 +312,10 @@ export function bindGlobalDeclarations(
   const membership = projectMembers(files, config, indexes, projectOf);
   const standalone = new Set(config?.tsconfigs?.standalonePrograms);
   const programIds = new Map(config?.tsconfigs?.scopes.map((scope, index) => [scope, index]));
+  const nullChecks = config?.tsconfigs?.scopes.some((scope) => !strictNullChecks(scope))
+    ? new Map<string, false | 'mixed'>()
+    : undefined;
+  if (nullChecks) nullChecksByScopeTree.set(indexes.scopeTree, nullChecks);
   const globals = new Map<TsconfigScope | string, Map<string, BindingRef[]>>();
   const declaredNamespaces = new Map<ParsedFile, Set<SymbolDefinition>>();
   for (const file of files) {
@@ -368,6 +394,9 @@ export function bindGlobalDeclarations(
         const primary = configured.filter((p) => !standalone.has(p));
         visibleProjects = primary.length ? primary : configured;
       }
+    }
+    if (nullChecks && visibleProjects.some((project) => !strictNullChecks(project))) {
+      nullChecks.set(file.filePath, visibleProjects.some(strictNullChecks) ? 'mixed' : false);
     }
     if (visibleProjects.includes(owner)) visibleProjects = [owner];
     const symbols = globals.get(visibleProjects[0]);

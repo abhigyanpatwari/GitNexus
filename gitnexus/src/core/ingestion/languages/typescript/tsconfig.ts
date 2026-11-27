@@ -56,6 +56,8 @@ export interface TsconfigScope {
   readonly include?: readonly string[];
   readonly exclude?: readonly string[];
   readonly noResolve?: boolean;
+  readonly strict?: boolean;
+  readonly strictNullChecks?: boolean;
 }
 
 /** Every tsconfig in the repo, indexed so the nearest one to a file wins. */
@@ -193,6 +195,8 @@ function configRank(fileName: string): number {
 
 /** Resolved compiler options, rebased to repo-relative paths. */
 interface ResolvedOptions {
+  strict?: boolean;
+  strictNullChecks?: boolean;
   noResolve?: boolean;
   references?: string[];
   baseUrl?: string;
@@ -250,7 +254,9 @@ async function readCompilerOptions(
   const compilerOptions = parsed.compilerOptions;
   if (compilerOptions !== null && typeof compilerOptions === 'object') {
     const opts = compilerOptions as Record<string, unknown>;
-    if (typeof opts.noResolve === 'boolean') own.noResolve = opts.noResolve;
+    for (const key of ['noResolve', 'strict', 'strictNullChecks'] as const) {
+      if (typeof opts[key] === 'boolean') own[key] = opts[key];
+    }
     for (const key of ['moduleDetection', 'module', 'moduleResolution', 'jsx'] as const) {
       if (typeof opts[key] === 'string') own[key] = opts[key].toLowerCase();
     }

@@ -1114,6 +1114,7 @@ interface LanguageProviderConfig {
      */
     sourceMeta?: {
       readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+      readonly parseContext?: string;
       /** Explicit language of an embedded script, interpreted by its provider. */
       readonly scriptLanguage?: string;
       /** Row offset from an embedded parse buffer to graph-source positions. */

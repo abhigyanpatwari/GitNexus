@@ -29,6 +29,7 @@
  * immediate side-channel collection. Performs no I/O.
  */
 
+import { setTreeParseContext } from '../../file-parse-context.js';
 import {
   recordCommonJsModuleKind,
   recordConditionalEsmExports,
@@ -46,6 +47,7 @@ import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
+import { literalNumericMethodName } from '../typescript/identifiers.js';
 import { unboundCallableName } from '../typescript/unbound-callables.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
 import {
@@ -814,7 +816,7 @@ export function emitJsScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
-  sourceMeta?: { scriptLanguage?: string },
+  sourceMeta?: { scriptLanguage?: string; parseContext?: string },
 ): readonly CaptureMatch[] {
   const grammarPath = sourceMeta?.scriptLanguage === 'jsx' ? `${filePath}.jsx` : filePath;
   let tree = cachedTree as ReturnType<ReturnType<typeof getJsParser>['parse']> | undefined;
@@ -827,6 +829,7 @@ export function emitJsScopeCaptures(
     });
   }
 
+  setTreeParseContext(tree, sourceMeta?.parseContext);
   recordCommonJsModuleKind(tree.rootNode, filePath);
 
   const rawMatches = getJsScopeQuery(grammarPath).matches(tree.rootNode);
@@ -852,6 +855,21 @@ export function emitJsScopeCaptures(
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
       groupedNodes[tag] = c.node;
+    }
+    const numericKey = groupedNodes['@numeric.key'];
+    if (numericKey) {
+      const key = literalNumericMethodName(numericKey, filePath);
+      if (key === undefined) continue;
+      const tag = grouped['@declaration.method'] ? '@declaration.name' : '@reference.name';
+      grouped[tag] = { ...grouped[tag], text: key };
+      delete grouped['@numeric.key'];
+      if (tag === '@declaration.name' && key.includes('.')) {
+        grouped['@declaration.literal-member-name'] = syntheticCapture(
+          '@declaration.literal-member-name',
+          numericKey,
+          key,
+        );
+      }
     }
     synthesizeTsJsClassIdentity(grouped, groupedNodes);
     if (Object.keys(grouped).length === 0) continue;
@@ -1123,8 +1141,8 @@ export function emitJsScopeCaptures(
   }
 
   // Post-query synthesis passes.
-  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
-  synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
+  const localImports = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out, localImports);
   synthesizeJsDocBindings(tree.rootNode, out);
   synthesizeConstructorFieldBindings(tree.rootNode, out);
   synthesizeDestructuringBindings(tree.rootNode, out);

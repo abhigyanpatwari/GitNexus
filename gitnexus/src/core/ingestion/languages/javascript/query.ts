@@ -47,6 +47,7 @@
  */
 
 import Parser from 'tree-sitter';
+import { numericPropertyKeyQuery } from '../typescript/identifiers.js';
 import { unboundCallableQuery } from '../typescript/unbound-callables.js';
 import JS from 'tree-sitter-javascript';
 import {
@@ -110,6 +111,9 @@ ${unboundCallableQuery('declaration.function')}
 
 (method_definition
   name: (private_property_identifier) @declaration.name) @declaration.method
+
+(method_definition
+  name: [(number) (computed_property_name ${numericPropertyKeyQuery})] @declaration.name @numeric.key) @declaration.method
 
 ;; Declarations — class fields (JS uses field_definition, not public_field_definition)
 (field_definition
@@ -768,6 +772,11 @@ ${unboundCallableQuery('declaration.function')}
   function: (member_expression
     object: (_) @reference.receiver
     property: (property_identifier) @reference.name)) @reference.call.member
+
+(call_expression
+  function: (subscript_expression
+    object: (_) @reference.receiver
+    index: ${numericPropertyKeyQuery} @reference.name @numeric.key)) @reference.call.member
 
 ;; Awaited member call: await svc.m<T>(...)
 (call_expression

@@ -1,10 +1,15 @@
 import { decodeIdentifierEscapes, decodeStringLiteral } from '../../utils/ecmascript-literals.js';
+import { legacyNumericPropertyValue } from '../javascript/numeric-properties.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /** Decode ECMAScript identifier escapes without changing written graph identities. */
 export const canonicalTypeScriptName = (name: string): string => decodeIdentifierEscapes(name);
 
 export { canonicalModuleExportName } from '../../utils/ecmascript-literals.js';
+
+/** Numeric JavaScript property expressions with statically known values. */
+export const numericPropertyKeyQuery = `[(number) (parenthesized_expression)
+  (unary_expression operator: ["+" "-"] argument: [(number) (parenthesized_expression)])]`;
 
 /** Query candidates for literalMethodName, which checks grouping and substitutions. */
 export const literalPropertyKeyQuery = `[(string) (number) (template_string) (parenthesized_expression)
@@ -42,9 +47,9 @@ function unwrapLiteral(node: SyntaxNode | null): SyntaxNode | null {
 }
 
 /** A leading sign is its own syntax node and can be separated from the operand by trivia. */
-export function signedNumericLiteral(
+function signedNumericSpelling(
   node: SyntaxNode,
-  context: 'argument' | 'property-key' = 'argument',
+  context: 'argument' | 'property-key',
 ): string | undefined {
   if (node.type !== 'unary_expression') return undefined;
   const operator = node.childForFieldName('operator')?.text;
@@ -52,13 +57,22 @@ export function signedNumericLiteral(
   // TypeScript widens signed arguments with grouped operands. A property key uses its runtime value.
   const operand = context === 'property-key' ? unwrapLiteral(argument) : argument;
   if ((operator === '-' || operator === '+') && operand?.type === 'number') {
-    const spelling = operator + operand.text;
-    if (numericLiteralValue(spelling) !== undefined) return spelling;
+    return operator + operand.text;
   }
 }
 
+export function signedNumericLiteral(
+  node: SyntaxNode,
+  context: 'argument' | 'property-key' = 'argument',
+): string | undefined {
+  const spelling = signedNumericSpelling(node, context);
+  return spelling !== undefined && numericLiteralValue(spelling) !== undefined
+    ? spelling
+    : undefined;
+}
+
 /** A constant ECMAScript property key, shared by declarations and bracket calls. */
-export function literalMethodName(node: SyntaxNode | null): string | undefined {
+export function literalMethodName(node: SyntaxNode | null, filePath?: string): string | undefined {
   node = unwrapLiteral(node);
   if (!node) return undefined;
   if (
@@ -68,7 +82,21 @@ export function literalMethodName(node: SyntaxNode | null): string | undefined {
     return undefined;
   if (node.type === 'string' || node.type === 'template_string')
     return decodeStringLiteral(node.text) ?? undefined;
-  const spelling = node.type === 'number' ? node.text : signedNumericLiteral(node, 'property-key');
-  const value = spelling === undefined ? undefined : numericLiteralValue(spelling);
+  return literalNumericMethodName(node, filePath);
+}
+
+/** JavaScript's numeric-key queries also encounter grouped, nonnumeric expressions. */
+export function literalNumericMethodName(
+  node: SyntaxNode | null,
+  filePath?: string,
+): string | undefined {
+  node = unwrapLiteral(node);
+  if (!node) return undefined;
+  const spelling = node.type === 'number' ? node.text : signedNumericSpelling(node, 'property-key');
+  if (spelling === undefined) return undefined;
+  let value = numericLiteralValue(spelling);
+  if (value === undefined && filePath && /^[+-]?0\d/u.test(spelling)) {
+    value = legacyNumericPropertyValue(node, filePath, spelling);
+  }
   return value === undefined ? undefined : String(value);
 }

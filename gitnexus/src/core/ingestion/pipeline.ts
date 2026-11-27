@@ -467,12 +467,14 @@ export const runPipelineFromRepo = async (
     totalFiles,
     usedWorkerPool,
     reparsedFileCount,
+    fileParseContexts,
     parseCacheHitFileCount,
     unavailableScopeLanguageFiles,
   } = getPhaseOutput<{
     totalFiles: number;
     usedWorkerPool: boolean;
     reparsedFileCount: number;
+    fileParseContexts: ReadonlyMap<string, string>;
     parseCacheHitFileCount: number;
     unavailableScopeLanguageFiles: number;
   }>(results, 'parse');
@@ -534,6 +536,7 @@ export const runPipelineFromRepo = async (
     undecidedSatisfaction,
     usedWorkerPool,
     reparsedFileCount,
+    fileParseContexts,
     parseCacheHitFileCount,
     scopeExtractionFailures,
     unavailableScopeLanguageFiles,

@@ -16,7 +16,10 @@ import {
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
 } from './ts-js-hoc-utils.js';
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
-import { literalPropertyKeyQuery } from './languages/typescript/identifiers.js';
+import {
+  literalPropertyKeyQuery,
+  numericPropertyKeyQuery,
+} from './languages/typescript/identifiers.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -833,6 +836,9 @@ ${unboundCallableQuery('definition.function')}
 (method_definition
   name: (property_identifier) @name) @definition.method
 
+(method_definition
+  name: [(number) (computed_property_name ${numericPropertyKeyQuery})] @name @name.literal) @definition.method
+
 ; ES2022 #private methods
 (method_definition
   name: (private_property_identifier) @name) @definition.method
@@ -840,12 +846,12 @@ ${unboundCallableQuery('definition.function')}
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (arrow_function))) @definition.function
+    value: (arrow_function) @callable)) @definition.function
 
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (function_expression))) @definition.function
+    value: (function_expression) @callable)) @definition.function
 
 ; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
 ; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
