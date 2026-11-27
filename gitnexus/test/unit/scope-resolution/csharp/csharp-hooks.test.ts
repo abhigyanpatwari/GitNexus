@@ -16,6 +16,10 @@ import {
   csharpImportOwningScope,
   csharpReceiverBinding,
 } from '../../../../src/core/ingestion/languages/csharp/simple-hooks.js';
+import {
+  specializeCsharpNullableFormal,
+  normalizeCsharpNullableSignature,
+} from '../../../../src/core/ingestion/languages/csharp/nullable-heritage.js';
 import { csharpMergeBindings } from '../../../../src/core/ingestion/languages/csharp/merge-bindings.js';
 import { csharpArityCompatibility } from '../../../../src/core/ingestion/languages/csharp/arity.js';
 import { populateCsharpNamespaceSiblings } from '../../../../src/core/ingestion/languages/csharp/namespace-siblings.js';
@@ -578,5 +582,25 @@ describe('csharpReceiverBinding', () => {
   it('returns null for non-Function scopes', () => {
     expect(csharpReceiverBinding(fakeScope('Class'))).toBe(null);
     expect(csharpReceiverBinding(fakeScope('Module'))).toBe(null);
+  });
+});
+
+describe('C# nullable heritage specialization', () => {
+  const owner = { type: 'Class', filePath: 'Base.cs' } as SymbolDefinition;
+  it('distinguishes reserved value aliases from user-defined and contextual type names', () => {
+    expect(specializeCsharpNullableFormal(owner, 'T', 'byte')).toBe('byte');
+    expect(specializeCsharpNullableFormal(owner, 'T', 'byte?')).toBe('byte?');
+    for (const name of ['@byte', 'Byte', 'nint', 'nuint', 'dynamic']) {
+      expect(specializeCsharpNullableFormal(owner, 'T', name)).toBeNull();
+    }
+    expect(normalizeCsharpNullableSignature('(string?, @string?, object?, int?)')).toBe(
+      '(string, @string?, object, int?)',
+    );
+  });
+
+  it('defers a missing partial constraint and uses a known value constraint', () => {
+    const partial = { ...owner, templateConstraints: { partial: true, valueParameters: ['V'] } };
+    expect(specializeCsharpNullableFormal(partial, 'T', 'int')).toBeNull();
+    expect(specializeCsharpNullableFormal(partial, 'V', 'int')).toBe('int?');
   });
 });

@@ -425,7 +425,7 @@
   },
   "csharp-null-check-narrowing/Services/App.cs": {
     "captureGroups": 36,
-    "digest": "6c7fa1daf5d12a60403a63d5d29c1b42b99370d12f4be53c8e56bb31e5b09d8a"
+    "digest": "025f33f766262af7d8bf44c49e5fdc74680319d8fc7b9ac0d3331d09a427b115"
   },
   "csharp-null-conditional/App.cs": {
     "captureGroups": 17,

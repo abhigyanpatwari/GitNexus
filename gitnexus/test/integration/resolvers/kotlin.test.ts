@@ -3177,3 +3177,17 @@ describe('Kotlin package-qualified factory result types (#3498 follow-up)', () =
     expect(callsFrom('companionMember', 'm')).toEqual(['Method:kqfmod/Types.kt:Other.m#0']);
   });
 });
+
+it('matches nullable generic method parameters across inheritance', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.join(FIXTURES, '..', 'nullable-heritage', 'kotlin'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+  expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual(
+    ['BoundedGeneric', 'Concrete', 'Direct', 'Generic'].map((owner) => [
+      `Class:Types.kt:${owner}`,
+      'Method:Types.kt:Base.accept#1',
+    ]),
+  );
+});

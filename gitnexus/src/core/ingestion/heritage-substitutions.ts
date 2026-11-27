@@ -1,3 +1,4 @@
+import type { ScopeResolver } from './scope-resolution/contract/scope-resolver.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { heritageTypeArgumentsKey } from './scope-resolution/utils/generic-instantiation.js';
 import { syntaxOffsets } from './utils/type-parameters.js';
@@ -9,6 +10,21 @@ const maxExpandedTypeLength = 32 * 1024;
 // Restrict textual substitution to named types and their type constructors.
 // Structural types and nested signatures may introduce new names of their own.
 const compositeType = /^[\p{ID_Continue}$\s.<>,\[\]()|&]+$/u;
+const nullableOperand =
+  /^[$_\p{ID_Start}][$\p{ID_Continue}]*(?:\.[$_\p{ID_Start}][$\p{ID_Continue}]*)*\??$/u;
+
+/** A function's trailing ? may apply to its return type. Only lift a named operand here. */
+export function specializeNamedNullableOperand(actual: string): string | null {
+  if (!nullableOperand.test(actual)) return null;
+  return actual.endsWith('?') ? actual : `${actual}?`;
+}
+
+interface NullableOwner {
+  declaration: SymbolDefinition;
+  specialize: NonNullable<ScopeResolver['specializeNullableHeritageFormal']>;
+  normalize?: ScopeResolver['normalizeNullableHeritageSignature'];
+}
+
 const namedType =
   /[$_\p{ID_Start}][$\p{ID_Continue}]*(?:\s*\.\s*[$_\p{ID_Start}][$\p{ID_Continue}]*)*/gu;
 
@@ -31,11 +47,21 @@ function specializeType(
   type: string,
   bindings?: Bindings,
   local?: ReadonlySet<string>,
+  nullableOwner?: NullableOwner,
 ): string | null {
   if (type.length > maxExpandedTypeLength) return null;
   if (!bindings?.size || local?.has(type)) return type;
   const direct = bindings.get(type);
   if (direct !== undefined) return direct;
+  if (nullableOwner && type.endsWith('?')) {
+    const formal = type.slice(0, -1);
+    const actual = local?.has(formal) ? undefined : bindings.get(formal);
+    if (actual !== undefined) {
+      if (actual === null) return null;
+      const result = nullableOwner.specialize(nullableOwner.declaration, formal, actual);
+      return result !== null && result.length <= maxExpandedTypeLength ? result : null;
+    }
+  }
   if (!compositeType.test(type)) return type;
   let length = type.length;
   let end = 0;
@@ -73,10 +99,17 @@ function specializeType(
 /** Type arguments retained between scope resolution and method override matching. */
 export class HeritageSubstitutions {
   private readonly edges = new Map<string, Bindings>();
+  private readonly nullableEdges = new Set<string>();
+  private readonly nullableOwners = new Map<string, NullableOwner>();
+  private readonly declaredMethodTypes = new Map<string, string[]>();
   private readonly methodParameters = new Map<string, ReadonlySet<string>>();
 
   get hasBindings(): boolean {
     return this.edges.size > 0;
+  }
+
+  get hasNullableBindings(): boolean {
+    return this.nullableEdges.size > 0;
   }
 
   registerBase(
@@ -84,11 +117,20 @@ export class HeritageSubstitutions {
     base: string,
     def: SymbolDefinition,
     args: readonly string[] | undefined,
+    childDef?: SymbolDefinition,
+    provider?: ScopeResolver,
   ) {
     const parameters = def.typeParameters;
     if (!parameters?.length || !args || args.length > parameters.length) return;
     const key = heritageTypeArgumentsKey(child, base);
     if (this.edges.has(key)) return;
+    if (provider?.specializeNullableHeritageFormal) {
+      this.registerNullableOwner(base, def, provider);
+      if (childDef && args.some((arg) => arg.includes('?'))) {
+        this.registerNullableOwner(child, childDef, provider);
+        this.nullableEdges.add(key);
+      }
+    }
     const bindings = new Map<string, string | null>();
     for (const [index, parameter] of parameters.entries()) {
       const fallback = parameter.defaultType;
@@ -99,7 +141,23 @@ export class HeritageSubstitutions {
     if (bindings.size) this.edges.set(key, bindings);
   }
 
-  registerMethod(id: string, def: SymbolDefinition) {
+  private registerNullableOwner(
+    id: string,
+    declaration: SymbolDefinition,
+    provider: ScopeResolver,
+  ) {
+    if (this.nullableOwners.has(id) || !provider.specializeNullableHeritageFormal) return;
+    this.nullableOwners.set(id, {
+      declaration,
+      specialize: provider.specializeNullableHeritageFormal,
+      normalize: provider.normalizeNullableHeritageSignature,
+    });
+  }
+
+  registerMethod(id: string, def: SymbolDefinition, useDeclaredTypes = false) {
+    if (useDeclaredTypes && def.declaredParameterTypes) {
+      this.declaredMethodTypes.set(id, def.declaredParameterTypes);
+    }
     if (def.typeParameters?.length) {
       this.methodParameters.set(id, new Set(def.typeParameters.map((p) => p.name)));
     }
@@ -108,6 +166,7 @@ export class HeritageSubstitutions {
   /** Express every ancestor's formal parameters in the child's lexical context. */
   forClass(child: string, parents: ReadonlyMap<string, readonly string[]>) {
     const bindingsByOwner = new Map<string, Bindings>();
+    let nullablePaths: Map<string, NullableOwner> | undefined;
     if (this.edges.size) {
       const queue = [child];
       bindingsByOwner.set(child, new Map());
@@ -115,10 +174,19 @@ export class HeritageSubstitutions {
         const owner = queue[i]!;
         const outer = bindingsByOwner.get(owner);
         for (const base of parents.get(owner) ?? []) {
-          const args = this.edges.get(heritageTypeArgumentsKey(owner, base));
+          const key = heritageTypeArgumentsKey(owner, base);
+          const args = this.edges.get(key);
           const next = new Map<string, string | null>();
-          for (const [formal, actual] of args ?? [])
-            next.set(formal, actual === null ? null : specializeType(actual, outer));
+          const context = this.nullableEdges.has(key) ? this.nullableOwners.get(owner) : undefined;
+          const path = context ?? nullablePaths?.get(owner);
+          for (const [formal, actual] of args ?? []) {
+            next.set(
+              formal,
+              actual === null ? null : specializeType(actual, outer, undefined, context),
+            );
+          }
+          const addedPath = path !== undefined && !nullablePaths?.has(base);
+          if (addedPath) (nullablePaths ??= new Map()).set(base, path);
           const prior = bindingsByOwner.get(base);
           if (prior) {
             // Distinct paths can instantiate the same ancestor differently. Only
@@ -126,22 +194,27 @@ export class HeritageSubstitutions {
             for (const [formal, actual] of next) {
               if (prior.get(formal) !== actual) next.delete(formal);
             }
-            if (next.size === prior.size) continue;
+            if (next.size === prior.size && !addedPath) continue;
           }
           bindingsByOwner.set(base, next);
           queue.push(base);
         }
       }
     }
-    return (owner: string, method: string, types: string[]): string[] | null => {
+    return (owner: string, method: string, types: string[], contract = owner): string[] | null => {
       const bindings = bindingsByOwner.get(owner);
-      if (!bindings?.size || !types.length) return types;
+      // A nullable base on another branch supplies no evidence about this method.
+      const path = nullablePaths?.get(contract) ?? nullablePaths?.get(owner);
+      const exact = path ? (this.declaredMethodTypes.get(method) ?? types) : types;
+      const context = path ? this.nullableOwners.get(owner) : undefined;
+      const normalize = path?.normalize;
+      if (!exact.length || (!bindings?.size && !normalize)) return exact;
       const local = this.methodParameters.get(method);
       const specialized: string[] = [];
-      for (const type of types) {
-        const result = specializeType(type, bindings, local);
+      for (const type of exact) {
+        const result = specializeType(type, bindings, local, context);
         if (result === null) return null;
-        specialized.push(result);
+        specialized.push(normalize?.(result) ?? result);
       }
       return specialized;
     };

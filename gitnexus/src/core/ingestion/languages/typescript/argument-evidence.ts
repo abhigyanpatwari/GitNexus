@@ -87,6 +87,7 @@ export function acceptsArgumentEvidence(
   annotation: string,
   type: string,
   evidence?: ArgumentEvidence | null,
+  acceptsLooseField?: (value: string) => boolean,
 ): ArgumentCompatibility {
   const literal = literalValue(annotation);
   if (literal !== undefined) {
@@ -127,7 +128,10 @@ export function acceptsArgumentEvidence(
     if (
       value === undefined
         ? !prop[2]
-        : prop[3] !== value && prop[3] !== 'any' && prop[3] !== 'unknown'
+        : prop[3] !== value &&
+          prop[3] !== 'any' &&
+          prop[3] !== 'unknown' &&
+          !acceptsLooseField?.(value)
     )
       return false;
   }

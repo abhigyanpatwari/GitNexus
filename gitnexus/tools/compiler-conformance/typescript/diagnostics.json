@@ -149,6 +149,10 @@
     "src/Button.tsx:4:30 TS7026",
     "src/Button.tsx:4:9 TS7026"
   ],
+  "compiler-conformance/typescript-union-instance-members": [
+    "dispatch.ts:25:15 TS2339",
+    "dispatch.ts:39:15 TS2349"
+  ],
   "compiler-conformance/typescript-script-legacy": ["use.ts:5:33 TS2304"],
   "compiler-conformance/typescript-qualified-heritage": ["value-member.ts:2:30 TS2749"],
   "compiler-conformance/typescript-solution-globals": [

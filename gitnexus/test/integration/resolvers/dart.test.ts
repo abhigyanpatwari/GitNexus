@@ -1226,3 +1226,20 @@ void viaD(D d) {
     });
   },
 );
+
+it.skipIf(!dartAvailable)(
+  'matches nullable generic method parameters across inheritance',
+  async () => {
+    const { graph } = await runPipelineFromRepo(
+      path.join(FIXTURES, '..', 'nullable-heritage', 'dart'),
+      () => {},
+    );
+    const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+    expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual(
+      ['BoundedGeneric', 'Concrete', 'Direct', 'Generic'].map((owner) => [
+        `Class:types.dart:${owner}`,
+        'Method:types.dart:Base.accept#1',
+      ]),
+    );
+  },
+);

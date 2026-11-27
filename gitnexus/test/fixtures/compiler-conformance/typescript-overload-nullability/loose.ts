@@ -1,4 +1,4 @@
-import { literal, pick, primitive, Service } from './signature';
+import { field, literal, pick, primitive, Service } from './signature';
 export function loose(service: Service) {
   pick(null);
   pick(undefined);
@@ -8,4 +8,15 @@ export function loose(service: Service) {
   literal(undefined);
   primitive(null);
   primitive(undefined);
+  field({ text: null });
+  field({ text: undefined });
+}
+
+export function fieldControls() {
+  field({ text: 42 });
+  field({ text: "ok" });
+}
+
+export function shadowed(undefined: number) {
+  field({ text: undefined });
 }

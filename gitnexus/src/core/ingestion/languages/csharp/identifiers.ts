@@ -9,3 +9,32 @@ export const canonicalName = (name: string): string =>
         return value <= 0x10ffff ? String.fromCodePoint(value) : escape;
       },
     );
+
+/** C# aliases used in generic type argument comparison. */
+export const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([
+  ['bool', 'Boolean'],
+  ['byte', 'Byte'],
+  ['sbyte', 'SByte'],
+  ['char', 'Char'],
+  ['decimal', 'Decimal'],
+  ['double', 'Double'],
+  ['float', 'Single'],
+  ['int', 'Int32'],
+  ['uint', 'UInt32'],
+  ['long', 'Int64'],
+  ['ulong', 'UInt64'],
+  ['short', 'Int16'],
+  ['ushort', 'UInt16'],
+  ['nint', 'IntPtr'],
+  ['nuint', 'UIntPtr'],
+  ['object', 'Object'],
+  ['string', 'String'],
+]);
+
+/** Native-sized integer aliases are contextual and can name workspace declarations. */
+export function isCsharpReservedTypeKeyword(name: string): boolean {
+  return (
+    name === 'void' ||
+    (name !== 'nint' && name !== 'nuint' && CSHARP_PREDEFINED_TYPE_ALIASES.has(name))
+  );
+}

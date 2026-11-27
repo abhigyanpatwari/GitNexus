@@ -172,7 +172,12 @@ function extractDartReturnType(node: SyntaxNode): string | undefined {
  * - Optional positional: `[int? x]` — wrapped in optional_formal_parameters with '['
  * - Optional named: `{int? x}` or `{required int x}` — wrapped in optional_formal_parameters with '{'
  */
-function extractDartParameters(node: SyntaxNode): ParameterInfo[] {
+export interface DartParameterInfo extends ParameterInfo {
+  /** A bare nullable type for heritage comparison, or null for a composite type. */
+  nullableHeritageType?: string | null;
+}
+
+function extractDartParameters(node: SyntaxNode): DartParameterInfo[] {
   const inner = getInnerSignature(node);
   if (!inner) return [];
 
@@ -210,8 +215,11 @@ export function extractDartFormalParameterList(listNode: SyntaxNode): ParameterI
 /**
  * Extract ParameterInfo entries from a formal_parameter_list or optional_formal_parameters node.
  */
-function extractParamsFromList(listNode: SyntaxNode, isOptionalBlock: boolean): ParameterInfo[] {
-  const params: ParameterInfo[] = [];
+function extractParamsFromList(
+  listNode: SyntaxNode,
+  isOptionalBlock: boolean,
+): DartParameterInfo[] {
+  const params: DartParameterInfo[] = [];
 
   for (let i = 0; i < listNode.namedChildCount; i++) {
     const child = listNode.namedChild(i);
@@ -232,13 +240,14 @@ function extractParamsFromList(listNode: SyntaxNode, isOptionalBlock: boolean): 
 /**
  * Extract a single ParameterInfo from a formal_parameter node.
  */
-function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): ParameterInfo {
+function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): DartParameterInfo {
   const nameNode = param.childForFieldName('name');
   const name = nameNode?.text ?? '<unknown>';
 
   // Find the type node
   let typeName: string | null = null;
   let rawTypeName: string | null = null;
+  let nullableHeritageType: string | null | undefined;
   for (let i = 0; i < param.namedChildCount; i++) {
     const child = param.namedChild(i);
     if (child && TYPE_NODE_TYPES.has(child.type)) {
@@ -247,6 +256,7 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
       // The grammar represents `prefix.Type` as two type_identifier siblings.
       // Keeping only the first would bind the parameter to the prefix itself.
       const member = param.namedChild(i + 1);
+      let suffix = member;
       if (
         child.type === 'type_identifier' &&
         member?.type === 'type_identifier' &&
@@ -254,6 +264,14 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
       ) {
         typeName = `${child.text}.${member.text}`;
         rawTypeName = typeName;
+        suffix = member.nextNamedSibling;
+      }
+      while (suffix?.type === 'comment' || suffix?.type === 'documentation_comment')
+        suffix = suffix.nextNamedSibling;
+      if (child.type !== 'type_identifier' || suffix?.type === 'type_arguments') {
+        nullableHeritageType = null;
+      } else if (suffix?.type === 'nullable_type' && suffix.text === '?') {
+        nullableHeritageType = typeName + '?';
       }
       break;
     }
@@ -296,6 +314,7 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
     name,
     type: typeName,
     rawType: rawTypeName,
+    ...(nullableHeritageType !== undefined && { nullableHeritageType }),
     isOptional,
     isVariadic: false, // Dart has no variadic params
   };

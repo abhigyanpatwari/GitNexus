@@ -38,9 +38,11 @@ export function representativeUnionOwner(
     let method: SymbolDefinition | undefined;
     for (const id of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
       if (model.fields.lookupAllByOwner(id, site.name).length) return null;
-      const methods = model.methods.lookupAllByOwner(id, site.name);
+      const methods = model.methods
+        .lookupAllByOwner(id, site.name)
+        .filter((method) => !staticOnly(method));
       if (!methods.length) continue;
-      if (methods.length !== 1 || staticOnly(methods[0])) return null;
+      if (methods.length !== 1) return null;
       method = methods[0];
       break;
     }

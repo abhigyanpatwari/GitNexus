@@ -11,6 +11,9 @@
         "b18cc998333834e114115f4fbc085f2da7c19439",
         "e73a02d68515bff1d37b33702e889f311b18c535"
       ],
+      "equivalentCandidateSourceTrees": [
+        ["fd11ffbae4637070401d0ac7a4da1ceb0173d693", "e73a02d68515bff1d37b33702e889f311b18c535"]
+      ],
       "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
       "sourceFiles": 1205,
       "baseline": {

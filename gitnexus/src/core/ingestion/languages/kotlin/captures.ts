@@ -455,6 +455,13 @@ export function emitKotlinScopeCaptures(
             String(arity.requiredParameterCount),
           );
         }
+        if (arity.declaredParameterTypes && fnNode.parent?.type === 'class_body') {
+          grouped['@declaration.declared-parameter-types'] = syntheticCapture(
+            '@declaration.declared-parameter-types',
+            fnNode,
+            JSON.stringify(arity.declaredParameterTypes),
+          );
+        }
         if (arity.parameterTypes !== undefined) {
           grouped['@declaration.parameter-types'] = syntheticCapture(
             '@declaration.parameter-types',

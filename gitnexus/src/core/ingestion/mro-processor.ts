@@ -395,7 +395,11 @@ export function computeMRO(
       paramCount?: number;
       isStatic?: boolean;
     };
-    type AncestorLevel = { className: string; methodsByName: Map<string, AncestorMethod[]> };
+    type AncestorLevel = {
+      ownerId: string;
+      className: string;
+      methodsByName: Map<string, AncestorMethod[]>;
+    };
     const orderedAncestorMethods: AncestorLevel[] = [];
     {
       const visited = new Set<string>();
@@ -426,6 +430,7 @@ export function computeMRO(
           else methodsByName.set(mn.properties.name, [entry]);
         }
         orderedAncestorMethods.push({
+          ownerId: ancestorId,
           className: typeof ancestorName === 'string' ? ancestorName : '<anonymous>',
           methodsByName,
         });
@@ -442,14 +447,17 @@ export function computeMRO(
       )
         continue;
       const methodName = methodNode.properties.name;
-      const ownParamTypes = (methodNode.properties.parameterTypes as string[] | undefined) ?? [];
+      const declared = (methodNode.properties.parameterTypes as string[] | undefined) ?? [];
       const ownParamCount = methodNode.properties.parameterCount as number | undefined;
 
       // Nearest ancestor (BFS order) defining this method by name AND signature, so a
       // same-named overload (e.g. foo(int) vs foo()) is not mistaken for an override.
-      for (const { className, methodsByName } of orderedAncestorMethods) {
+      for (const { ownerId, className, methodsByName } of orderedAncestorMethods) {
         const sameName = methodsByName.get(methodName);
         if (!sameName) continue;
+        const ownParamTypes = specialize
+          ? specialize(classId, methodId, declared, ownerId)
+          : declared;
         const matches = sameName.filter(
           (m) =>
             compatibleMethodReceivers(
@@ -675,6 +683,7 @@ function emitMethodImplementsEdges(
             methodMap,
             parentEdgeType,
             ancestorMethodId,
+            ancestorId,
             specialize,
             separate,
           );
@@ -705,7 +714,9 @@ function emitMethodImplementsEdges(
         }> = [];
         for (const c of candidates) {
           const result = parameterTypesMatch(
-            c.parameterTypes,
+            specialize
+              ? specialize(classId, c.methodId, c.parameterTypes, ancestorId)
+              : c.parameterTypes,
             ancestorParamTypes,
             c.parameterCount,
             ancestorParamCount,
@@ -760,6 +771,7 @@ function findInheritedMethod(
   /** Method ID to exclude from results (prevents self-edges when the ancestor
    *  method being matched lives on an IMPLEMENTS parent). */
   excludeMethodId: string,
+  contractOwner: string,
   specialize?: ReturnType<HeritageSubstitutions['forClass']>,
   separate?: boolean,
 ): { methodId: string; parameterTypes: string[]; confident: boolean } | null {
@@ -813,7 +825,7 @@ function findInheritedMethod(
         const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
         const mParamCount = mNode.properties.parameterCount as number | undefined;
         const ptResult = parameterTypesMatch(
-          specialize ? specialize(ancestorId, mid, mParamTypes) : mParamTypes,
+          specialize ? specialize(ancestorId, mid, mParamTypes, contractOwner) : mParamTypes,
           targetParamTypes,
           mParamCount,
           targetParamCount,
@@ -893,7 +905,7 @@ function findInheritedMethod(
       const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
       const mParamCount = mNode.properties.parameterCount as number | undefined;
       const ptResult = parameterTypesMatch(
-        specialize ? specialize(ifaceId, mid, mParamTypes) : mParamTypes,
+        specialize ? specialize(ifaceId, mid, mParamTypes, contractOwner) : mParamTypes,
         targetParamTypes,
         mParamCount,
         targetParamCount,

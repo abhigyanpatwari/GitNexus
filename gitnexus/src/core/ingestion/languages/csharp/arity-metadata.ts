@@ -19,9 +19,11 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { csharpMethodConfig } from '../../method-extractors/configs/csharp.js';
+import { withoutTypeComments } from '../../utils/type-parameters.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface CsharpArityMetadata {
+  readonly declaredParameterTypes?: readonly string[];
   readonly parameterCount: number | undefined;
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;
@@ -33,11 +35,29 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
   let hasVariadic = false;
   let optionalCount = 0;
   let types = declarationParameterTypes(params);
+  // The call matcher unwraps simple nullable types. Preserve their declaration
+  // spelling for inherited signatures, including ref/out/in and the params marker.
+  let declaredParameterTypes: string[] | undefined;
+  let typeIndex = 0;
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
+    if (p.type === null) continue;
+    if (
+      fnNode.type === 'method_declaration' &&
+      p.rawType?.endsWith('?') &&
+      !p.type.endsWith('?') &&
+      /^@?[_\p{ID_Start}][_\p{ID_Continue}]*\s*\?$/u.test(withoutTypeComments(p.rawType))
+    ) {
+      declaredParameterTypes ??= [...types];
+      declaredParameterTypes[typeIndex] = p.type + '?';
+    }
+    typeIndex++;
   }
-  if (hasVariadic) types = [...types, 'params'];
+  if (hasVariadic) {
+    types = [...types, 'params'];
+    declaredParameterTypes?.push('params');
+  }
 
   const total = params.length;
   // `params int[] args` declares one formal param but accepts any arg
@@ -47,6 +67,7 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
   const requiredParameterCount = hasVariadic ? undefined : total - optionalCount;
 
   return {
+    ...(declaredParameterTypes && { declaredParameterTypes }),
     parameterCount,
     requiredParameterCount,
     parameterTypes: types.length > 0 ? types : undefined,

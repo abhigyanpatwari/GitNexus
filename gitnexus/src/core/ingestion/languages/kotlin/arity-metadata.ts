@@ -6,6 +6,7 @@ export interface KotlinArityMetadata {
   readonly parameterCount: number | undefined;
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;
+  readonly declaredParameterTypes?: readonly string[];
 }
 
 export function computeKotlinArityMetadata(fnNode: SyntaxNode): KotlinArityMetadata {
@@ -18,7 +19,14 @@ export function computeKotlinArityMetadata(fnNode: SyntaxNode): KotlinArityMetad
   if (hasVararg) parameterTypes = [...parameterTypes, 'vararg'];
 
   const required = params.filter((p) => !p.isOptional && !p.isVariadic).length;
+  const declaredParameterTypes =
+    !hasVararg &&
+    params.some((p) => p.type && p.rawType === p.type + '?') &&
+    params.every((p) => p.type && (p.rawType === p.type || p.rawType === p.type + '?'))
+      ? params.map((p) => p.rawType!)
+      : undefined;
   return {
+    declaredParameterTypes,
     parameterCount: hasVararg ? undefined : params.length,
     requiredParameterCount: required,
     parameterTypes: parameterTypes.length > 0 ? parameterTypes : undefined,

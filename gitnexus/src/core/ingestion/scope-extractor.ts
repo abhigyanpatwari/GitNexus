@@ -753,10 +753,9 @@ function buildDefFromDeclarationMatch(
   const isOverloadSignature = match['@declaration.overload-signature'] !== undefined;
   // A signature can share the coarse types unless its provider normalized an
   // annotation or inserted a marker (such as a trailing variadic sentinel).
-  const declaredParameterTypes = isOverloadSignature
-    ? (parseJsonStringArrayCapture(match['@declaration.declared-parameter-types']) ??
-      parameterTypes)
-    : undefined;
+  const declaredParameterTypes =
+    parseJsonStringArrayCapture(match['@declaration.declared-parameter-types']) ??
+    (isOverloadSignature ? parameterTypes : undefined);
   const parameterTypeClasses = parseJsonParameterTypeClassesCapture(
     match['@declaration.parameter-type-classes'],
   );

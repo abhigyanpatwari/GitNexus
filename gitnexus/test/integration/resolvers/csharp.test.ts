@@ -99,6 +99,34 @@ describe('C# heritage resolution', () => {
   });
 });
 
+it('substitutes nullable generic arguments across C# inheritance hops', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')].map((edge) => [
+    graph.getNode(edge.sourceId)?.properties.name,
+    edge.targetId,
+  ]);
+  const target = 'Method:Nullable.cs:Base.Accept#1';
+  const bare = 'Method:Nullable.cs:BareBase.Accept#1';
+  expect(overrides.sort()).toEqual([
+    ['AlreadyNullable', target],
+    ['BareChild', bare],
+    ['BareGeneric', bare],
+    ['Child', target],
+    ['Direct', target],
+    ['OpenChild', target],
+    ['OpenRef', target],
+  ]);
+  expect(
+    [...graph.iterRelationshipsByType('METHOD_IMPLEMENTS')].map((edge) => [
+      edge.sourceId,
+      edge.targetId,
+    ]),
+  ).toEqual([['Method:Nullable.cs:SeparateBranch.Read#1', 'Method:Nullable.cs:IPlain.Read#1']]);
+});
+
 // ---------------------------------------------------------------------------
 // Ambiguous: using-namespace can't disambiguate same-named types
 // ---------------------------------------------------------------------------

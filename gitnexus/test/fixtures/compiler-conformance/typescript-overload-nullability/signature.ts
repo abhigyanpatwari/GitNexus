@@ -16,3 +16,7 @@ export function primitive(value: unknown) {}
 export function literal(value: string): void;
 export function literal(value: null): void;
 export function literal(value: unknown) {}
+
+export function field(value: { text: string }): void;
+export function field(value: unknown): void;
+export function field(value: unknown) {}

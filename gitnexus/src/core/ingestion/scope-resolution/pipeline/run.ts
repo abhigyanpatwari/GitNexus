@@ -486,7 +486,7 @@ function preEmitInheritanceEdges(
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   recordTypeArguments: HeritageTypeArgumentSink,
   unresolvedInheritanceByClass: Set<string>,
-  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
+  provider: ScopeResolver,
   recordSourceBinding?: SourceBindingRecorder,
   substitutions?: HeritageSubstitutions,
 ): Set<string> {
@@ -528,7 +528,12 @@ function preEmitInheritanceEdges(
 
     const targetDef =
       explicitInheritanceBase(site, callerClass, scopes) ??
-      resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
+      resolveImplicitInheritanceBaseAtSite(
+        site,
+        callerClass,
+        scopes,
+        provider.resolveImplicitInheritanceBase,
+      );
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
       // same-named base. A self-edge is not inheritance evidence and would
@@ -559,7 +564,14 @@ function preEmitInheritanceEdges(
     if (site.typeArguments !== undefined) {
       recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
     }
-    substitutions?.registerBase(callerGraphId, targetGraphId, targetDef, site.typeArguments);
+    substitutions?.registerBase(
+      callerGraphId,
+      targetGraphId,
+      targetDef,
+      site.typeArguments,
+      callerClass,
+      provider,
+    );
   }
 
   return handledSites;
@@ -1235,15 +1247,19 @@ export function runScopeResolution(
         nodeLookup,
         recordHeritageTypeArguments,
         unresolvedInheritanceByClass,
-        provider.resolveImplicitInheritanceBase,
+        provider,
         recordSourceBinding,
         input.heritageSubstitutions,
       );
   if (input.heritageSubstitutions?.hasBindings) {
+    const nullableBindings =
+      input.heritageSubstitutions.hasNullableBindings &&
+      provider.specializeNullableHeritageFormal !== undefined;
     for (const def of finalized.defs.byId.values()) {
-      if (def.type !== 'Method' || !def.typeParameters?.length) continue;
+      const useDeclaredTypes = nullableBindings && def.declaredParameterTypes !== undefined;
+      if (def.type !== 'Method' || (!def.typeParameters?.length && !useDeclaredTypes)) continue;
       const id = resolveDefGraphId(def.filePath, def, nodeLookup);
-      if (id) input.heritageSubstitutions.registerMethod(id, def);
+      if (id) input.heritageSubstitutions.registerMethod(id, def, useDeclaredTypes);
     }
   }
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits

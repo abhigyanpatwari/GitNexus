@@ -20,7 +20,11 @@ import {
   canonicalizeWorkspaceBindings,
   canonicalModuleExports,
 } from '../../scope-resolution/scope/canonicalize-bindings.js';
-import { canonicalName } from './identifiers.js';
+import {
+  normalizeCsharpNullableSignature,
+  specializeCsharpNullableFormal,
+} from './nullable-heritage.js';
+import { canonicalName, CSHARP_PREDEFINED_TYPE_ALIASES } from './identifiers.js';
 import { csharpProvider } from '../csharp.js';
 import {
   csharpArityCompatibility,
@@ -100,6 +104,9 @@ const csharpScopeResolver: ScopeResolver = {
   // Adapter: csharpArityCompatibility uses (def, callsite); the
   // contract is (callsite, def).
   arityCompatibility: (callsite, def) => csharpArityCompatibility(def, callsite),
+
+  specializeNullableHeritageFormal: specializeCsharpNullableFormal,
+  normalizeNullableHeritageSignature: normalizeCsharpNullableSignature,
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
@@ -201,6 +208,15 @@ const csharpScopeResolver: ScopeResolver = {
   },
 };
 
+/** The BCL simple names the keywords alias. A spelling that reduces to one of
+ *  these IS the predefined type; anything else that merely happens to sit in
+ *  `System` is an ordinary type and keeps its qualifier. */
+const CSHARP_PREDEFINED_TYPE_NAMES: ReadonlySet<string> = new Set(
+  CSHARP_PREDEFINED_TYPE_ALIASES.values(),
+);
+
+const CSHARP_SYSTEM_QUALIFIER = /^(?:global::)?System\./;
+
 /**
  * C# predefined type aliases — the 15 keywords the language defines as exact
  * synonyms for `System` types (`string` ≡ `System.String`), plus `nint`/`nuint`.
@@ -223,35 +239,6 @@ const csharpScopeResolver: ScopeResolver = {
  * shape that is rare on its own terms, i.e. exactly the pre-#2912 fan-out for
  * that pair and no worse.
  */
-const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([
-  ['bool', 'Boolean'],
-  ['byte', 'Byte'],
-  ['sbyte', 'SByte'],
-  ['char', 'Char'],
-  ['decimal', 'Decimal'],
-  ['double', 'Double'],
-  ['float', 'Single'],
-  ['int', 'Int32'],
-  ['uint', 'UInt32'],
-  ['long', 'Int64'],
-  ['ulong', 'UInt64'],
-  ['short', 'Int16'],
-  ['ushort', 'UInt16'],
-  ['nint', 'IntPtr'],
-  ['nuint', 'UIntPtr'],
-  ['object', 'Object'],
-  ['string', 'String'],
-]);
-
-/** The BCL simple names the keywords alias. A spelling that reduces to one of
- *  these IS the predefined type; anything else that merely happens to sit in
- *  `System` is an ordinary type and keeps its qualifier. */
-const CSHARP_PREDEFINED_TYPE_NAMES: ReadonlySet<string> = new Set(
-  CSHARP_PREDEFINED_TYPE_ALIASES.values(),
-);
-
-const CSHARP_SYSTEM_QUALIFIER = /^(?:global::)?System\./;
-
 function normalizeCsharpTypeArgument(name: string): string {
   const named = name.trim();
   // A keyword answers immediately: `string` → `String`.

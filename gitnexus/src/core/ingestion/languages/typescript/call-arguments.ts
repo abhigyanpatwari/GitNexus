@@ -18,6 +18,7 @@ import {
   findAllCallableBindingsInScope,
   findClassBindingInScope,
   findReceiverTypeBinding,
+  lookupNameClaim,
 } from '../../scope-resolution/scope/walkers.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
@@ -363,6 +364,7 @@ function acceptsPrimitiveArguments(
   indexes: ScopeResolutionIndexes,
   evidence?: readonly (ArgumentEvidence | null)[],
   enumArguments?: ReadonlyMap<number, NonNullable<ReturnType<typeof enumArgument>>>,
+  acceptsLooseField?: (value: string) => boolean,
 ): ArgumentCompatibility {
   if (!signature.declarationRange) return undefined;
   const formals = signature.parameterTypes;
@@ -441,7 +443,7 @@ function acceptsPrimitiveArguments(
     const enumValue = enumArguments?.get(i);
     const checked = enumValue
       ? acceptsEnum(annotation, enumValue, signature, scope.id, indexes)
-      : acceptsArgumentEvidence(annotation, type, evidence?.[i]);
+      : acceptsArgumentEvidence(annotation, type, evidence?.[i], acceptsLooseField);
     if (checked === false) return false;
     if (checked === true) continue;
     if (checked === 'assignable') {
@@ -651,10 +653,31 @@ function selectProjectOverload(
       (declarations?.get(a.ownerId ?? '') ?? 0) - (declarations?.get(b.ownerId ?? '') ?? 0) ||
       byPosition(a.declarationRange!, b.declarationRange!),
   );
-  const mode = types.some(isNullish) ? callStrictNullChecks(site, indexes) : true;
+  const mode = callStrictNullChecks(site, indexes);
   if (mode !== 'mixed') return select(mode);
   const strict = select(true);
+  const hasNullishArgument = types.some((type, i) => {
+    if (isNullish(type)) return true;
+    const arg = evidence?.[i];
+    return (
+      typeof arg === 'object' &&
+      arg !== null &&
+      'fields' in arg &&
+      arg.fields.some(([, fieldType]) => isNullish(fieldType))
+    );
+  });
+  if (!hasNullishArgument) return strict;
   return strict === select(false) ? strict : 'project-dependent';
+
+  // A property spelled undefined may refer to a local value of any type.
+  function acceptsLooseField(value: string): boolean {
+    if (value !== 'undefined') return value === 'null';
+    const claim = lookupNameClaim(site.inScope, 'undefined', indexes, {
+      purpose: 'value',
+      position: site.atRange,
+    });
+    return claim.status === 'absent' && !claim.typeBinding;
+  }
 
   function select(strictNullChecks: boolean) {
     let firstAssignable: SymbolDefinition | undefined;
@@ -666,6 +689,7 @@ function selectProjectOverload(
         indexes,
         evidence,
         enumArguments,
+        strictNullChecks ? undefined : acceptsLooseField,
       );
       if (applicable === undefined) return undefined;
       if (applicable === true) return signature;

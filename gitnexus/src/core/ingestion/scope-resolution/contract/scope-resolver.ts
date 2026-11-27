@@ -2033,6 +2033,15 @@ export interface ScopeResolver {
     },
   ) => void;
 
+  /** Specialize an outer nullable formal according to its declaration's constraints. */
+  readonly specializeNullableHeritageFormal?: (
+    owner: SymbolDefinition,
+    formal: string,
+    actual: string,
+  ) => string | null;
+  /** Canonical comparison spelling when nullable annotations do not change a method signature. */
+  readonly normalizeNullableHeritageSignature?: (type: string) => string;
+
   /**
    * Optional fallback for an UNQUALIFIED inheritance base that the shared
    * chain (`resolveInheritanceBaseInScope`) could not bind. Consulted only by
