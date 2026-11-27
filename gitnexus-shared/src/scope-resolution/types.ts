@@ -539,7 +539,12 @@ export interface ImportEdge {
   readonly localName: string;
   /** Namespace-import alias syntax, retained for providers whose unaliased imports bind a path prefix. */
   readonly explicitAlias?: boolean;
-  /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
+  /**
+   * Exporting file; `null` when the edge names no single file: a
+   * `dynamic-unresolved` import, an import whose target could not be
+   * resolved (`linkStatus: 'unresolved'`), or a grouped statement edge
+   * (`groupsFiles`, files from `ImportVisibility.groupTargets`).
+   */
   readonly targetFile: string | null;
   /** The module object a forwarded namespace denotes. The dependency still names targetFile. */
   readonly namespaceTargetFile?: string;

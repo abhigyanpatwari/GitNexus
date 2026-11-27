@@ -12,16 +12,8 @@
  * importer that writes `.none` or `.default` therefore keeps every file that
  * declares a static or enum case of that name, on top of the files it names.
  */
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  getRelationships,
-  runPipelineFromRepo,
-  writeFixtureRepo,
-  type PipelineResult,
-} from './helpers.js';
+import { describe, expect, it } from 'vitest';
+import { useFixture } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { emitSwiftScopeCaptures } from '../../../src/core/ingestion/languages/swift/captures.js';
@@ -33,42 +25,13 @@ import {
   SIZE_SDK_EXTENSIONS,
   SIZE_TYPES,
   sizeFixture,
+  swiftImportTargets as importTargets,
 } from './swift-fanout-fixtures.js';
 
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
-const IMPORT_REASON = 'swift-scope: import';
-
-function runFixture(): () => PipelineResult {
-  let root = '';
-  let result: PipelineResult | undefined;
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-swift-fanout-size-'));
-    writeFixtureRepo(root, sizeFixture());
-    result = await runPipelineFromRepo(root, () => {});
-  }, 120000);
-  afterAll(() => {
-    if (root !== '') fs.rmSync(root, { recursive: true, force: true });
-  });
-  return () => {
-    if (result === undefined) throw new Error('pipeline did not run');
-    return result;
-  };
-}
-
-function importTargets(result: PipelineResult): Map<string, string[]> {
-  const bySource = new Map<string, string[]>();
-  for (const edge of getRelationships(result, 'IMPORTS')) {
-    if (edge.rel.reason !== IMPORT_REASON) continue;
-    const targets = bySource.get(edge.sourceFilePath) ?? [];
-    targets.push(edge.targetFilePath);
-    bySource.set(edge.sourceFilePath, targets);
-  }
-  for (const targets of bySource.values()) targets.sort();
-  return bySource;
-}
 
 describe.skipIf(!swiftAvailable)('Swift import X: kept edges are bounded by use', () => {
-  const result = runFixture();
+  const result = useFixture('swift-fanout-size', sizeFixture(), 120000);
 
   it('keeps, for an importer that spells what it uses, only the files it reaches', () => {
     const targets = importTargets(result());

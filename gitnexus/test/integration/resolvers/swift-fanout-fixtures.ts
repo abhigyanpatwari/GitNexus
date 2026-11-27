@@ -5,6 +5,23 @@
  * over all of them (`swift-import-soundness.test.ts`).
  */
 
+import { getRelationships, type PipelineResult } from './helpers.js';
+
+export const SWIFT_IMPORT_REASON = 'swift-scope: import';
+
+/** Persisted `import X` targets per importer, sorted. */
+export function swiftImportTargets(result: PipelineResult): Map<string, string[]> {
+  const bySource = new Map<string, string[]>();
+  for (const edge of getRelationships(result, 'IMPORTS')) {
+    if (edge.rel.reason !== SWIFT_IMPORT_REASON) continue;
+    const targets = bySource.get(edge.sourceFilePath) ?? [];
+    targets.push(edge.targetFilePath);
+    bySource.set(edge.sourceFilePath, targets);
+  }
+  for (const targets of bySource.values()) targets.sort();
+  return bySource;
+}
+
 export const MODULES = 3;
 export const FILES_PER_MODULE = 8;
 export const IMPORTERS = 12;

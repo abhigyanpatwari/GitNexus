@@ -8,16 +8,8 @@
  * the importer reaches, by the way Swift reaches it (`on-demand-imports.ts`).
  * Name resolution is unchanged; these fixtures pin both.
  */
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  getRelationships,
-  runPipelineFromRepo,
-  writeFixtureRepo,
-  type PipelineResult,
-} from './helpers.js';
+import { describe, expect, it } from 'vitest';
+import { getRelationships, useFixture, type PipelineResult } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { MODULE_MEMBERSHIP_REASON } from '../../../src/core/graph/edge-reasons.js';
@@ -34,44 +26,17 @@ import {
   NAMES_FIXTURE,
   NEGATIVES_FIXTURE,
   SAME_NAMED_TYPES,
+  SWIFT_IMPORT_REASON,
+  swiftImportTargets as importTargets,
   typeFor,
   UNKNOWN_FIXTURE,
 } from './swift-fanout-fixtures.js';
 
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
-const IMPORT_REASON = 'swift-scope: import';
-
-function runFixture(prefix: string, files: Record<string, string>): () => PipelineResult {
-  let root = '';
-  let result: PipelineResult | undefined;
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-${prefix}-`));
-    writeFixtureRepo(root, files);
-    result = await runPipelineFromRepo(root, () => {});
-  }, 60000);
-  afterAll(() => {
-    if (root !== '') fs.rmSync(root, { recursive: true, force: true });
-  });
-  return () => {
-    if (result === undefined) throw new Error('pipeline did not run');
-    return result;
-  };
-}
-
-function importTargets(result: PipelineResult): Map<string, string[]> {
-  const bySource = new Map<string, string[]>();
-  for (const edge of getRelationships(result, 'IMPORTS')) {
-    if (edge.rel.reason !== IMPORT_REASON) continue;
-    const targets = bySource.get(edge.sourceFilePath) ?? [];
-    targets.push(edge.targetFilePath);
-    bySource.set(edge.sourceFilePath, targets);
-  }
-  for (const targets of bySource.values()) targets.sort();
-  return bySource;
-}
 
 function importCount(result: PipelineResult): number {
-  return getRelationships(result, 'IMPORTS').filter((e) => e.rel.reason === IMPORT_REASON).length;
+  return getRelationships(result, 'IMPORTS').filter((e) => e.rel.reason === SWIFT_IMPORT_REASON)
+    .length;
 }
 
 function membershipCount(result: PipelineResult): number {
@@ -109,7 +74,7 @@ for (const layout of FANOUT_LAYOUTS) {
   describe.skipIf(!swiftAvailable)(
     `Swift import X persists used files only: ${layout.name}`,
     () => {
-      const result = runFixture(layout.prefix, fanoutFixture(layout));
+      const result = useFixture(layout.prefix, fanoutFixture(layout));
 
       it('persists one IMPORTS edge per (importer, module), not one per file of the module', () => {
         // Before: IMPORTERS x MODULES x FILES_PER_MODULE = 288.
@@ -142,7 +107,7 @@ for (const layout of FANOUT_LAYOUTS) {
 }
 
 describe.skipIf(!swiftAvailable)('Swift import X: what an importer reaches', () => {
-  const result = runFixture('swift-fanout-names', NAMES_FIXTURE);
+  const result = useFixture('swift-fanout-names', NAMES_FIXTURE);
 
   it('keeps no edge to a module the importer names nothing from', () => {
     expect(importTargets(result()).get('App/UsesModel.swift')).not.toContain('Mod1/Thing.swift');
@@ -182,7 +147,7 @@ describe.skipIf(!swiftAvailable)('Swift import X: what an importer reaches', () 
 });
 
 describe.skipIf(!swiftAvailable)('Swift import X: targets the facts cannot fully read', () => {
-  const result = runFixture('swift-fanout-unknown', UNKNOWN_FIXTURE);
+  const result = useFixture('swift-fanout-unknown', UNKNOWN_FIXTURE);
 
   it('keeps a target with a parse error for an importer that names nothing in it', () => {
     expect(importTargets(result()).get('App/E.swift')).toEqual([
@@ -201,7 +166,7 @@ describe.skipIf(!swiftAvailable)('Swift import X: targets the facts cannot fully
 });
 
 describe.skipIf(!swiftAvailable)('Swift import X: names that do not reach a file', () => {
-  const result = runFixture('swift-fanout-negatives', NEGATIVES_FIXTURE);
+  const result = useFixture('swift-fanout-negatives', NEGATIVES_FIXTURE);
 
   it('keeps no extension file for an importer that spells only the extended type', () => {
     expect(importTargets(result()).get('App/SpellsHolder.swift')).toEqual(['Neg/Holder.swift']);
@@ -219,7 +184,7 @@ describe.skipIf(!swiftAvailable)('Swift import X: names that do not reach a file
  * edge, if any, still links the importer to the file.
  */
 describe.skipIf(!swiftAvailable)('Swift import X: documented drops', () => {
-  const result = runFixture('swift-fanout-drops', DROPS_FIXTURE);
+  const result = useFixture('swift-fanout-drops', DROPS_FIXTURE);
   const edges = (type: string, from: string) =>
     getRelationships(result(), type)
       .filter((e) => e.sourceFilePath === from)
@@ -329,7 +294,7 @@ for (const variant of [
   },
 ]) {
   describe.skipIf(!swiftAvailable)(`Swift import X: declaration kinds, ${variant.name}`, () => {
-    const result = runFixture('swift-fanout-matrix', matrixFixture(variant.module, variant.extra));
+    const result = useFixture('swift-fanout-matrix', matrixFixture(variant.module, variant.extra));
     it.each(MATRIX.map((entry, k) => ({ ...entry, k })))(
       'keeps the file of a $kind for the importer that uses only it',
       ({ k, alsoKept }) => {
@@ -350,7 +315,7 @@ for (const variant of [
 }
 
 describe.skipIf(!swiftAvailable)('Swift import X: common local and member names', () => {
-  const result = runFixture('swift-fanout-locals', localsFixture());
+  const result = useFixture('swift-fanout-locals', localsFixture());
 
   it('keeps exactly one file per (importer, module) when every file shares member names', () => {
     // Before: IMPORTING x MODULES x FILES = 48.

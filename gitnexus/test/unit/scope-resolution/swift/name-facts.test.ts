@@ -372,13 +372,16 @@ describe.skipIf(!swiftAvailable)('Swift name facts: forms that reach a declarati
     ]);
   });
 
-  it('lists the extended type of an extension declaring callAsFunction', () => {
-    const facts = declares('public extension Foo {\n    func callAsFunction() -> Int { 1 }\n}');
-    expect(list(facts.extTypes)).toEqual(['Foo']);
-    expect(swiftReaches(importer('func f() {\n    let t = Foo()\n    _ = t()\n}'), facts)).toBe(
-      true,
-    );
-  });
+  it.each([['callAsFunction'], ['`callAsFunction`']])(
+    'lists the extended type of an extension declaring %s',
+    (name) => {
+      const facts = declares(`public extension Foo {\n    func ${name}() -> Int { 1 }\n}`);
+      expect(list(facts.extTypes)).toEqual(['Foo']);
+      expect(swiftReaches(importer('func f() {\n    let t = Foo()\n    _ = t()\n}'), facts)).toBe(
+        true,
+      );
+    },
+  );
 
   it('lists the argument labels of an extension subscript as members', () => {
     expect(
@@ -520,6 +523,16 @@ describe.skipIf(!swiftAvailable)('Swift name facts: forms they do not model are 
       'unterminated-to-eof',
     ],
     [
+      'an unterminated raw string',
+      'public let a = 1\nlet r = #"abc\npublic struct After {}\n',
+      'parse-error',
+    ],
+    [
+      'an unterminated multi-line string',
+      'public let a = 1\nlet m = """\nabc\npublic struct After {}\n',
+      'unterminated-to-eof',
+    ],
+    [
       'an error holding a declaration',
       'func f() {\n    ?items.forEach { item in\n        let a = item.value(for: key, default: 0)\n        let b = [a, 1]\n    }\n}\n',
       'error-hides-declaration',
@@ -542,6 +555,19 @@ describe.skipIf(!swiftAvailable)('Swift name facts: forms they do not model are 
   ])('marks the declarations of %s unknown', (_form, source, reason) => {
     expect(unknownReason(source)).toBe(reason);
   });
+
+  it.each([
+    ['a string', 'public let tail = "hello"\n', ['f', 'tail']],
+    ['a raw string', 'public let tail = #"a"b"#\n', ['f', 'tail']],
+    ['a multi-line string', 'public let tail = """\n    text\n    """\n', ['f', 'tail']],
+  ])(
+    'keeps the declarations known when %s ends the file beside an unrelated parse error',
+    (_form, last, names) => {
+      // The error is inside a function body; the complete literal that ends
+      // the file is not an unterminated one.
+      expect(list(declares(`func f() {\n    let x = (\n}\n${last}`).top)).toEqual(names);
+    },
+  );
 
   it('keeps the declarations known after a parse error inside a function body', () => {
     // An error inside a function body hides no declaration another file can

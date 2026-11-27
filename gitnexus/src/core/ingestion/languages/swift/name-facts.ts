@@ -341,7 +341,7 @@ function collectExtension(decl: SyntaxNode, facts: DeclCollector): void {
         if (name?.type === 'simple_identifier') {
           facts.ext.add(identifierText(name.text));
           // `t()` calls it through a value of T without writing its name.
-          if (name.text === 'callAsFunction') reachedThroughType = true;
+          if (identifierText(name.text) === 'callAsFunction') reachedThroughType = true;
         } else if (op !== undefined) facts.ops.add(op);
         // A standard-operator overload is used through values of T.
         else reachedThroughType = true;
@@ -471,8 +471,11 @@ function assertNothingHidden(root: SyntaxNode): void {
     const isError = node.isError;
     if (errors > 0 && DECLARATION_NODE.test(node.type))
       throw new UnmodelledForm('error-hides-declaration');
-    if ((isError || STRING_LITERALS.has(node.type)) && node.endIndex >= lastEnd)
-      throw new UnmodelledForm('unterminated-to-eof');
+    // A string is unterminated when the parser had to insert its closing
+    // delimiter (an error inside the literal); a complete literal that just
+    // happens to be the last token hides nothing.
+    const unterminated = isError || (STRING_LITERALS.has(node.type) && node.hasError);
+    if (unterminated && node.endIndex >= lastEnd) throw new UnmodelledForm('unterminated-to-eof');
     if (cursor.gotoFirstChild()) {
       inError.push(isError);
       if (isError) errors++;
