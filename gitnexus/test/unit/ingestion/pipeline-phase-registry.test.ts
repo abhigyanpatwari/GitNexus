@@ -107,7 +107,7 @@ describe('buildPhaseList parity (registry refactor, #2080)', () => {
     expect(buildPhaseList({ skipGraphPhases: false }).map((p) => p.name)).toEqual(FULL_ORDER);
   });
 
-  it('skipGraphPhases:true → omits exactly mro/di/communities/processes', () => {
+  it('skipGraphPhases:true → omits mro/springAopInheritance/symfonyConfig/di/communities/processes', () => {
     expect(buildPhaseList({ skipGraphPhases: true }).map((p) => p.name)).toEqual(
       WITHOUT_GRAPH_PHASES,
     );

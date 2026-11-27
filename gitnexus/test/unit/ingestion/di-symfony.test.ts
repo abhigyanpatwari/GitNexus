@@ -8,12 +8,16 @@ import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { diPhase } from '../../../src/core/ingestion/pipeline-phases/di.js';
 import {
+  SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY,
   SYMFONY_DI_PROVIDER_PROPERTY,
   normalizeSymfonyInjectionType,
   matchSymfonyConstructorInjections,
+  defaultSymfonyProvider,
 } from '../../../src/core/ingestion/di-extractors/symfony.js';
 import {
+  classMatchesName,
   extractSymfonyServiceAliases,
+  isServicesYaml,
   parseSymfonyServicesYaml,
 } from '../../../src/core/ingestion/pipeline-phases/symfony-config.js';
 import { generateId } from '../../../src/lib/utils.js';
@@ -67,6 +71,14 @@ function addHasMethod(graph: KnowledgeGraph, classId: string, methodId: string):
   });
 }
 
+function stampSymfonyProvider(graph: KnowledgeGraph, classId: string, preferenceReason?: string): void {
+  const node = graph.getNode(classId)!;
+  const base = defaultSymfonyProvider(node);
+  if (base === null) return;
+  node.properties[SYMFONY_DI_PROVIDER_PROPERTY] =
+    preferenceReason === undefined ? base : { ...base, preferenceReason };
+}
+
 describe('normalizeSymfonyInjectionType', () => {
   it('accepts class / interface names and FQCNs', () => {
     expect(normalizeSymfonyInjectionType('Logger')).toBe('Logger');
@@ -97,6 +109,36 @@ describe('matchSymfonyConstructorInjections', () => {
     expect(matches).toHaveLength(1);
     expect(matches[0].targetTypeName).toBe('Logger');
     expect(matches[0].cardinality).toBe('single');
+  });
+});
+
+describe('isServicesYaml', () => {
+  it('accepts main, env-suffixed, and services/ import paths', () => {
+    expect(isServicesYaml('config/services.yaml')).toBe(true);
+    expect(isServicesYaml('config/services.yml')).toBe(true);
+    expect(isServicesYaml('config/services_dev.yaml')).toBe(true);
+    expect(isServicesYaml('config/services_test.yaml')).toBe(true);
+    expect(isServicesYaml('apps/api/config/services_prod.yaml')).toBe(true);
+    expect(isServicesYaml('config/services/messenger.yaml')).toBe(true);
+  });
+
+  it('rejects unrelated yaml paths', () => {
+    expect(isServicesYaml('config/packages/framework.yaml')).toBe(false);
+    expect(isServicesYaml('config/routes.yaml')).toBe(false);
+    expect(isServicesYaml('src/services.yaml')).toBe(false);
+  });
+});
+
+describe('classMatchesName', () => {
+  it('matches FQCN aliases only against the same qualifiedName', () => {
+    expect(classMatchesName('FileLogger', 'App\\Log\\FileLogger', 'App\\Log\\FileLogger')).toBe(
+      true,
+    );
+    expect(classMatchesName('FileLogger', 'Other\\FileLogger', 'App\\Log\\FileLogger')).toBe(false);
+  });
+
+  it('allows unqualified wanted to match a qualified node short name', () => {
+    expect(classMatchesName('FileLogger', 'App\\Log\\FileLogger', 'FileLogger')).toBe(true);
   });
 });
 
@@ -148,14 +190,15 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
       qualifiedName: 'App\\Log\\FileLogger',
     });
     addImplements(graph, fileLoggerId, loggerId);
+    stampSymfonyProvider(graph, fileLoggerId);
 
-    const ctorId = addNode(graph, 'Method', '__construct', {
+    const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
+      name: '__construct',
       parameterTypes: ['Logger'],
       parameterCount: 1,
       filePath: 'src/OrderService.php',
+      [SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY]: true,
     });
-    // Method id collision: regenerate with unique key
-    // (addNode used name __construct — fine for this graph)
     addHasMethod(graph, orderId, ctorId);
 
     const output = await diPhase.execute(makeCtx(graph), new Map());
@@ -163,6 +206,29 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
 
     const injects = [...graph.iterRelationshipsByType('INJECTS')];
     expect(injects.some((e) => e.sourceId === orderId && e.targetId === fileLoggerId)).toBe(true);
+  });
+
+  it('emits no INJECTS for plain PHP without Symfony metadata', async () => {
+    const graph = createKnowledgeGraph();
+    const orderId = addNode(graph, 'Class', 'OrderService');
+    const loggerId = addNode(graph, 'Interface', 'Logger', {
+      qualifiedName: 'App\\Log\\Logger',
+    });
+    const fileLoggerId = addNode(graph, 'Class', 'FileLogger', {
+      qualifiedName: 'App\\Log\\FileLogger',
+    });
+    addImplements(graph, fileLoggerId, loggerId);
+
+    const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
+      name: '__construct',
+      parameterTypes: ['Logger'],
+      parameterCount: 1,
+      filePath: 'src/OrderService.php',
+    });
+    addHasMethod(graph, orderId, ctorId);
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+    expect(output.injectsEdges).toBe(0);
   });
 
   it('prefers the services.yaml-aliased implementer when multiple exist', async () => {
@@ -179,23 +245,20 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     });
     addImplements(graph, fileLoggerId, loggerId);
     addImplements(graph, syslogId, loggerId);
-
-    const fileLogger = graph.getNode(fileLoggerId)!;
-    fileLogger.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
-      names: ['FileLogger', 'App\\Log\\FileLogger'],
-      providedTypeName: 'App\\Log\\FileLogger',
-      declaredByNodeId: fileLoggerId,
-      preferenceReason: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
-    };
+    stampSymfonyProvider(graph, syslogId);
+    stampSymfonyProvider(
+      graph,
+      fileLoggerId,
+      'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+    );
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
       name: '__construct',
       parameterTypes: ['Logger'],
       parameterCount: 1,
       filePath: 'src/OrderService.php',
+      [SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY]: true,
     });
-    // Fix name after unique id key
-    graph.getNode(ctorId)!.properties.name = '__construct';
     addHasMethod(graph, orderId, ctorId);
 
     await diPhase.execute(makeCtx(graph), new Map());

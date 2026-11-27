@@ -24,8 +24,8 @@
 import type { GraphNode } from 'gitnexus-shared';
 import type { DiInjectionMatch, DiProviderMatch, DiResolver } from './types.js';
 
-/** Ephemeral Class-node property carrying Symfony provider names / alias preference. */
 export const SYMFONY_DI_PROVIDER_PROPERTY = 'symfonyDiProvider';
+export const SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY = 'symfonyDiConstructorEnabled';
 
 /** PHP scalar / special types that are never container-injected services. */
 const PHP_NON_SERVICE_TYPES: ReadonlySet<string> = new Set([
@@ -124,15 +124,14 @@ export function defaultSymfonyProvider(node: GraphNode): DiProviderMatch | null 
   };
 }
 
-/** Symfony / PHP resolver registered behind the framework-neutral DI seam. */
 export const symfonyDiResolver: DiResolver = {
   matchInjectionSites(node): readonly DiInjectionMatch[] {
+    if (node.properties[SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY] !== true) return [];
     return matchSymfonyConstructorInjections(node);
   },
 
   matchProvider(node): DiProviderMatch | null {
     const attached = node.properties[SYMFONY_DI_PROVIDER_PROPERTY];
-    if (isProviderMatch(attached)) return attached;
-    return defaultSymfonyProvider(node);
+    return isProviderMatch(attached) ? attached : null;
   },
 };
