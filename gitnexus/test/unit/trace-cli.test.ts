@@ -167,6 +167,62 @@ describe('CLI trace command', () => {
     expect(callTool).toHaveBeenCalledWith('trace', expect.objectContaining({ includeTests: true }));
   });
 
+  it('accepts --from-uid/--to-uid without positional args', async () => {
+    await traceCommand(undefined, undefined, {
+      fromUid: 'uid:A',
+      toUid: 'uid:B',
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from_uid: 'uid:A',
+        to_uid: 'uid:B',
+      }),
+    );
+  });
+
+  it('accepts positional from with --to-uid (mixed mode)', async () => {
+    await traceCommand('validateUser', undefined, {
+      toUid: 'uid:B',
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from: 'validateUser',
+        to_uid: 'uid:B',
+      }),
+    );
+  });
+
+  it('accepts --from-uid with positional to (mixed mode)', async () => {
+    await traceCommand(undefined, 'executeQuery', {
+      fromUid: 'uid:A',
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from_uid: 'uid:A',
+        to: 'executeQuery',
+      }),
+    );
+  });
+
+  it('exits with usage when neither positional nor UID given for both', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(traceCommand(undefined, undefined, {})).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
   it('parses -f through the real CLI dispatcher', async () => {
     const originalArgv = process.argv;
     process.argv = ['node', 'gitnexus', 'trace', 'A', 'B', '-f', 'src/a.ts'];
