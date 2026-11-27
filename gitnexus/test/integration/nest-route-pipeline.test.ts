@@ -29,6 +29,7 @@ const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'nest-route-app');
 // would otherwise compare backslashes against the graph's forward slashes.
 const CONTROLLER_FILE = 'src/venues/venues.controller.ts';
 const HEALTH_FILE = 'src/health/health.controller.ts';
+const INVOICES_FILE = 'src/invoices/invoices.controller.ts';
 
 interface RouteView {
   /** `${method} ${url}` — the `routeNodeKey` identity, as a sortable string. */
@@ -124,6 +125,18 @@ describe('NestJS decorator route ingestion pipeline', () => {
         handlerFile: HEALTH_FILE,
       },
       {
+        identity: 'GET /invoices',
+        handler: 'listInvoices',
+        handlerLabel: 'Method',
+        handlerFile: INVOICES_FILE,
+      },
+      {
+        identity: 'GET /invoices/history',
+        handler: 'history',
+        handlerLabel: 'Method',
+        handlerFile: INVOICES_FILE,
+      },
+      {
         identity: 'GET /venues',
         handler: 'findAll',
         handlerLabel: 'Method',
@@ -142,6 +155,30 @@ describe('NestJS decorator route ingestion pipeline', () => {
         handlerFile: CONTROLLER_FILE,
       },
     ]);
+  });
+
+  it('attaches an inherited route to the method of the base class', () => {
+    // `InvoicesController` declares no `history`: the handler lives on
+    // `AuditedController`, in the same file. The table above shows the name
+    // only, and a route resolved to a same-named method of another class would
+    // read the same there.
+    const route = routeNodes().find(
+      (node) => node.properties.method === 'GET' && node.properties.name === '/invoices/history',
+    );
+    const handlerId = String(route?.properties.handlerSymbolId);
+
+    expect(
+      relationships()
+        .filter((rel) => rel.type === 'HAS_METHOD' && rel.targetId === handlerId)
+        .map((rel) => String(result.graph.getNode(rel.sourceId)?.properties.name)),
+    ).toEqual(['AuditedController']);
+  });
+
+  it('mounts nothing for an inherited handler the controller redeclares undecorated', () => {
+    // The base class declares `@Post('archive')`. NestJS reads route metadata
+    // off the first `archive` on the prototype chain, which is the subclass
+    // method, and that one carries none.
+    expect(identities().filter((id) => id.includes('archive'))).toEqual([]);
   });
 
   it('splits one URL into one Route node per verb', () => {
