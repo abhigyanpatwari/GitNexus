@@ -40,6 +40,8 @@ export interface JvmPackageSiblingOptions {
    * either way.
    */
   readonly mergeSiblingTypeBindings?: boolean;
+  /** Also make top-level functions visible to the package's other files. */
+  readonly includeTopLevelFunctions?: boolean;
 }
 
 export interface JvmPackageSiblingVisibility {
@@ -202,6 +204,15 @@ export function createJvmPackageSiblingVisibility(
             (candidate) => isClassLike(candidate.type) || candidate.type === 'Annotation',
           );
           if (def !== undefined) classDefs.push({ def, filePath: parsed.filePath });
+        }
+        if (options.includeTopLevelFunctions === true) {
+          const moduleScope = parsed.scopes.find((scope) => scope.id === moduleScopeId);
+          for (const refs of moduleScope?.bindings.values() ?? []) {
+            for (const { def, origin } of refs) {
+              if (origin === 'local' && def.type === 'Function' && def.filePath === parsed.filePath)
+                classDefs.push({ def, filePath: parsed.filePath });
+            }
+          }
         }
       }
 

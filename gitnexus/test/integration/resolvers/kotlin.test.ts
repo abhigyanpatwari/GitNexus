@@ -3177,3 +3177,35 @@ describe('Kotlin package-qualified factory result types (#3498 follow-up)', () =
     expect(callsFrom('companionMember', 'm')).toEqual(['Method:kqfmod/Types.kt:Other.m#0']);
   });
 });
+
+describe('Kotlin same-package top-level function calls', () => {
+  let result: PipelineResult;
+  const billing = 'src/main/kotlin/com/acme/billing';
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-same-package-top-level-calls'),
+      () => {},
+    );
+  }, 60000);
+
+  const targetsOf = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === source)
+      .map((c) => `${c.target} → ${c.targetFilePath}`)
+      .sort();
+
+  it('resolves unimported calls to top-level functions in a sibling file', () => {
+    expect(targetsOf('render')).toEqual([
+      `computeTotal → ${billing}/Money.kt`,
+      `formatCents → ${billing}/Money.kt`,
+    ]);
+  });
+
+  it('keeps explicit imports and members ahead of same-package functions', () => {
+    expect(targetsOf('print')).toEqual([
+      `computeTotal → ${billing}/Receipt.kt`,
+      'formatCents → src/main/kotlin/com/acme/other/Fmt.kt',
+    ]);
+  });
+});
