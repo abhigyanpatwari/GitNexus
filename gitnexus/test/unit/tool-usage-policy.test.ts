@@ -110,7 +110,7 @@ describe('tool-usage policy source', () => {
   });
 
   it('keeps the policy bullets in the shared module only', () => {
-    const bullet = 'MUST run impact before editing.';
+    const bullet = 'MUST run impact before code/config/test edits.';
     const policy = readFileSync(path.join(SRC, 'mcp/tool-usage-policy.ts'), 'utf8');
     const aiContext = readFileSync(path.join(SRC, 'cli/ai-context.ts'), 'utf8');
     const server = readFileSync(path.join(SRC, 'mcp/server.ts'), 'utf8');

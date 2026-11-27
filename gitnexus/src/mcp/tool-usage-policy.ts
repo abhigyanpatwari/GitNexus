@@ -50,7 +50,7 @@ export function renderToolUsagePolicy(opts: ToolUsagePolicyOptions): string {
   const { runner, defaultBranch, hasPdg = false, hasSpringActuator = false } = opts;
   return `## Always Do
 
-- **MUST run impact before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis.${
+- **MUST run impact before code/config/test edits.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis. Docs-only exempt.${
     hasPdg
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
@@ -71,7 +71,7 @@ export function renderToolUsagePolicy(opts: ToolUsagePolicyOptions): string {
 
 ## Never Do
 
-- NEVER edit a function, class, or method before MCP/CLI impact analysis.
+- NEVER edit code/config/tests without MCP/CLI impact.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
 - NEVER rename symbols with find-and-replace — use \`rename\` with \`dry_run: true\`, review semantic spans and coverage, then apply with \`dry_run: false\` and its \`plan_token\`.
 - NEVER commit before MCP/CLI graph change analysis.`;
