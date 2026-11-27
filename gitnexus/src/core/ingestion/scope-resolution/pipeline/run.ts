@@ -32,6 +32,7 @@ import type {
   Scope,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { GraphReferenceIntegrityError } from '../../../graph/relationship-integrity.js';
@@ -372,7 +373,7 @@ function emitInheritanceEdgeDirect(
     sourceId: callerGraphId,
     targetId: targetGraphId,
     type: edgeType,
-    confidence: 0.85,
+    confidence: EdgeConfidence.resolvedInheritance,
     reason: 'scope-resolution: inherits',
   });
 }
@@ -589,7 +590,7 @@ function emitDetectedInterfaceImplementations(
         sourceId,
         targetId,
         type: 'IMPLEMENTS',
-        confidence: 0.85,
+        confidence: EdgeConfidence.interfaceImplementation,
         // The receiver form rides in `reason` because relationships carry no
         // arbitrary properties — adding one would change the relation DDL and
         // move SCHEMA_FINGERPRINT, forcing a full re-analyze for a fact that a

@@ -15,6 +15,7 @@
  * language-agnostic — no language needs to change it.
  */
 
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { NodeLabel, Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -159,7 +160,7 @@ export function tryEmitEdge(
   targetDef: SymbolDefinition,
   reason: string,
   seen: Set<string>,
-  confidence = 0.85,
+  confidence: number = EdgeConfidence.resolvedReference,
   collapseByCallerTarget = false,
   calleeCapture?: CalleeIdCaptureCtx,
 ): boolean {
@@ -258,7 +259,7 @@ export function tryEmitEdgeWithExplicitTargetId(
   targetGraphId: string,
   reason: string,
   seen: Set<string>,
-  confidence = 0.85,
+  confidence: number = EdgeConfidence.resolvedReference,
   collapseByCallerTarget = false,
   calleeCapture?: CalleeIdCaptureCtx,
 ): boolean {

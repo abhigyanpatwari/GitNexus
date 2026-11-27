@@ -1,3 +1,4 @@
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -44,7 +45,7 @@ export function emitMethodOwnerEdges(
         sourceId,
         targetId,
         type: 'HAS_METHOD',
-        confidence: 1,
+        confidence: EdgeConfidence.memberOwnership,
         reason: '',
       });
     }

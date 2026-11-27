@@ -11,6 +11,7 @@ import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
 import { toZeroBasedLine } from './utils/line-base.js';
 import { isIndexedDocumentationPath } from './utils/documentation-path.js';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { GraphNode } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 
@@ -104,7 +105,7 @@ export const processMarkdown = (
         type: 'CONTAINS',
         sourceId: parentId,
         targetId: sectionId,
-        confidence: 1.0,
+        confidence: EdgeConfidence.markdownHeading,
         reason: 'markdown-heading',
       });
 
@@ -155,7 +156,7 @@ export const processMarkdown = (
           type: 'IMPORTS',
           sourceId: fileNodeId,
           targetId: targetFileId,
-          confidence: 0.8,
+          confidence: EdgeConfidence.markdownLink,
           reason: DOCUMENTATION_LINK_REASON,
         });
         totalLinks++;

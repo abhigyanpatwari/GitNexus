@@ -45,6 +45,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - run: npx eslint .
+      - run: node --test eslint-rules/*.test.mjs
       # CLI coverage already executes this guard against the same first parent.
       - uses: ./.github/actions/setup-gitnexus
         if: github.event_name == 'pull_request' && !fromJSON(inputs.plan).run.cli

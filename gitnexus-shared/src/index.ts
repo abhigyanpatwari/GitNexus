@@ -73,6 +73,7 @@ export type {
 } from './scope-resolution/types.js';
 
 // Evidence + tie-break constants (RFC Appendix A, Appendix B)
+export { EdgeConfidence } from './scope-resolution/edge-confidence.js';
 export { EvidenceWeights, typeBindingWeightAtDepth } from './scope-resolution/evidence-weights.js';
 export { ORIGIN_PRIORITY } from './scope-resolution/origin-priority.js';
 export type { OriginForTieBreak } from './scope-resolution/origin-priority.js';

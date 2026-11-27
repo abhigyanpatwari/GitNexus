@@ -129,6 +129,7 @@
  * pair-key delimiter: partitioning those keys could change collision behavior.
  */
 
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { ImportEdge, ImportVisibility, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -247,7 +248,7 @@ export function emitImportEdges(
       sourceId: generateId('File', sourceFile),
       targetId: generateId('File', targetFile),
       type: 'IMPORTS',
-      confidence: 1.0,
+      confidence: EdgeConfidence.resolvedImport,
       reason: reason + REASON_SUFFIX_BY_PRESENCE[presence],
     });
     emitted++;

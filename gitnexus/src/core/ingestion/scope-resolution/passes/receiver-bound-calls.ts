@@ -68,6 +68,7 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -2036,7 +2037,7 @@ function emitReceiverBoundCallsInPass(
               memberDef,
               'global',
               seen,
-              0.85,
+              EdgeConfidence.resolvedReference,
               collapse,
               calleeCapture,
             );
@@ -2255,7 +2256,7 @@ function emitReceiverBoundCallsInPass(
               memberDef,
               memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
               seen,
-              0.85,
+              EdgeConfidence.resolvedReference,
               collapse,
               calleeCapture,
             );
@@ -2279,8 +2280,8 @@ function emitReceiverBoundCallsInPass(
             // concrete receiver and needs no language check of its own — a
             // member whose owner resolved to a Struct emits nothing extra.
             //
-            // Confidence mirrors THIS case's own primary emit above — the 0.85
-            // literal — so a site's dispatch edges never claim more certainty
+            // Confidence mirrors THIS case's own primary emit above — the
+            // resolved-reference baseline — so dispatch edges never claim more certainty
             // than the edge they hang off.
             //
             // Case 4 passes a site.kind-dependent value instead (1.0 for
@@ -2303,7 +2304,7 @@ function emitReceiverBoundCallsInPass(
               memberName,
               memberDef,
               site,
-              0.85,
+              EdgeConfidence.resolvedReference,
               calleeCapture,
               resolved.declaredSpelling,
               parsed.filePath,
@@ -2366,7 +2367,10 @@ function emitReceiverBoundCallsInPass(
                 : memberDef.filePath !== parsed.filePath
                   ? 'import-resolved'
                   : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const confidence =
+              site.kind === 'write' || site.kind === 'read'
+                ? EdgeConfidence.resolvedReceiverMemberAccess
+                : EdgeConfidence.resolvedReference;
             recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
@@ -2475,7 +2479,10 @@ function emitReceiverBoundCallsInPass(
                 : memberDef.filePath !== parsed.filePath
                   ? 'import-resolved'
                   : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const confidence =
+              site.kind === 'write' || site.kind === 'read'
+                ? EdgeConfidence.resolvedReceiverMemberAccess
+                : EdgeConfidence.resolvedReference;
             recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
@@ -2612,7 +2619,7 @@ function emitReceiverBoundCallsInPass(
                 provider.markConstructionSites,
               ),
               seen,
-              0.85,
+              EdgeConfidence.resolvedReference,
               collapse,
               calleeCapture,
             );
@@ -2683,7 +2690,7 @@ function emitReceiverBoundCallsInPass(
             memberDef,
             memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
             seen,
-            0.85,
+            EdgeConfidence.resolvedReference,
             collapse,
             calleeCapture,
           );
@@ -2807,7 +2814,7 @@ function emitReceiverBoundCallsInPass(
                 provider.markConstructionSites,
               ),
               seen,
-              0.85,
+              EdgeConfidence.resolvedReference,
               collapse,
               calleeCapture,
             );
@@ -2835,7 +2842,10 @@ function emitReceiverBoundCallsInPass(
               : memberDef.filePath !== parsed.filePath
                 ? 'import-resolved'
                 : 'global';
-          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          const confidence =
+            site.kind === 'write' || site.kind === 'read'
+              ? EdgeConfidence.resolvedReceiverMemberAccess
+              : EdgeConfidence.resolvedReference;
           recordMember(memberDef);
           const ok = tryEmitEdge(
             graph,
@@ -2963,7 +2973,7 @@ function emitReceiverBoundCallsInPass(
                   seen,
                   // Explicit defaults so the trailing capture ctx (#2227 U2) can
                   // be threaded without changing dedup/confidence behavior.
-                  0.85,
+                  EdgeConfidence.resolvedReference,
                   false,
                   calleeCapture,
                 );
@@ -3088,7 +3098,7 @@ function emitReceiverBoundCallsInPass(
               memberDef,
               memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
               seen,
-              0.85,
+              EdgeConfidence.resolvedReference,
               collapse,
               calleeCapture,
             );
@@ -3123,8 +3133,8 @@ function emitReceiverBoundCallsInPass(
             // cover that, but it changes Cases 0 and 4 identically and for
             // every language, so it is not #2832's to make.
             //
-            // Confidence mirrors THIS case's own primary emit above — the 0.85
-            // literal — so a site's dispatch edges never claim more certainty
+            // Confidence mirrors THIS case's own primary emit above — the
+            // resolved-reference baseline — so dispatch edges never claim more certainty
             // than the edge they hang off. Case 4 passes a site.kind-dependent
             // value instead because ITS primary varies that way; Case 3b's
             // primary, like Case 0's, does not, so there is no 1.0 arm here to
@@ -3135,7 +3145,7 @@ function emitReceiverBoundCallsInPass(
               memberName,
               memberDef,
               site,
-              0.85,
+              EdgeConfidence.resolvedReference,
               calleeCapture,
               resolved.declaredSpelling,
               parsed.filePath,
@@ -3384,7 +3394,10 @@ function emitReceiverBoundCallsInPass(
                 : memberDef.filePath !== parsed.filePath
                   ? 'import-resolved'
                   : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const confidence =
+              site.kind === 'write' || site.kind === 'read'
+                ? EdgeConfidence.resolvedReceiverMemberAccess
+                : EdgeConfidence.resolvedReference;
             recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
@@ -3623,7 +3636,7 @@ function emitReceiverBoundCallsInPass(
                 target,
                 'interface-dispatch',
                 seen,
-                0.85,
+                EdgeConfidence.subtypeDispatch,
                 collapse,
                 calleeCapture,
               );
@@ -3725,7 +3738,10 @@ function emitReceiverBoundCallsInPass(
               : picked.filePath !== parsed.filePath
                 ? 'import-resolved'
                 : 'global';
-          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          const confidence =
+            site.kind === 'write' || site.kind === 'read'
+              ? EdgeConfidence.resolvedReceiverMemberAccess
+              : EdgeConfidence.resolvedReference;
           recordMember(picked);
           const ok = tryEmitEdgeWithExplicitTargetId(
             graph,
@@ -3922,7 +3938,10 @@ function emitReceiverBoundCallsInPass(
                   : memberDef.filePath !== parsed.filePath
                     ? 'import-resolved'
                     : 'global';
-              const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+              const confidence =
+                site.kind === 'write' || site.kind === 'read'
+                  ? EdgeConfidence.resolvedReceiverMemberAccess
+                  : EdgeConfidence.resolvedReference;
               recordMember(memberDef);
               const ok = tryEmitEdge(
                 graph,

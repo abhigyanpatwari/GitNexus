@@ -45,6 +45,7 @@ import type {
   ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
@@ -89,7 +90,7 @@ export const MAX_PROPERTY_DISPATCH_FANOUT = (() => {
 })();
 
 /** Below the 0.85 resolved baseline; same discount idea as interface-dispatch. */
-export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
+export const PROPERTY_DISPATCH_CONFIDENCE = EdgeConfidence.propertyDispatch;
 
 /**
  * Resolve a `value-ref` site to the callable it names.

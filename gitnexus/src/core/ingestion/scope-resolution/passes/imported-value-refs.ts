@@ -22,6 +22,7 @@
  * of this one, so the file guard is what keeps this pass proportional.
  */
 
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -39,7 +40,7 @@ import {
  * This is a PRECISE resolution — the import names the def — so it carries the
  * ordinary emission confidence, not the reduced tier used for name inference.
  */
-const IMPORTED_VALUE_CONFIDENCE = 0.9;
+const IMPORTED_VALUE_CONFIDENCE = EdgeConfidence.importedValueReference;
 
 export interface ImportedValueRefStats {
   /** Cross-file value references resolved through finalized bindings. */
