@@ -343,8 +343,8 @@ export interface PipelineOptions {
  * three graph phases, with no change in behaviour.
  *
  * Exported for the parity test (`pipeline-phase-registry.test.ts`), which
- * asserts the produced list is byte-identical to the legacy array for every
- * options combination.
+ * asserts the produced list matches FULL_ORDER (including symfonyConfig) for
+ * every options combination.
  */
 export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
   return (

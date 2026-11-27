@@ -1,12 +1,12 @@
 /**
  * Phase: symfonyConfig
  *
- * Reads Symfony `config/services.yaml` (and siblings) for explicit service
- * aliases (`Interface: '@Concrete'`) and stamps preferred-provider metadata
- * onto matching Class nodes for the shared `di` phase (#1857).
+ * Detects Symfony container projects, stamps PHP DI metadata for the shared
+ * `di` phase, and reads `config/services*.yaml` aliases when present (#1857).
  *
  * @deps    parse
- * @reads   filesystem (services.yaml), graph (Class nodes)
+ * @reads   filesystem (services.yaml / services.php / services.xml / composer.json),
+ *          graph (Class / Method nodes)
  * @writes  graph Class/Method properties (`symfonyDiProvider`, constructor enable)
  */
 
@@ -25,6 +25,8 @@ import {
 
 const require = createRequire(import.meta.url);
 const yaml = require('js-yaml') as typeof import('js-yaml');
+
+const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
 
 const SYMFONY_UNKNOWN_SCALAR_TAG = yaml.defineScalarTag('!', {
   matchByTagPrefix: true,
@@ -65,26 +67,35 @@ const SYMFONY_YAML_SCHEMA = yaml.CORE_SCHEMA.withTags(
 );
 
 export interface SymfonyConfigOutput {
-  /** Number of Interface → Impl aliases applied to Class providers. */
   aliasesApplied: number;
-  /** Alias entries discovered in services YAML files. */
   aliasesFound: number;
 }
 
 export interface SymfonyServiceAlias {
-  /** FQCN or short name of the aliased type (usually an interface). */
   interfaceName: string;
-  /** FQCN or short name of the concrete service (leading `@` stripped). */
   implementationName: string;
   filePath: string;
 }
 
-const SERVICES_PATH_RE =
+const SERVICES_YAML_RE =
   /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?(?:\/[^/]+)?\.ya?ml$/i;
+const SERVICES_PHP_RE = /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?\.php$/i;
+const SERVICES_XML_RE = /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?\.xml$/i;
+
+const SYMFONY_COMPOSER_PACKAGES: ReadonlySet<string> = new Set([
+  'symfony/framework-bundle',
+  'symfony/dependency-injection',
+  'symfony/runtime',
+]);
 
 export function isServicesYaml(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
-  return SERVICES_PATH_RE.test(normalized);
+  return SERVICES_YAML_RE.test(normalized);
+}
+
+export function isServicesPhpOrXml(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return SERVICES_PHP_RE.test(normalized) || SERVICES_XML_RE.test(normalized);
 }
 
 function stripServiceId(raw: string): string {
@@ -98,6 +109,10 @@ function simpleName(fqcn: string): string {
   const cleaned = stripServiceId(fqcn);
   const idx = cleaned.lastIndexOf('\\');
   return idx === -1 ? cleaned : cleaned.slice(idx + 1);
+}
+
+function namesEqual(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 /**
@@ -116,7 +131,7 @@ export function extractSymfonyServiceAliases(
   const aliases: SymfonyServiceAlias[] = [];
 
   for (const [key, value] of Object.entries(map)) {
-    if (key.startsWith('_')) continue; // _defaults, _instanceof, …
+    if (key.startsWith('_')) continue;
     if (typeof value === 'string' && value.trim().startsWith('@')) {
       aliases.push({
         interfaceName: stripServiceId(key),
@@ -125,15 +140,16 @@ export function extractSymfonyServiceAliases(
       });
       continue;
     }
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      const alias = (value as Record<string, unknown>).alias;
-      if (typeof alias === 'string' && alias.trim().length > 0) {
-        aliases.push({
-          interfaceName: stripServiceId(key),
-          implementationName: stripServiceId(alias),
-          filePath,
-        });
-      }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const alias = (value as Record<string, unknown>).alias;
+    if (typeof alias === 'string' && alias.trim().length > 0) {
+      aliases.push({
+        interfaceName: stripServiceId(key),
+        implementationName: stripServiceId(alias),
+        filePath,
+      });
     }
   }
   return aliases;
@@ -165,12 +181,12 @@ export function classMatchesName(
 
   if (typeof qualifiedName === 'string' && qualifiedName.length > 0) {
     const q = stripServiceId(qualifiedName);
-    if (q === target) return true;
-    if (!wantedIsFqcn && simpleName(q) === target) return true;
+    if (namesEqual(q, target)) return true;
+    if (!wantedIsFqcn && namesEqual(simpleName(q), target)) return true;
     return false;
   }
 
-  return nodeName === target || nodeName === targetSimple;
+  return namesEqual(nodeName, target) || namesEqual(nodeName, targetSimple);
 }
 
 async function collectServiceYamlPaths(
@@ -196,12 +212,87 @@ async function collectServiceYamlPaths(
   for (const filePath of candidates) {
     try {
       const stat = await fs.stat(filePath);
-      if (stat.isFile()) existing.push(filePath);
+      if (stat.isFile() && stat.size <= MAX_CONFIG_FILE_BYTES) {
+        existing.push(filePath);
+      }
     } catch {
       // missing
     }
   }
   return existing;
+}
+
+async function composerRequiresSymfony(repoPath: string): Promise<boolean> {
+  const composerPath = path.join(repoPath, 'composer.json');
+  try {
+    const stat = await fs.stat(composerPath);
+    if (!stat.isFile() || stat.size > MAX_CONFIG_FILE_BYTES) return false;
+    const raw = await fs.readFile(composerPath, 'utf8');
+    const json = JSON.parse(raw) as {
+      require?: Record<string, string>;
+      'require-dev'?: Record<string, string>;
+    };
+    const packages = {
+      ...(json.require ?? {}),
+      ...(json['require-dev'] ?? {}),
+    };
+    return Object.keys(packages).some((name) => SYMFONY_COMPOSER_PACKAGES.has(name));
+  } catch {
+    return false;
+  }
+}
+
+async function hasSymfonyContainerEvidence(
+  repoPath: string,
+  allPaths: readonly string[],
+  yamlPaths: readonly string[],
+): Promise<boolean> {
+  if (yamlPaths.length > 0) return true;
+  if (allPaths.some(isServicesPhpOrXml)) return true;
+  for (const rel of [
+    'config/services.php',
+    'config/services.xml',
+    'config/services_dev.php',
+    'config/services_dev.xml',
+  ]) {
+    try {
+      const stat = await fs.stat(path.join(repoPath, rel));
+      if (stat.isFile()) return true;
+    } catch {
+      // missing
+    }
+  }
+  return composerRequiresSymfony(repoPath);
+}
+
+function stampPhpDiMetadata(ctx: PipelineContext): void {
+  ctx.graph.forEachNode((node) => {
+    if (node.properties.language !== 'php') return;
+    if (node.label === 'Class') {
+      const base = defaultSymfonyProvider(node);
+      if (base !== null) {
+        node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = base;
+      }
+      return;
+    }
+    if (node.label === 'Method' && node.properties.name === '__construct') {
+      node.properties[SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY] = true;
+    }
+  });
+}
+
+function readPriorPreferenceByType(node: GraphNode): Record<string, string> {
+  const existing = node.properties[SYMFONY_DI_PROVIDER_PROPERTY];
+  if (
+    existing !== null &&
+    typeof existing === 'object' &&
+    (existing as { preferenceByType?: unknown }).preferenceByType !== null &&
+    typeof (existing as { preferenceByType?: unknown }).preferenceByType === 'object' &&
+    !Array.isArray((existing as { preferenceByType?: unknown }).preferenceByType)
+  ) {
+    return { ...((existing as { preferenceByType: Record<string, string> }).preferenceByType) };
+  }
+  return {};
 }
 
 export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
@@ -213,36 +304,27 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<SymfonyConfigOutput> {
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const yamlPaths = await collectServiceYamlPaths(ctx.repoPath, parseOutput.allPaths ?? []);
+    const allPaths = parseOutput.allPaths ?? [];
+    const yamlPaths = await collectServiceYamlPaths(ctx.repoPath, allPaths);
 
-    if (yamlPaths.length === 0) {
+    const enableDi = await hasSymfonyContainerEvidence(ctx.repoPath, allPaths, yamlPaths);
+    if (!enableDi) {
       return { aliasesApplied: 0, aliasesFound: 0 };
     }
+
+    stampPhpDiMetadata(ctx);
 
     const aliases: SymfonyServiceAlias[] = [];
     for (const yamlPath of yamlPaths) {
       try {
         const content = await fs.readFile(yamlPath, 'utf8');
+        if (Buffer.byteLength(content, 'utf8') > MAX_CONFIG_FILE_BYTES) continue;
         const rel = path.relative(ctx.repoPath, yamlPath) || yamlPath;
         aliases.push(...parseSymfonyServicesYaml(content, rel));
       } catch {
         // unreadable
       }
     }
-
-    ctx.graph.forEachNode((node) => {
-      if (node.properties.language !== 'php') return;
-      if (node.label === 'Class') {
-        const base = defaultSymfonyProvider(node);
-        if (base !== null) {
-          node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = base;
-        }
-        return;
-      }
-      if (node.label === 'Method' && node.properties.name === '__construct') {
-        node.properties[SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY] = true;
-      }
-    });
 
     let aliasesApplied = 0;
     for (const alias of aliases) {
@@ -270,22 +352,15 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
       if (base === null) continue;
 
       const reason = `Symfony services.yaml alias ${alias.interfaceName} → ${alias.implementationName}`;
-      const existing = node.properties[SYMFONY_DI_PROVIDER_PROPERTY];
-      const priorByType =
-        existing !== null &&
-        typeof existing === 'object' &&
-        (existing as { preferenceByType?: unknown }).preferenceByType !== null &&
-        typeof (existing as { preferenceByType?: unknown }).preferenceByType === 'object' &&
-        !Array.isArray((existing as { preferenceByType?: unknown }).preferenceByType)
-          ? { ...((existing as { preferenceByType: Record<string, string> }).preferenceByType) }
-          : {};
-
-      priorByType[alias.interfaceName] = reason;
-      priorByType[simpleName(alias.interfaceName)] = reason;
+      const preferenceByType = readPriorPreferenceByType(node);
+      // Store the alias interface id as written (FQCN when available). Do not
+      // also insert the short name — that would let App\Log\Logger preference
+      // collide with Other\Logger via short-name keys.
+      preferenceByType[alias.interfaceName] = reason;
 
       node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
         ...base,
-        preferenceByType: priorByType,
+        preferenceByType,
       };
       aliasesApplied++;
     }

@@ -94,11 +94,27 @@ function typeNameSimple(name: string): string {
   return name;
 }
 
-function resolveIndexedName(index: NameIndex | undefined, name: string) {
+function resolveIndexedName(
+  index: NameIndex | undefined,
+  name: string,
+  options?: { caseInsensitive?: boolean },
+): string | typeof AMBIGUOUS | undefined {
   if (index === undefined) return undefined;
-  return isQualifiedTypeName(name)
-    ? index.byQualifiedName.get(name)
-    : index.bySimpleName.get(name);
+  const map = isQualifiedTypeName(name) ? index.byQualifiedName : index.bySimpleName;
+  const exact = map.get(name);
+  if (exact !== undefined || options?.caseInsensitive !== true) return exact;
+
+  const needle = name.toLowerCase();
+  let found: string | typeof AMBIGUOUS | undefined;
+  for (const [key, id] of map) {
+    if (key.toLowerCase() !== needle) continue;
+    if (found === undefined) {
+      found = id;
+      continue;
+    }
+    if (found !== id) return AMBIGUOUS;
+  }
+  return found;
 }
 
 function preferenceReasonForType(
@@ -107,15 +123,27 @@ function preferenceReasonForType(
 ): string | undefined {
   const byType = provider.preferenceByType;
   if (byType !== undefined) {
-    const exact = byType[targetTypeName];
+    if (Object.keys(byType).length === 0) return undefined;
+
+    const exact =
+      byType[targetTypeName] ??
+      Object.entries(byType).find(([key]) => key.toLowerCase() === targetTypeName.toLowerCase())?.[1];
     if (exact !== undefined) return exact;
+
+    // Unqualified targets may match a unique FQCN preference by short name.
+    // Qualified targets never fall back to short-name equality (avoids
+    // App\Log\Logger preference winning Other\Logger injections).
     if (!isQualifiedTypeName(targetTypeName)) {
-      for (const [typeName, reason] of Object.entries(byType)) {
-        if (typeNameSimple(typeName) === targetTypeName) return reason;
-      }
+      const targetLower = targetTypeName.toLowerCase();
+      const hits = Object.entries(byType).filter(([typeName]) => {
+        if (!isQualifiedTypeName(typeName)) return false;
+        return typeNameSimple(typeName).toLowerCase() === targetLower;
+      });
+      if (hits.length === 1) return hits[0][1];
     }
+    return undefined;
   }
-  if (provider.preferenceReason !== undefined && byType === undefined) {
+  if (provider.preferenceReason !== undefined) {
     return provider.preferenceReason;
   }
   return undefined;
@@ -282,13 +310,16 @@ export const diPhase: PipelinePhase<DIOutput> = {
       const cacheKey = `${language}\0${provider.providedTypeName}`;
       let assignableTypeNames = assignableNamesByProvidedType.get(cacheKey);
       if (assignableTypeNames === undefined) {
+        const caseInsensitive = language === 'php';
         const classEntry = resolveIndexedName(
           classesByLanguage.get(language),
           provider.providedTypeName,
+          { caseInsensitive },
         );
         const interfaceEntry = resolveIndexedName(
           interfacesByLanguage.get(language),
           provider.providedTypeName,
+          { caseInsensitive },
         );
         const rootTypeId =
           typeof classEntry === 'string' && interfaceEntry === undefined
@@ -347,13 +378,16 @@ export const diPhase: PipelinePhase<DIOutput> = {
       const edgeSourceId =
         candidate.edgeSource === 'site' && siteNode !== undefined ? siteNode.id : consumerClassId;
 
+      const caseInsensitive = candidate.language === 'php';
       const classEntry = resolveIndexedName(
         classesByLanguage.get(candidate.language),
         candidate.targetTypeName,
+        { caseInsensitive },
       );
       const interfaceEntry = resolveIndexedName(
         interfacesByLanguage.get(candidate.language),
         candidate.targetTypeName,
+        { caseInsensitive },
       );
       if (
         classEntry === AMBIGUOUS ||
