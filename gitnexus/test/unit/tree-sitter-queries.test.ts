@@ -172,13 +172,22 @@ describe('tree-sitter queries', () => {
       multiParser.setLanguage(lang);
       const multiQuery = new Parser.Query(lang, TYPESCRIPT_QUERIES);
       const multiTree = multiParser.parse(`enum Multi {\n  First,\n  Second\n}`);
+      let foundFirst = false;
+      let foundSecond = false;
       for (const match of multiQuery.matches(multiTree.rootNode)) {
         const defCapture = match.captures.find((c) => c.name === 'definition.property');
         const nameCapture = match.captures.find((c) => c.name === 'name');
+        if (defCapture && nameCapture?.node.text === 'First') {
+          expect(defCapture.node.startPosition.row).toBe(1);
+          foundFirst = true;
+        }
         if (defCapture && nameCapture?.node.text === 'Second') {
           expect(defCapture.node.startPosition.row).toBe(2);
+          foundSecond = true;
         }
       }
+      expect(foundFirst).toBe(true);
+      expect(foundSecond).toBe(true);
 
       // --- enum members with initialisers ---
       const initMemberNames = capturedDefinitionNames(
