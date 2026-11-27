@@ -34,6 +34,16 @@ const processEdges = Array.from(
   (_, index) =>
     `MATCH (a:Function {id:'Function:src/caller-${index % 2}.ts:caller${index % 2}'}), (p:Process {id:'proc-${index}'}) CREATE (a)-[:CodeRelation {type:'STEP_IN_PROCESS', confidence:1.0, reason:'trace-detection', step:1}]->(p)`,
 );
+const filteredCallers = Array.from(
+  { length: 15 },
+  (_, index) =>
+    `CREATE (fc${index}:Function {id: 'Function:src/filter-caller-${index}.ts:filterCaller${index}', name: 'filterCaller${index}', filePath: 'src/filter-caller-${index}.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+);
+const filteredCallEdges = Array.from(
+  { length: 15 },
+  (_, index) =>
+    `MATCH (a:Function {id:'Function:src/filter-caller-${index}.ts:filterCaller${index}'}), (b:Function {id:'Function:src/filtered.ts:filteredTarget'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:1.0, reason:'direct', step:0}]->(b)`,
+);
 
 const SEED = [
   `CREATE (f:File {id: 'File:src/crypto.ts', name: 'crypto.ts', filePath: 'src/crypto.ts', content: ''})`,
@@ -47,6 +57,9 @@ const SEED = [
   ...processEntryPoints,
   ...processNodes,
   ...processEdges,
+  `CREATE (filteredTarget:Function {id: 'Function:src/filtered.ts:filteredTarget', name: 'filteredTarget', filePath: 'src/filtered.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+  ...filteredCallers,
+  ...filteredCallEdges,
 ];
 
 type BackendHandle = IndexedDBHandle & { _backend?: LocalBackend };
@@ -119,6 +132,20 @@ withTestLbugDB(
           },
         ]),
       );
+    });
+
+    it('does not replace an unsupported explicit filter with default CALLS', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'filteredTarget',
+        kind: 'Function',
+        direction: 'upstream',
+        relationTypes: ['TAINTED'],
+      });
+
+      expect(result.impactedCount).toBe(0);
+      expect(result.summary.direct).toBe(0);
+      expect(result.byDepth[1] ?? []).toEqual([]);
+      expect(result.risk).not.toBe('HIGH');
     });
   },
   {

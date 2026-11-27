@@ -2482,6 +2482,36 @@ describe('LocalBackend.callTool', () => {
     expect(perSymbolCalls).toHaveLength(0);
   });
 
+  it('impactByUid keeps an unsupported explicit relation filter empty', async () => {
+    const resolvedRepoPath = path.resolve('/tmp/test-project');
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: resolvedRepoPath },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+    mockSymbolRows([
+      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+    ]);
+    const bfsSpy = vi
+      .spyOn(backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] }, '_runImpactBFS')
+      .mockResolvedValue({ byDepth: {} });
+
+    await backend.impactByUid('test-project', 'func:main', 'upstream', {
+      maxDepth: 3,
+      relationTypes: ['TAINTED'],
+      minConfidence: 0,
+      includeTests: false,
+    });
+
+    expect(bfsSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'func:main' }),
+      'Function',
+      'upstream',
+      expect.objectContaining({ relationTypes: [], hasExplicitRelationTypes: true }),
+    );
+  });
+
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path
@@ -3146,6 +3176,30 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     });
     expect(callgraph).toEqual(absent);
     expect(undef).toEqual(absent);
+  });
+
+  it('keeps defaults for an intentionally empty relationship filter', async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi
+      .spyOn(backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] }, '_runImpactBFS')
+      .mockResolvedValue({ byDepth: {} });
+
+    await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      relationTypes: [],
+    });
+
+    expect(bfsSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'func:main' }),
+      'Function',
+      'upstream',
+      expect.objectContaining({
+        relationTypes: expect.arrayContaining(['CALLS', 'IMPORTS']),
+        hasExplicitRelationTypes: false,
+      }),
+    );
   });
 
   it("mode:'pdg' routes to the PDG traversal and attaches interprocedural symbol reach", async () => {
