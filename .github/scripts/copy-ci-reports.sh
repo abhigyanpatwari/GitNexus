@@ -3,6 +3,10 @@
 # Both directions copy the same allowlist, including on a cross-run restore.
 set -euo pipefail
 src=$1 dest=$2 mode=$3
+case "$mode" in
+  evidence|lcov) ;;
+  *) echo "Unknown report mode: $mode" >&2; exit 2 ;;
+esac
 files=()
 if [[ "$CLI" == true ]]; then
   files+=(gitnexus/coverage/lcov.info)

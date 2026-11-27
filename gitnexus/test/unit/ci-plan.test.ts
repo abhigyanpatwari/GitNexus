@@ -491,9 +491,15 @@ it.skipIf(process.platform !== 'linux').each([
       const artifact = path.join(dir, 'artifact');
       const restored = path.join(dir, 'restored');
       const script = path.resolve(__dirname, '../../../.github/scripts/copy-ci-reports.sh');
-      const checkedFiles = [cliLcov, webLcov, cliResults, webResults, 'unrelated.txt'];
-      const files = [...checkedFiles, 'gitnexus/.vitest/timings/coverage.json'];
-      for (const file of files) {
+      const checkedFiles = [
+        cliLcov,
+        webLcov,
+        cliResults,
+        webResults,
+        'unrelated.txt',
+        'gitnexus/.vitest/timings/coverage.json',
+      ];
+      for (const file of checkedFiles) {
         mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
         writeFileSync(path.join(source, file), file);
       }
