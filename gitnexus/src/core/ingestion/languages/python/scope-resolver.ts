@@ -12,6 +12,9 @@
  * the 2 booleans, and register in `scope-resolution/pipeline/registry.ts`.
  */
 
+import { emitResourceLifetime } from '../../resource-lifetime.js';
+import { positionKey as nodePositionKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import type { PythonCaptureSideChannel } from './module-accessors.js';
 import type { ParsedFile, ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, c3LinearizeStrategy } from '../../scope-resolution/passes/mro.js';
@@ -77,6 +80,21 @@ export function pythonMissingReceiverSubtypeCandidateCompatibility(
 }
 
 const pythonScopeResolver: ScopeResolver = {
+  emitPostResolutionEdges(graph, parsedFiles, lookup) {
+    for (const parsed of parsedFiles) {
+      const data = parsed.captureSideChannel as PythonCaptureSideChannel | undefined;
+      if (data?.kind !== 'python-capture') continue;
+      for (const fact of data.resourceLifetimes ?? []) {
+        const key = (label: 'Function' | 'Method') =>
+          nodePositionKey(parsed.filePath, label, fact.ownerLine, fact.ownerName);
+        const fn = lookup.get(key('Function'));
+        const method = lookup.get(key('Method'));
+        if (fn !== undefined && method !== undefined) continue;
+        const id = fn ?? method;
+        if (id) emitResourceLifetime(graph, parsed.filePath, SupportedLanguages.Python, id, fact);
+      }
+    }
+  },
   // A free call naming a class constructs it: `Service(db).do_work()` (#2708).
   constructionSyntax: { bare: true },
   language: SupportedLanguages.Python,
