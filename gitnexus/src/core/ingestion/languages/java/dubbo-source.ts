@@ -4,6 +4,7 @@ type Node = Parser.SyntaxNode;
 
 export interface JavaMethod {
   name: string;
+  /** Zero-based source coordinate, matching persisted graph symbols. */
   line: number;
   parameters: string[];
 }
@@ -172,7 +173,7 @@ function literal(node: Node | undefined): string | null {
   if (!node || node.type !== 'string_literal') return null;
   try {
     const value: unknown = JSON.parse(node.text);
-    return typeof value === 'string' && !/[${}*]/.test(value) ? value : null;
+    return typeof value === 'string' && !/\$\{|\*/.test(value) ? value : null;
   } catch {
     return null;
   }

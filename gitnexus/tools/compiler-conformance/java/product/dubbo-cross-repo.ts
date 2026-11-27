@@ -44,6 +44,12 @@ public class Facade {
   }
 }`,
 };
+// Persisted graph coordinates are zero-based, including declaration annotations.
+const EXPECTED_START_LINES: Record<string, Record<string, number>> = {
+  api: { Account: 1, get: 2 },
+  provider: { AccountService: 3, get: 5 },
+  consumer: { load: 5 },
+};
 
 test(
   'Dubbo: index three Git repos, sync real contracts, traverse the persisted bridge',
@@ -127,11 +133,15 @@ detect:
         const poolId = `dubbo-${contract.repo}`;
         const [symbol] = await executeParameterized(
           poolId,
-          'MATCH (n) WHERE n.id = $uid RETURN labels(n) AS label, n.startLine AS line',
+          'MATCH (n) WHERE n.id = $uid RETURN label(n) AS label, n.startLine AS line',
           { uid: contract.symbolUid },
         );
-        // LadybugDB returns a scalar label, unlike Neo4j's list-valued labels().
+        // LadybugDB returns a scalar label; graph symbols use zero-based source lines.
         assert.ok(['Method', 'Function', 'Class', 'Interface'].includes(symbol.label));
+        assert.equal(
+          Number(symbol.line),
+          EXPECTED_START_LINES[contract.repo][contract.symbolRef.name],
+        );
         const params = { ...contract.symbolRef, line: Number(symbol.line) };
         assert.deepEqual(await executeParameterized(poolId, DUBBO_SYMBOL_QUERY, params), [
           { uid: contract.symbolUid },

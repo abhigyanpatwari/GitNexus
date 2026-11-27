@@ -18,10 +18,10 @@ import {
   DUBBO_SCAN_GLOB,
 } from './dubbo-patterns/index.js';
 
-/** Exact source coordinate, not a fabricated uid or a name-only guess. */
+/** Exact zero-based graph coordinate. LadybugDB label() returns a scalar string. */
 export const DUBBO_SYMBOL_QUERY = `
 MATCH (n)
-WHERE labels(n) IN ['Method','Function','Class','Interface']
+WHERE label(n) IN ['Method','Function','Class','Interface']
   AND n.filePath = $filePath AND n.name = $name AND n.startLine = $line AND n.id <> ''
 RETURN n.id AS uid
 ORDER BY n.id ASC

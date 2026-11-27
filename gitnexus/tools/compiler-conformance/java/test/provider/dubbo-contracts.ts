@@ -113,10 +113,44 @@ describe('Dubbo cross-repository source facts', () => {
       );
     });
 
-  for (const version of ['${dubbo.version}', '*'])
+  for (const version of ['${dubbo.version}', '${dubbo.version:1}', 'release-${dubbo.version}', '*'])
     it(`skips unresolved/wildcard service identity ${version}`, () => {
       assert.deepEqual(sites(CONSUMER.replace('version = "1"', `version = "${version}"`))[2], []);
     });
+
+  for (const key of ['group', 'version'])
+    for (const value of ['team$blue', 'team{blue}', 'team}blue'])
+      it(`preserves a static ${key} containing literal punctuation: ${value}`, () => {
+        const previous = `${key} = "${key === 'group' ? 'accounts' : '1'}"`;
+        const next = `${key} = "${value}"`;
+        const [, providers, consumers] = sites(
+          CONSUMER.replace(previous, next),
+          PROVIDER.replace(previous, next),
+        );
+        const consumer = consumers.find((s) => s.method === 'list');
+        assert.ok(consumer);
+        assert.ok(
+          providers.some(
+            (s) =>
+              dubboContractId(s, s.method, s.parameters) ===
+              dubboContractId(consumer, consumer.method, consumer.parameters),
+          ),
+        );
+      });
+
+  it('preserves a literal dollar sign in a top-level interface name', () => {
+    const rename = (source: string) => source.replaceAll('Account', 'Account$V');
+    const [api, provider, consumer] = sites(
+      rename(CONSUMER).replace(
+        '@DubboReference(',
+        '@DubboReference(interfaceName = "api.Account$V", ',
+      ),
+      rename(PROVIDER),
+      rename(API),
+    );
+    for (const contracts of [api, provider, consumer])
+      assert.ok(contracts.some((s) => s.service === 'api.Account$V' && s.method === 'list'));
+  });
 
   it('skips constant-backed group values rather than treating them as default', () => {
     assert.deepEqual(sites(CONSUMER.replace('group = "accounts"', 'group = GROUP'))[2], []);
