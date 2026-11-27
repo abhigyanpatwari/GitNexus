@@ -165,8 +165,7 @@ export function reconcileTestReports(
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const [directory, output, shardsText] = process.argv.slice(2);
+function auditCliTests(root: string, [directory, output, shardsText]: string[]) {
   const shards = Number(shardsText);
   if (!directory || !output || !Number.isInteger(shards) || shards < 1) {
     throw new Error('Usage: test-completeness.ts <reports-dir> <output.json> <platform-shards>');
@@ -176,7 +175,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     for (let shard = 1; shard <= shards; shard++) names.push(`${os}-${shard}.json`);
   }
   // Exact expected receipts: an absent/cancelled job is never an empty success.
-  const root = fileURLToPath(new URL('../', import.meta.url));
   const expected = globSync('test/**/*.test.ts', { cwd: root });
   const result = reconcileTestReports(
     names.map((name) => JSON.parse(readFileSync(path.join(directory, name), 'utf8'))),
@@ -188,13 +186,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   );
   for (const message of [...result.unverified, ...result.failures]) console.error(message);
   if (!result.report.success) process.exitCode = 1;
-  const webPath = path.join(root, '../gitnexus-web/web-test-results.json');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const args = process.argv.slice(2);
+  const webOnly = args.length === 1 && args[0] === '--web-only';
+  if (!webOnly) auditCliTests(root, args);
+
+  const webRoot = path.join(root, '../gitnexus-web');
+  const webPath = path.join(webRoot, 'web-test-results.json');
   const web = reconcileTestReports(
     [JSON.parse(readFileSync(webPath, 'utf8'))],
-    globSync('{test,src}/**/*.test.{ts,tsx}', { cwd: path.join(root, '../gitnexus-web') }),
+    globSync('{test,src}/**/*.test.{ts,tsx}', { cwd: webRoot }),
     'gitnexus-web',
   );
-  writeFileSync(webPath, JSON.stringify(web.report));
+  // A PR uploads the original reporter evidence for the release audit.
+  if (!webOnly) writeFileSync(webPath, JSON.stringify(web.report));
   console.log(
     `Web execution: ${web.passed}/${web.total} passed; ${web.unverified.length} unverified; ${web.failures.length} failures`,
   );
