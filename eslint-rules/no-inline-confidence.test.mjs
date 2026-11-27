@@ -23,6 +23,9 @@ tester.run('no-inline-confidence', rule, {
     'const e = { confidence: EdgeConfidence.a - EdgeConfidence.b };',
     'const confidence = targets.size === 1 ? EdgeConfidence.a : EdgeConfidence.b;',
     'const e = { confidence: n > 0 && ok ? EdgeConfidence.a : EdgeConfidence.b };',
+    'tryEmitEdge(a, b, c, d, e, f, g, EdgeConfidence.resolvedReference)',
+    'tryEmitEdge(a, b, c, d, e, f, g)',
+    'otherFn(a, b, c, d, e, f, g, 0.85)',
   ],
   invalid: [
     { code: 'const edge = { confidence: 0.85 };', errors: [error] },
@@ -47,5 +50,11 @@ tester.run('no-inline-confidence', rule, {
     { code: 'const e = { confidence: 1 - penalty };', errors: [error] },
     { code: 'const e = { confidence: Math.min(1, x) };', errors: [error] },
     { code: 'const e = { confidence: -(0.5) };', errors: [error] },
+    { code: 'tryEmitEdge(a, b, c, d, e, f, g, 0.85)', errors: [error] },
+    {
+      code: 'tryEmitEdgeWithExplicitTargetId(a, b, c, d, e, f, g, x ? 1.0 : 0.85)',
+      errors: [error, error],
+    },
+    { code: 'emitInterfaceDispatchFor(a, b, c, d, 0.85, e)', errors: [error] },
   ],
 });

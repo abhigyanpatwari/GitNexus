@@ -23,6 +23,12 @@ const comparisonOperators = new Set([
   'instanceof',
 ]);
 
+const positionalConfidence = new Map([
+  ['tryEmitEdge', 7],
+  ['tryEmitEdgeWithExplicitTargetId', 7],
+  ['emitInterfaceDispatchFor', 4],
+]);
+
 function* inlineConfidenceLiterals(node, visitorKeys) {
   if (!node) return;
   if (node.type === 'Literal' && typeof node.value === 'number') {
@@ -82,6 +88,11 @@ export default {
             ? propertyName(target.property, target.computed)
             : propertyName(target);
         check(name, node.right);
+      },
+      CallExpression(node) {
+        if (node.callee.type !== 'Identifier') return;
+        const index = positionalConfidence.get(node.callee.name);
+        if (index !== undefined) check('confidence', node.arguments[index]);
       },
     };
   },
