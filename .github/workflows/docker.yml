@@ -3,7 +3,9 @@ name: Docker Build & Push
 on:
   push:
     tags:
-      - 'v*'
+      # Prereleases also need a signature from their tag ref. Stable images
+      # use Publish's tag-ref invocation after npm publication succeeds.
+      - 'v*-*'
   pull_request:
   # workflow_dispatch is allowed for dry-run testing only. Publishing is still
   # exclusively tag-driven so that every signed image corresponds 1:1 to a
@@ -23,6 +25,10 @@ on:
           The full v-prefixed tag to build (e.g. v1.2.3-rc.1).
           The tag must already exist in the repo and its tree must contain
           a gitnexus/package.json whose version matches the tag.
+        required: true
+        type: string
+      release-sha:
+        description: Commit used to publish the npm package
         required: true
         type: string
     # Explicit secret contract — callers pass these by name. Replaces the
@@ -73,12 +79,13 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          PUBLISHED_SHA: ${{ inputs.release-sha }}
           INPUT_DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
           set -euo pipefail
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # Reusable calls inherit the caller's event. An explicit tag is what
-          # distinguishes an RC publish call from a direct manual dry run.
+          # distinguishes a publish call from a direct manual dry run.
           if [[ "$EVENT_NAME" == 'pull_request' ]] || \
              [[ "$EVENT_NAME" == 'workflow_dispatch' && -z "$INPUT_TAG" && "$INPUT_DRY_RUN" == 'true' ]]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -86,7 +93,7 @@ jobs:
           fi
           if [[ -n "$INPUT_TAG" ]]; then
             TAG="$INPUT_TAG"
-          elif [[ "$EVENT_NAME" == 'push' && "$GITHUB_REF" == refs/tags/v* ]]; then
+          elif [[ "$EVENT_NAME" == 'push' && "$GITHUB_REF" == refs/tags/v*-* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
             echo "::error::Docker publication requires a version tag; direct manual dispatch is dry-run only."
@@ -100,6 +107,10 @@ jobs:
           if ! TAG_SHA=$(git rev-parse --verify "refs/tags/$TAG^{commit}" 2>/dev/null) || \
              [[ "$TAG_SHA" != "$(git rev-parse HEAD)" ]]; then
             echo "::error::The checkout must be the commit referenced by the version tag."
+            exit 1
+          fi
+          if [[ -n "$INPUT_TAG" && "$TAG_SHA" != "$PUBLISHED_SHA" ]]; then
+            echo "::error::The version tag must still point at the commit published to npm."
             exit 1
           fi
           PKG_VERSION=$(node -p "require('./gitnexus/package.json').version")

@@ -6,6 +6,10 @@
  * LadybugDB connections are opened lazily per repo on first query.
  */
 
+import {
+  resolveDetectChangesScope,
+  type DetectChangesSelection,
+} from '../../core/detect-changes-scope.js';
 import { resolveGraphPath } from '../../storage/shared-store.js';
 import { BRANCHES_DIR, branchSlug } from '../../storage/branch-index.js';
 import { mapPool } from '../../storage/map-pool.js';
@@ -1403,6 +1407,11 @@ interface ProcessRow {
 }
 
 export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
+  const selection = resolveDetectChangesScope(scope, baseRef);
+  return 'error' in selection ? null : detectChangesDiffArgs(selection);
+}
+
+function detectChangesDiffArgs(selection: DetectChangesSelection): string[] {
   // The prefix flags pin the `a/` + `b/` forms `parseDiffHunks` matches on.
   // Without them git honours the user's config: `diff.noprefix` emits
   // `+++ file` and `diff.mnemonicPrefix` emits `+++ w/file`, either of which
@@ -1427,17 +1436,14 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
     '--dst-prefix=b/',
     '--inter-hunk-context=0',
   ];
-  switch (scope) {
+  switch (selection.scope) {
     case 'staged':
       return [...args, '--staged', '-U0'];
     case 'all':
       return [...args, 'HEAD', '-U0'];
     case 'compare':
-      return typeof baseRef === 'string' && baseRef.length > 0 && !baseRef.startsWith('-')
-        ? [...args, '-U0', '--end-of-options', baseRef, '--']
-        : null;
+      return [...args, '-U0', '--end-of-options', selection.baseRef, '--'];
     case 'unstaged':
-    default:
       return [...args, '-U0'];
   }
 }
@@ -6988,20 +6994,13 @@ export class LocalBackend {
       worktree?: string;
     },
   ): Promise<any> {
+    const selection = resolveDetectChangesScope(params.scope, params.base_ref);
+    if ('error' in selection) return selection;
     await this.ensureInitialized(repo);
 
-    const scope = params.scope || 'unstaged';
     const { execFileSync } = await import('child_process');
-
-    // Ignore CR-only EOL differences, while preserving meaningful whitespace changes.
-    // execFileSync receives an argv array, so refs never pass through a shell.
-    const diffArgs = buildDetectChangesDiffArgs(scope, params.base_ref);
-    if (!diffArgs)
-      return {
-        error: params.base_ref
-          ? 'base_ref must be a Git revision for "compare" scope'
-          : 'base_ref is required for "compare" scope',
-      };
+    // Ignore CR-only EOL differences without involving a shell.
+    const diffArgs = detectChangesDiffArgs(selection);
 
     let diffOutput: string;
     let diffCwd: string;
@@ -7332,7 +7331,7 @@ export class LocalBackend {
           await import('../../core/analysis/call-compatibility.js');
         keywordCheck = await checkCallCompatibility(
           repo.lbugPath,
-          { directory: diffCwd, scope, base: params.base_ref, files: fileDiffs },
+          { directory: diffCwd, scope: selection.scope, base: params.base_ref, files: fileDiffs },
           targetsByChecker,
           logQueryError,
           unavailable?.reason,
