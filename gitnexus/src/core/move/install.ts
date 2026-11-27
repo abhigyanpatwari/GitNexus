@@ -63,6 +63,10 @@ export interface MoveFlowInstallConfig {
   metadataPath: string;
   lockPath: string;
   httpTimeoutMs: number;
+  /** Optional pinned SHA-256 of the genuine binary (GITNEXUS_MOVE_FLOW_BINARY_SHA256).
+   * When set, a cached binary whose hash differs from the pin is rejected,
+   * even if its self-attested metadata agrees with it (#2663). */
+  expectedBinarySha256?: string;
 }
 
 interface MoveFlowCacheMetadata {
@@ -187,6 +191,14 @@ export async function getMoveFlowInstallConfig(
   const repository = env.GITNEXUS_MOVE_FLOW_REPO?.trim() || MOVE_FLOW_RELEASE.repository;
   const tag = env.GITNEXUS_MOVE_FLOW_TAG?.trim() || `${MOVE_FLOW_RELEASE.tagPrefix}${version}`;
   validateReleaseCoordinates(version, repository, tag);
+  // #2663: an optional independent anchor for the cached binary. A malformed
+  // pin fails closed here instead of silently disabling the check.
+  const expectedBinarySha256 = env.GITNEXUS_MOVE_FLOW_BINARY_SHA256?.trim().toLowerCase();
+  if (expectedBinarySha256 && !/^[0-9a-f]{64}$/.test(expectedBinarySha256)) {
+    throw new Error(
+      'invalid GITNEXUS_MOVE_FLOW_BINARY_SHA256; expected 64 lowercase hex characters',
+    );
+  }
   const releaseTarget = await releaseTargetForPlatform(key, env);
   if (!releaseTarget) return null;
 
@@ -217,6 +229,7 @@ export async function getMoveFlowInstallConfig(
     installDir,
     binaryPath: path.join(installDir, binaryName),
     metadataPath: path.join(installDir, 'release.json'),
+    expectedBinarySha256: expectedBinarySha256 || undefined,
     lockPath: `${installDir}.install.lock`,
     httpTimeoutMs: parsePositiveInteger(
       env.GITNEXUS_MOVE_FLOW_HTTP_TIMEOUT_MS,
@@ -331,14 +344,24 @@ const validCachedInstall = async (
       config.binaryPath,
       process.platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK,
     );
+    const actualBinarySha256 = await sha256File(config.binaryPath);
     if (
       metadata.schemaVersion !== 1 ||
       metadata.version !== expected.version ||
       metadata.repository !== expected.repository ||
       metadata.tag !== expected.tag ||
       metadata.assetName !== expected.assetName ||
-      metadata.binarySha256 !== (await sha256File(config.binaryPath))
+      metadata.binarySha256 !== actualBinarySha256
     ) {
+      return null;
+    }
+    // #2663: release.json sits beside the binary in the cache, so a poisoned
+    // cache entry that rewrites both together passes the check above. When a
+    // pinned upstream hash is configured (an in-repo value, never cache
+    // contents), the cached binary must match the pin too. A mismatch
+    // rejects the cache, and the caller falls through to a fresh install,
+    // which re-verifies against upstream SHA256SUMS.
+    if (config.expectedBinarySha256 && actualBinarySha256 !== config.expectedBinarySha256) {
       return null;
     }
     if (!(await exactVersionMatches(config.binaryPath, config.version))) {

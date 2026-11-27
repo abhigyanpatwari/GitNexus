@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   chmodSync,
@@ -298,6 +299,90 @@ describe('move-flow installer', () => {
       });
     },
   );
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a hash-valid cache whose binary does not match the pinned upstream hash',
+    async () => {
+      // #2663: a poisoned cache entry rewrites the binary and its
+      // self-attested release.json together, so metadata and binary agree
+      // with each other. The pinned upstream hash is the independent
+      // anchor: it must reject the entry even though the metadata matches.
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-move-flow-pinned-mismatch-'));
+      tempRoots.push(root);
+      const env = {
+        ...process.env,
+        GITNEXUS_HOME: root,
+        GITNEXUS_SKIP_MOVE_FLOW: '0',
+        GITNEXUS_MOVE_FLOW_BINARY_SHA256: '0'.repeat(64),
+      };
+      const config = await getMoveFlowInstallConfig(env);
+      if (!config) throw new Error('expected a supported platform');
+      mkdirSync(config.installDir, { recursive: true });
+      writeFileSync(config.binaryPath, '#!/bin/sh\nprintf "move-flow 2.0.0\\n"\n');
+      chmodSync(config.binaryPath, 0o755);
+      writeFileSync(
+        config.metadataPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          version: config.version,
+          repository: config.repository,
+          tag: config.tag,
+          assetName: config.assetName,
+          archiveSha256: '0'.repeat(64),
+          binarySha256: await sha256File(config.binaryPath),
+        }),
+      );
+
+      await expect(findCachedMoveFlowBinary(env)).resolves.toBeNull();
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'accepts a cache whose binary matches the pinned upstream hash',
+    async () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-move-flow-pinned-match-'));
+      tempRoots.push(root);
+      const binary = '#!/bin/sh\nprintf "move-flow 2.0.0\\n"\n';
+      const pin = createHash('sha256').update(binary).digest('hex');
+      const env = {
+        ...process.env,
+        GITNEXUS_HOME: root,
+        GITNEXUS_SKIP_MOVE_FLOW: '0',
+        GITNEXUS_MOVE_FLOW_BINARY_SHA256: pin,
+      };
+      const config = await getMoveFlowInstallConfig(env);
+      if (!config) throw new Error('expected a supported platform');
+      mkdirSync(config.installDir, { recursive: true });
+      writeFileSync(config.binaryPath, binary);
+      chmodSync(config.binaryPath, 0o755);
+      writeFileSync(
+        config.metadataPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          version: config.version,
+          repository: config.repository,
+          tag: config.tag,
+          assetName: config.assetName,
+          archiveSha256: '0'.repeat(64),
+          binarySha256: pin,
+        }),
+      );
+
+      await expect(findCachedMoveFlowBinary(env)).resolves.toMatchObject({
+        binaryPath: config.binaryPath,
+        version: '2.0.0',
+      });
+    },
+  );
+
+  it('rejects a malformed pinned binary hash before provisioning', async () => {
+    await expect(
+      getMoveFlowInstallConfig({
+        ...process.env,
+        GITNEXUS_MOVE_FLOW_BINARY_SHA256: 'not-a-sha256',
+      }),
+    ).rejects.toThrow('invalid GITNEXUS_MOVE_FLOW_BINARY_SHA256');
+  });
 
   it.skipIf(process.platform === 'win32')('rejects a symlinked cached binary', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-move-flow-symlink-cache-'));
