@@ -7,6 +7,7 @@
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { REL_TYPES } from 'gitnexus-shared';
+import { DETECT_CHANGES_SCOPES } from '../core/detect-changes-scope.js';
 import { GUARD_TAINT_LIMITATION } from './taint-limitations.js';
 import {
   CONTEXT_RELATION_TYPES,
@@ -461,7 +462,7 @@ Mixed diffs count Markdown sections separately. incompatible_calls lists call si
         scope: {
           type: 'string',
           description: 'What to analyze: "unstaged" (default), "staged", "all", or "compare"',
-          enum: ['unstaged', 'staged', 'all', 'compare'],
+          enum: [...DETECT_CHANGES_SCOPES],
           default: 'unstaged',
         },
         base_ref: {
