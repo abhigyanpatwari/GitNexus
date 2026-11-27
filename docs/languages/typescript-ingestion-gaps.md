@@ -35,6 +35,7 @@ Every applicable shape resolves, including four-hop chains, indexed receivers an
 | ------------- | ------------------ | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | TYPESCRIPT-01 | Historical reports | The deferred narrowing/destructuring items are not marked complete by the receiver series. | Audit each against current tests and pin a failing example before planning code. Define what metadata crosses extraction, ParsedFile and scope resolution.       |
 | TYPESCRIPT-02 | Coverage audit     | Passing fixed shapes do not prove complete generic substitution or callable ownership.     | Retain type-parameter, callable-alternative and workspace-package boundaries. Require full target identities and ambiguous/shadowed negatives for new inference. |
+| TYPESCRIPT-03 | Resolved in #4217  | Enums (plain, `const`, `declare`, namespaced and in Vue `<script>` blocks) and their identifier-named members are `Enum` and `Property` nodes. Direct, namespace-import, barrel and aliased re-export (`export { Color as Hue }`) reads link to the member. A value typed as the enum (`op.startsWith()`) and Vue's unique-name property fallback do not. Still open: namespace-chain reads (`Theme.Shade.Dark`), quoted members (`'Valid' = 1`), a bare sibling read in an initializer (`Down = Up + 1`), members used as types (`c: Color.Red`), a read through a local alias of the enum object (`const E = Color; E.Red`), an enum merged with a namespace (`Color.parse()`, and `Color.Red` read in the declaring file), and same-named enums in sibling namespaces, functions or merged blocks, which share one node as same-named classes do. | Namespace-chain reads need namespace-qualified receiver resolution, the same gap as `Tools.Helper.run()`. Separate nodes for same-named enums need ids that include the enclosing namespace or function, as #4084 adds for namespaces. Flip the KNOWN GAP rows in [typescript-enums.test.ts](../../gitnexus/test/integration/resolvers/typescript-enums.test.ts) when either lands. |
 
 ## Code and regression entry points
 
@@ -43,6 +44,7 @@ Every applicable shape resolves, including four-hop chains, indexed receivers an
 - [typescript-type-parameters.test.ts](../../gitnexus/test/integration/resolvers/typescript-type-parameters.test.ts).
 - [typescript-callable-alternatives.test.ts](../../gitnexus/test/integration/resolvers/typescript-callable-alternatives.test.ts).
 - [typescript-workspace-packages.test.ts](../../gitnexus/test/integration/resolvers/typescript-workspace-packages.test.ts).
+- [typescript-enums.test.ts](../../gitnexus/test/integration/resolvers/typescript-enums.test.ts).
 
 Evidence details: [receiver baseline notes](../../gitnexus/bench/receiver-resolution/BASELINE.md) and
 [current roadmap](../../type-resolution-roadmap.md#current-backlog).

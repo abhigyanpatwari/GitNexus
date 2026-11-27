@@ -1453,6 +1453,27 @@ export interface ScopeResolver {
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 
   /**
+   * The field counterpart of {@link isStaticOnly}, which filters callable
+   * members only. Returns true for a field that a VALUE of its owner's type
+   * does not carry, so a receiver typed as the owner (a parameter, local,
+   * field or call result) skips it the way instance dispatch skips a
+   * static-only method. A class-name receiver (Case 2) still reaches it.
+   * `pickFirstNonStaticOnly` and `findInstanceMember` apply it (Cases 0, 3b,
+   * 4 and 6). Case 3 does not: for TypeScript it sees only alias bindings
+   * (`const E = ns.Color`), whose receiver is the enum object. Case 0.5 and
+   * Case 5 do not consult it either.
+   *
+   * TypeScript enum members are the case it exists for: a value typed
+   * `FilterOp` is a string or number, so `op.startsWith()` calls
+   * `String.prototype.startsWith`, and only `FilterOp.startsWith` names the
+   * member.
+   */
+  readonly isFieldUnreachableByInstance?: (
+    field: SymbolDefinition,
+    owner: SymbolDefinition,
+  ) => boolean;
+
+  /**
    * Optional canonicalizer for a written GENERIC TYPE ARGUMENT, so two
    * spellings of one type compare equal during interface-dispatch
    * instantiation matching (#2912).

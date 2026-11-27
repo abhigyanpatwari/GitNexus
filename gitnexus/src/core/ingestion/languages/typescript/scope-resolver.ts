@@ -146,6 +146,9 @@ const typescriptScopeResolver: ScopeResolver = {
   // behavior: explicit return-type annotations flow across `export`
   // boundaries and resolve chained member calls).
   fieldFallbackOnMethodLookup: false,
+  // Only the enum object carries its members: a value typed as the enum is a
+  // string or number, so `op.startsWith()` is the string method.
+  isFieldUnreachableByInstance: (_field, owner) => owner.type === 'Enum',
   propagatesReturnTypesAcrossImports: true,
 
   // ECMAScript: `export * from './a'; export * from './b'` with a name declared

@@ -123,6 +123,9 @@ const vueScopeResolver: ScopeResolver = {
   // layer (no formal class declaration), so enable the field-fallback
   // heuristic to catch them via declared field names.
   fieldFallbackOnMethodLookup: true,
+  // Only the enum object carries its members: a value typed as the enum is a
+  // string or number, so `op.startsWith()` is the string method.
+  isFieldUnreachableByInstance: (_field, owner) => owner.type === 'Enum',
 
   // Return-type propagation mirrors TypeScript.
   propagatesReturnTypesAcrossImports: true,

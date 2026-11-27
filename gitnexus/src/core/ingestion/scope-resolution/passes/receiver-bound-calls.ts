@@ -248,6 +248,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
   | 'isStaticOnly'
+  | 'isFieldUnreachableByInstance'
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
   | 'namespaceExportsIncludeImportedNames'
@@ -2206,8 +2207,8 @@ function emitReceiverBoundCallsInPass(
           for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
-                ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
-                : findOwnedMember(ownerId, memberName, model);
+                ? pickFirstNonStaticOnly(ownerId, memberName, site, model, scopes, provider)
+                : findInstanceMember(ownerId, memberName, model, scopes, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguousOwnerId = ownerId;
               break;
@@ -3039,8 +3040,8 @@ function emitReceiverBoundCallsInPass(
           for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
-                ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
-                : findOwnedMember(ownerId, memberName, model);
+                ? pickFirstNonStaticOnly(ownerId, memberName, site, model, scopes, provider)
+                : findInstanceMember(ownerId, memberName, model, scopes, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguousOwnerId = ownerId;
               break;
@@ -3314,7 +3315,14 @@ function emitReceiverBoundCallsInPass(
           // companion members are not legal instance-dispatch
           // candidates.
           for (const ownerId of memberDef === undefined ? chain : []) {
-            const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
+            const picked = pickFirstNonStaticOnly(
+              ownerId,
+              memberName,
+              site,
+              model,
+              scopes,
+              provider,
+            );
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
               ambiguousOwnerId = ownerId;
@@ -3511,6 +3519,7 @@ function emitReceiverBoundCallsInPass(
                     memberName,
                     site,
                     model,
+                    scopes,
                     provider,
                   );
                   if (candidate === OVERLOAD_AMBIGUOUS) {
@@ -3877,7 +3886,14 @@ function emitReceiverBoundCallsInPass(
               languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
             let ambiguousOwnerId: string | undefined;
             for (const ownerId of memberDef === undefined ? chain : []) {
-              const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
+              const picked = pickFirstNonStaticOnly(
+                ownerId,
+                memberName,
+                site,
+                model,
+                scopes,
+                provider,
+              );
               if (picked === OVERLOAD_AMBIGUOUS) {
                 ambiguousOwnerId = ownerId;
                 break;
@@ -4205,7 +4221,9 @@ export const OVERLOAD_AMBIGUOUS = Symbol('overload-ambiguous');
 
 /**
  * Sentinel returned by `pickFirstNonStaticOnly` when the only candidates
- * at the queried owner were filtered out by `provider.isStaticOnly`. Lets
+ * at the queried owner were filtered out by `provider.isStaticOnly`, or
+ * whose only match is a field `provider.isFieldUnreachableByInstance`
+ * rejects. Lets
  * the Case 4 chain walk distinguish "owner had no member of this name"
  * (return `undefined`, continue silently) from "owner had only static-
  * only members" (return this sentinel, continue and remember so the
@@ -4213,6 +4231,35 @@ export const OVERLOAD_AMBIGUOUS = Symbol('overload-ambiguous');
  * from `emitReferencesViaLookup`). See #1756 / remediation plan U2.
  */
 const STATIC_ONLY_FILTERED = Symbol('static-only-filtered');
+
+/** True when values of the owner's type do not carry `field`
+ *  (`isFieldUnreachableByInstance`). Fails open when the owner def is unknown. */
+function isUnreachableField(
+  field: SymbolDefinition,
+  ownerId: string,
+  scopes: ScopeResolutionIndexes,
+  provider: ReceiverBoundProviderSubset,
+): boolean {
+  const check = provider.isFieldUnreachableByInstance;
+  if (check === undefined) return false;
+  const owner = scopes.defs.get(ownerId);
+  return owner !== undefined && check(field, owner);
+}
+
+/** `findOwnedMember` for an instance receiver: a field that values of the
+ *  owner's type do not carry is no target. */
+function findInstanceMember(
+  ownerId: string,
+  memberName: string,
+  model: SemanticModel,
+  scopes: ScopeResolutionIndexes,
+  provider: ReceiverBoundProviderSubset,
+): SymbolDefinition | undefined {
+  const member = findOwnedMember(ownerId, memberName, model);
+  return member !== undefined && isUnreachableField(member, ownerId, scopes, provider)
+    ? undefined
+    : member;
+}
 
 /**
  * Receiver-bound member lookup that filters static-only candidates BEFORE
@@ -4233,7 +4280,8 @@ const STATIC_ONLY_FILTERED = Symbol('static-only-filtered');
  *   - `undefined` — no member with this name on this owner; chain walk
  *     continues silently.
  *   - `STATIC_ONLY_FILTERED` — at least one candidate existed but every
- *     one was static-only; chain walk continues and remembers so the
+ *     one was static-only (or the only match was an unreachable field);
+ *     chain walk continues and remembers so the
  *     post-chain handled-marker can fire if no ancestor binds.
  *   - `OVERLOAD_AMBIGUOUS` — narrowing on the surviving non-static
  *     candidates left >1 ambiguous match; chain walk aborts and the
@@ -4248,14 +4296,19 @@ function pickFirstNonStaticOnly(
   memberName: string,
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
+  scopes: ScopeResolutionIndexes,
   provider: ReceiverBoundProviderSubset,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | typeof STATIC_ONLY_FILTERED | undefined {
   const rawOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (rawOverloads.length === 0) {
     // Non-callable member (field / property / variable) — ACCESSES
-    // write/read sites target these too. Static-only filtering doesn't
-    // apply to fields, so delegate straight to `lookupFieldByOwner`.
-    return model.fields.lookupFieldByOwner(ownerId, memberName);
+    // write/read sites target these too. `isStaticOnly` covers methods
+    // only; `isFieldUnreachableByInstance` is its field counterpart.
+    const field = model.fields.lookupFieldByOwner(ownerId, memberName);
+    if (field !== undefined && isUnreachableField(field, ownerId, scopes, provider)) {
+      return STATIC_ONLY_FILTERED;
+    }
+    return field;
   }
   const isStaticOnly = provider.isStaticOnly;
   let overloads: readonly SymbolDefinition[] = rawOverloads;

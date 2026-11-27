@@ -196,15 +196,30 @@ export interface UniqueNamePropertyStats {
  * polyglot monorepo but only two in the language being resolved is answerable,
  * and capping globally would refuse it. One entry per Property node is the same
  * order as the node-lookup map built beside it.
+ *
+ * Enum members stay out. Code reads one through its enum (`Mode.Off`), which
+ * the precise passes resolve, so an untyped `x.Off` is no evidence of it. As
+ * candidates they would draw such reads into the enum, and would make a
+ * same-named object-literal key elsewhere ambiguous, dropping its edge.
  */
 export type PropertyNameIndex = ReadonlyMap<string, readonly PropertyCandidate[]>;
 
 export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex {
   const byName = new Map<string, PropertyCandidate[]>();
+  // A member id a class also owns (same-named class and enum in one file share
+  // it) stays in: the class field is a real candidate.
+  const enumMembers = new Set<string>();
+  const otherMembers = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('HAS_PROPERTY')) {
+    const owned = graph.getNode(rel.sourceId)?.label === 'Enum' ? enumMembers : otherMembers;
+    owned.add(rel.targetId);
+  }
+  for (const id of otherMembers) enumMembers.delete(id);
   // A node's id fixes its name, so one id set stands in for a per-name scan.
   const indexed = new Set<string>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Property') continue;
+    if (enumMembers.has(node.id)) continue;
     const name = node.properties.name;
     if (typeof name !== 'string' || name.length === 0) continue;
     const filePath = node.properties.filePath;
