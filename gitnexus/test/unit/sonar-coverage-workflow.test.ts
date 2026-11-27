@@ -97,6 +97,7 @@ describe.skipIf(process.platform === 'win32')('SonarQube gate', () => {
         env: {
           ...process.env,
           QUALITY: 'success',
+          PLAN_RESULT: 'success',
           TESTS: 'success',
           E2E: 'skipped',
           SONAR: sonar,
@@ -130,9 +131,8 @@ describe('SonarQube coverage handoff', () => {
     expect(upload.if).toContain("steps.java-lcov.outcome == 'success'");
     expect(upload.if).toContain('!cancelled()');
     expect(upload['continue-on-error']).toBe(true);
-    expect(upload.with?.path.trim().split('\n')).toEqual(
-      packages.map((pkg) => `${pkg}/coverage/lcov.info`),
-    );
+    expect(upload.with?.path).toBe('${{ runner.temp }}/sonar-coverage/');
+    expect(step('Stage LCOV for the scanner').run).toContain('copy-ci-reports.sh');
     expect(producer.indexOf(upload)).toBeGreaterThan(
       producer.indexOf(step('Run docker-server integration tests')),
     );
@@ -149,7 +149,8 @@ describe('SonarQube coverage handoff', () => {
     const source = 'SF:src/index.ts\nDA:1,0\nend_of_record\n';
     const javaSource = 'SF:src/ingestion.ts\nDA:2,1\nend_of_record\n';
     writeFileSync(path.join(java, 'lcov.info'), javaSource);
-    const script = namedStep(producer, 'Add Java conformance to the CLI SonarQube report').run!;
+    const script = namedStep(producer, 'Add Java conformance to the CLI SonarQube report').run;
+    if (!script) throw new Error('Missing Java LCOV merge step');
     const combine = () =>
       spawnSync('bash', ['-e', '-c', script], {
         cwd: temp,
@@ -184,40 +185,45 @@ describe('SonarQube coverage handoff', () => {
 
   it
     .skipIf(process.platform === 'win32')
-    .each(['complete', 'missing web', 'empty web', 'unknown source', 'outside package'])(
-    'prepares both package reports only for a complete checkout (%s)',
-    (scenario) => {
-      temp = mkdtempSync(path.join(tmpdir(), 'sonar-coverage-'));
-      for (const pkg of packages) {
-        const source = path.join(temp, pkg, 'src');
-        mkdirSync(source, { recursive: true });
-        writeFileSync(path.join(source, 'index.ts'), 'export const n = 1;');
-        if (pkg === 'gitnexus-web' && scenario === 'missing web') continue;
-        const reports = path.join(temp, 'sonar-coverage', pkg, 'coverage');
-        mkdirSync(reports, { recursive: true });
-        let sf = pkg === 'gitnexus-web' && scenario === 'unknown source' ? 'absent.ts' : 'index.ts';
-        if (pkg === 'gitnexus-web' && scenario === 'outside package')
-          sf = '../../gitnexus/src/index.ts';
-        const data = pkg === 'gitnexus-web' && scenario === 'empty web' ? '' : 'DA:1,0\n';
-        writeFileSync(path.join(reports, 'lcov.info'), `SF:src/${sf}\n${data}end_of_record\n`);
-      }
-      const prepare = namedStep(scanner, 'Prepare repository-relative LCOV').run;
-      if (!prepare) throw new Error('The LCOV preparation step must run a shell script');
-      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', prepare], {
-        cwd: temp,
-        env: { ...process.env, RUNNER_TEMP: temp },
-        encoding: 'utf8',
-      });
-      if (result.error) throw result.error;
-      if (scenario === 'complete') {
-        expect(result.status, result.stderr).toBe(0);
-        const lcov = readFileSync(path.join(temp, 'coverage', 'lcov.info'), 'utf8');
-        expect(lcov.match(/^SF:.*$/gm)).toEqual(packages.map((pkg) => `SF:${pkg}/src/index.ts`));
-        expect(lcov.match(/^DA:1,0$/gm)).toHaveLength(2);
-      } else {
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain('::error::');
-      }
-    },
-  );
+    .each([
+      'complete',
+      'CLI only',
+      'missing web',
+      'empty web',
+      'unknown source',
+      'outside package',
+    ])('requires valid reports for every selected package (%s)', (scenario) => {
+    temp = mkdtempSync(path.join(tmpdir(), 'sonar-coverage-'));
+    for (const pkg of packages) {
+      const source = path.join(temp, pkg, 'src');
+      mkdirSync(source, { recursive: true });
+      writeFileSync(path.join(source, 'index.ts'), 'export const n = 1;');
+      if (pkg === 'gitnexus-web' && ['missing web', 'CLI only'].includes(scenario)) continue;
+      const reports = path.join(temp, 'sonar-coverage', pkg, 'coverage');
+      mkdirSync(reports, { recursive: true });
+      let sf = pkg === 'gitnexus-web' && scenario === 'unknown source' ? 'absent.ts' : 'index.ts';
+      if (pkg === 'gitnexus-web' && scenario === 'outside package')
+        sf = '../../gitnexus/src/index.ts';
+      const data = pkg === 'gitnexus-web' && scenario === 'empty web' ? '' : 'DA:1,0\n';
+      writeFileSync(path.join(reports, 'lcov.info'), `SF:src/${sf}\n${data}end_of_record\n`);
+    }
+    const prepare = namedStep(scanner, 'Prepare repository-relative LCOV').run;
+    if (!prepare) throw new Error('The LCOV preparation step must run a shell script');
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', prepare], {
+      cwd: temp,
+      env: { ...process.env, RUNNER_TEMP: temp, CLI: 'true', WEB: String(scenario !== 'CLI only') },
+      encoding: 'utf8',
+    });
+    if (result.error) throw result.error;
+    if (scenario === 'complete' || scenario === 'CLI only') {
+      expect(result.status, result.stderr).toBe(0);
+      const lcov = readFileSync(path.join(temp, 'coverage', 'lcov.info'), 'utf8');
+      const selected = scenario === 'CLI only' ? ['gitnexus'] : packages;
+      expect(lcov.match(/^SF:.*$/gm)).toEqual(selected.map((pkg) => `SF:${pkg}/src/index.ts`));
+      expect(lcov.match(/^DA:1,0$/gm)).toHaveLength(selected.length);
+    } else {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('::error::');
+    }
+  });
 });

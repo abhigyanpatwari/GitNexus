@@ -266,6 +266,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
       # ci.yml declares a PR-only SonarQube caller. Test jobs retain contents: read.
       id-token: write
 

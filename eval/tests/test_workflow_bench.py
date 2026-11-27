@@ -361,7 +361,7 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
     }
     assert names.isdisjoint(native_names)
     assert set(gate["needs"]) == {"cross-platform", "test-completeness", "scope-resolution-benchmark"}
-    assert gate["if"] == "always()"
+    assert gate["if"] == "always() && fromJSON(inputs.plan).release"
     assert not gate.get("continue-on-error", False)
     assert not jobs["cross-platform"].get("continue-on-error", False)
     assert not jobs["test-completeness"].get("continue-on-error", False)

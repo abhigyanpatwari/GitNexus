@@ -2,12 +2,17 @@ name: Quality Checks
 
 on:
   workflow_call:
+    inputs:
+      plan:
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 jobs:
   format:
+    if: fromJSON(inputs.plan).run.quality
     runs-on: ubuntu-latest
     # Same root npm ci as lint. A cold install already took 4m19s here and
     # canceled prettier at the 5-minute job cap; lint needed 7m41s the same run.
@@ -25,6 +30,7 @@ jobs:
       - run: npx prettier --check .
 
   lint:
+    if: fromJSON(inputs.plan).run.quality
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,13 +46,13 @@ jobs:
       - run: npx eslint .
 
   typecheck:
+    if: fromJSON(inputs.plan).run.cli
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2 # The PR merge commit and its base parent are sufficient for the architecture check.
       # tsc --noEmit reads source + gitnexus-shared/dist. Skip prepare/postinstall
       # so a cold shared install cannot eat the 10-minute budget on a second tsc.
       - uses: ./.github/actions/setup-gitnexus
@@ -57,13 +63,9 @@ jobs:
       - name: Typecheck tests
         run: npm run typecheck:tests
         working-directory: gitnexus
-      - name: Check shared language boundaries against the merge base
-        env:
-          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
-        run: npx vitest run test/unit/shared-tool-language-boundary.test.ts
-        working-directory: gitnexus
 
   typecheck-web:
+    if: fromJSON(inputs.plan).run.web
     runs-on: ubuntu-latest
     # Cold gitnexus-web npm ci is several minutes (mermaid/langchain/playwright).
     # A 10-minute cancel prevents setup-node from saving the cache, so the next
@@ -90,6 +92,7 @@ jobs:
   # Reusability is detected by parsing each workflow's `on:` block, not an
   # allowlist, so new reusable workflows never produce false positives.
   workflow-convention:
+    if: fromJSON(inputs.plan).run.workflows
     name: Workflow concurrency convention
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -156,50 +156,31 @@ To check the cross-platform list is up to date, run `npm run test:cross-platform
 
 ## CI integration
 
-GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
+PRs compare the checked-out merge commit with its first parent. The `Select CI checks` job lists the suites selected by the diff. A move between packages selects both packages. An unknown build or CI input selects every PR suite.
 
-| Workflow              | Jobs                                                              | Purpose                                                               |
-| --------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `ci-quality.yml`      | format, lint, typecheck, typecheck-web, workflow-convention       | Code quality gates                                                    |
-| `ci-tests.yml`        | ubuntu/coverage, cross-platform (Win/Mac), packaged-install-smoke | Full suite + coverage on Ubuntu; platform-sensitive subset on Win/Mac |
-| `ci-scope-parity.yml` | discover, parity                                                  | Scope-resolution parity for all migrated languages                    |
-| `ci-e2e.yml`          | e2e (chromium)                                                    | Playwright E2E, gated on `gitnexus-web/**` changes                    |
+| Change | PR checks |
+| --- | --- |
+| CLI | CLI and test typechecks, sharded Linux Vitest coverage |
+| Web | Web typecheck, unit tests with coverage, Chromium E2E |
+| Shared package | CLI, web, Java conformance and Chromium |
+| Eval | Locked pytest suite and workflow evidence preflight |
+| Docker server | Docker-server integration tests |
+| Documentation alone | CI status jobs, without package installs |
 
-The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
-The browser E2E workflow must pass or be skipped because no web files changed.
+Code PRs also run formatting and lint. Parser, ingestion, package and backend changes select additional ABI, Java or browser checks as applicable. Same-repository code PRs run SonarQube with coverage for the selected packages. The coverage merge enforces each package's thresholds. The `CI Gate` requires the selected jobs to succeed.
 
-The Ubuntu coverage merge job enforces the CLI and web Vitest thresholds,
-including coverage from CLI server tests. The Java conformance job collects
-V8 coverage from the compiled CLI and its product checks. Source maps assign
-those hits to the TypeScript files. The merge job adds that coverage to the CLI
-LCOV report for SonarQube. The SonarQube job checks that both the CLI and web
-reports have line data and that their source paths exist in the checkout.
-A missing or invalid report fails the SonarQube check.
+Publish runs the native Windows and macOS shards, packaged installs, containment tests, benchmarks, tool accuracy and the full execution audit before an RC or stable release. It also runs any PR suites missing for the release candidate. To reuse a check, Publish verifies the merged PR, the successful CI jobs, and the tree and parents of the merge revision GitHub recorded for the reusable workflow. A squash merge can qualify even though its commit SHA changed. A different base, a direct push without matching CI, or an unavailable lookup triggers fresh checks. If a needed artifact has expired, Publish reruns its suite.
 
-Same-repository code PRs targeting any branch get a scan. Fork PRs run the
-tests and thresholds with read-only permissions. On pushes to `main` that run
-CI, a separate workflow reads the completed Publish run's artifact and scans
-its exact commit. Docs-only changes follow the existing CI path filters.
-The sticky PR comment summarizes quality, tests and E2E. Coverage is reported
-in SonarQube.
-
-Branch protection also requires six platform check names from the former
-three-shard matrix. These names remain as aggregate gates: all native shards
-and the `every test executed` audit must succeed before any of them passes.
-Failed, cancelled, skipped, or missing dependency results fail these gates.
-The actual native tests run in the current Windows/macOS shard matrix.
-
-The `typecheck` job runs both the production compiler check and
-`npm run typecheck:tests`. A type error in either check fails the job and the CI gate.
+Reused package reports and eval receipts feed the same release audit as fresh results. Main's SonarQube scan reads both package reports from the Publish run. The six legacy three-shard platform check names summarize the full native matrix on releases.
 
 ### Complete execution, including platform and benchmark tests
 
-The required `every test executed` job reconciles Vitest execution receipts from Ubuntu
+On releases, the `every test executed` job reconciles Vitest execution receipts from Ubuntu
 coverage, every Windows/macOS shard, the serial benchmark runs, and the real Python
 workflow preflight. Java fixture failures fail the dedicated conformance job.
 The Vitest audit requires a recorded pass for every collected test. A skip
 on Linux is satisfied only by a pass of that exact test in another required job.
-Test identities include the file, suite/title and source location; ambiguous
+Test identities include the file, suite/title and source location. Ambiguous
 parameterized cases must have unique titles. Missing receipts, missing test files,
 unhandled runner errors, failed hooks, failed assertions, and tests with no pass
 all fail the gate. Web tests are checked separately with the same rules.
@@ -208,12 +189,8 @@ The locked pytest suite and Linux/Windows containment jobs also upload JUnit
 receipts. The same gate checks every Python test file was collected and every
 case passed in at least one job, while preserving failures from any job. The
 Linux containment job supplies Bubblewrap, the pinned CLI, and built Vitest
-dependencies for tests that cannot run in the basic Python job. Python results
-are included in the combined PR report.
-
-The PR report shows the reconciled result as **Unverified**. Zero means every test
-has execution evidence; individual OS logs still show tests that require another
-OS as skipped. Failed executions remain failures even if another job passes.
+dependencies for tests that cannot run in the basic Python job. The combined
+results are available in the release run's `test-reports` artifact.
 
 ### Duplicate-test scan (advisory)
 
