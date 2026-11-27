@@ -1,4 +1,4 @@
-import { MCP_TOKEN_ESTIMATE_BYTES } from './output-budget.js';
+import { MCP_TOKEN_ESTIMATE_BYTES, McpBudgetExceededError } from './output-budget.js';
 
 /**
  * Agent-facing shaping of `impact` results.
@@ -21,25 +21,13 @@ export const IMPACT_AGENT_DEFAULT_LIMIT = 30;
 export const IMPACT_ITEM_PROCESS_CAP = 3;
 
 /** A budget that cannot hold the summary must never look like a successful empty walk. */
-export class ImpactBudgetExceededError extends Error {
-  constructor(readonly maxTokens: number) {
-    super('Impact result cannot fit maxTokens. Increase maxTokens or narrow the request.');
+export class ImpactBudgetExceededError extends McpBudgetExceededError {
+  constructor(maxTokens: number) {
+    super(
+      maxTokens,
+      'Impact result cannot fit maxTokens. Increase maxTokens or narrow the request.',
+    );
     this.name = 'ImpactBudgetExceededError';
-  }
-
-  toJSONText(): string {
-    const budget = this.maxTokens * MCP_TOKEN_ESTIMATE_BYTES;
-    for (const payload of [
-      { error: this.message },
-      { error: 'Increase maxTokens' },
-      { error: true },
-    ]) {
-      const text = JSON.stringify(payload);
-      if (Buffer.byteLength(text, 'utf8') <= budget) return text;
-    }
-    // Even a one-token budget holds valid JSON. The transport's isError or
-    // CLI exit status still signals failure when an error object cannot fit.
-    return 'null';
   }
 }
 

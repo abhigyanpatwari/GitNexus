@@ -255,7 +255,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           type: 'integer',
           minimum: 1,
           description:
-            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+            'Token budget including hints. Trims list items (see trimmedForBudget); errors if required fields cannot fit. Overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         repo: {
           type: ['string', 'array'],
@@ -429,7 +429,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           type: 'integer',
           minimum: 1,
           description:
-            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+            'Token budget including hints. Trims list items (see trimmedForBudget); errors if required fields cannot fit. Overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         repo: {
           type: 'string',

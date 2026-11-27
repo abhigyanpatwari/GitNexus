@@ -3,6 +3,32 @@ const BUDGETED_TOOLS = new Set(['query', 'context', 'impact']);
 export const MCP_TOKEN_ESTIMATE_BYTES = 4;
 export const MCP_TRUNCATION_MARKER = '\n…';
 
+/** Required content can't fit the budget; reported as an error, never as a short success. */
+export class McpBudgetExceededError extends Error {
+  constructor(
+    readonly maxTokens: number,
+    message = 'Result cannot fit maxTokens. Increase maxTokens or narrow the request.',
+  ) {
+    super(message);
+    this.name = 'McpBudgetExceededError';
+  }
+
+  toJSONText(): string {
+    const budget = this.maxTokens * MCP_TOKEN_ESTIMATE_BYTES;
+    for (const payload of [
+      { error: this.message },
+      { error: 'Increase maxTokens' },
+      { error: true },
+    ]) {
+      const text = JSON.stringify(payload);
+      if (Buffer.byteLength(text, 'utf8') <= budget) return text;
+    }
+    // Even a one-token budget holds valid JSON. The transport's isError or
+    // CLI exit status still signals failure when an error object cannot fit.
+    return 'null';
+  }
+}
+
 function parsePositiveInteger(value: unknown, source: string): number {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
   if (typeof value === 'string' && /^[1-9]\d*$/.test(value.trim())) {

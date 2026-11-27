@@ -152,7 +152,9 @@ data; omission does not mean absence. Remove filters for a broader view. For
 impact, existing `summaryOnly`, `limit` and `offset` already provide focused views.
 Omitting these filters preserves the existing response.
 
-The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate. For `query` and `context`, truncation ends the response with `…` and preserves valid UTF-8.
+The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate.
+
+For `query` and `context`, every list keeps the same number of leading items, the most that fit: query `processes`, `process_symbols`, `definitions` and, for `@group`, `results`; context `incoming`/`outgoing` categories, `processes`, `chain` layers, `routes`, `typed_properties` and ambiguous `candidates`. Query keeps only the `process_symbols` of flows it still shows. Identity, status, warnings, `graph_integrity` and `staleness` are never trimmed. `trimmedForBudget.lists` records `shown` and `total` for each shortened list. If the result cannot fit with every list empty, the tool returns a JSON error with MCP `isError: true`, as `impact` does. Plain-text results and backend error text are still cut at the byte limit and end with `…`.
 
 Set `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` to apply the budget when callers do not send `maxTokens`. An explicit tool argument takes precedence. Leaving both unset disables token budgeting. The estimate is not an exact model-specific tokenizer limit.
 

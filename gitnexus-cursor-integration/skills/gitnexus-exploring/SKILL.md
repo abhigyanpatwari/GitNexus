@@ -73,9 +73,10 @@ or `maxLines` for a whole-file read, if that tool is available. Use
 Filters retain requested sections/categories and hide the others; they do not prove other references
 are absent or make the existing bounded search exhaustive. Read `response_filter`,
 `warning`, `partial`, `truncated`, `epistemic` and `staleness`. Remove filters when
-broader evidence is needed. `maxTokens` is a last-resort byte cutoff that can cut
-JSON: narrow the request rather than treating a cut response as complete. Never
-use a filtered caller view to waive the required impact check or an UNKNOWN risk.
+broader evidence is needed. `maxTokens` keeps the first items of each list and
+records what it dropped in `trimmedForBudget`: a trimmed list is not complete, so
+narrow the request when you need all of it. Never use a filtered or trimmed caller
+view to waive the required impact check or an UNKNOWN risk.
 
 ## Checklist
 

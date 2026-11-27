@@ -48,12 +48,14 @@ import {
   McpRepositoryPolicy,
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
-import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
 import {
-  ImpactBudgetExceededError,
-  shapeImpactForAgent,
-  withImpactAgentDefaults,
-} from './impact-agent-output.js';
+  applyMcpMaxTokens,
+  McpBudgetExceededError,
+  resolveMcpMaxTokens,
+  withoutMcpBudgetArg,
+} from './output-budget.js';
+import { shapeImpactForAgent, withImpactAgentDefaults } from './impact-agent-output.js';
+import { fitListsToTokenBudget } from './response-list-budget.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 import {
   applyMcpResponseFilter,
@@ -364,11 +366,19 @@ export function createMCPServer(
         readOnly,
         rawResult,
       );
-      // Trim whole impact records to the budget so the JSON stays valid; the
-      // byte cap below remains the backstop for everything else.
-      const result = isImpact
-        ? shapeImpactForAgent(rawResult, maxTokens, Buffer.byteLength(hint, 'utf8'))
-        : rawResult;
+      // Trim whole records to the budget so the JSON stays valid; the byte cap
+      // below remains the backstop for plain-text and error results.
+      const hintBytes = Buffer.byteLength(hint, 'utf8');
+      let result: unknown = rawResult;
+      if (isImpact) {
+        result = shapeImpactForAgent(rawResult, maxTokens, hintBytes);
+      } else if (schemaSource === 'context') {
+        result = fitListsToTokenBudget('context', rawResult, maxTokens, hintBytes);
+      } else if (schemaSource === 'query') {
+        // query carries the hint inside its JSON as "next".
+        const nextBytes = Buffer.byteLength(`,"next":${JSON.stringify(hint)}`, 'utf8');
+        result = fitListsToTokenBudget('query', rawResult, maxTokens, nextBytes);
+      }
       const resultText =
         name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
           ? JSON.stringify({ ...result, next: hint })
@@ -388,7 +398,7 @@ export function createMCPServer(
           {
             type: 'text',
             text:
-              error instanceof ImpactBudgetExceededError
+              error instanceof McpBudgetExceededError
                 ? error.toJSONText()
                 : applyMcpMaxTokens(formatMcpToolError(error), maxTokens),
           },

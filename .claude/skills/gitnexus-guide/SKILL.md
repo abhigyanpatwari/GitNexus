@@ -79,9 +79,10 @@ ranking, traversal, source retention or the bounded candidate/reference windows.
 Filters add `response_filter` with the selection and omitted fields/categories.
 Warnings, ambiguity, staleness and completeness metadata always remain. An empty
 filtered view is not proof of absence. Omit filters to expand, and never waive
-impact checks because a selected category is empty. `maxTokens` is a byte cutoff,
-not pagination: it can cut JSON. Prefer these filters, small result counts, and
-source/chain expansion for a selected symbol rather than a large search result.
+impact checks because a selected category is empty. `maxTokens` trims list items
+and reports them in `trimmedForBudget`; it is not pagination. Prefer these filters,
+small result counts, and source/chain expansion for a selected symbol rather than a
+large search result.
 Stop once enough evidence answers the question; do not run every tool by default.
 
 ### Paginating `list_repos`

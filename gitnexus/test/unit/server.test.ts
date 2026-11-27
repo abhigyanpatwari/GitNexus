@@ -514,7 +514,7 @@ describe('MCP output budgets', () => {
     }
   });
 
-  it('applies explicit maxTokens to the complete response deterministically and UTF-8 safely', async () => {
+  it('returns a bounded JSON error when a query result has no list to trim', async () => {
     const backend = createMockBackend({
       callTool: vi.fn().mockResolvedValue({ payload: '😀'.repeat(100) }),
     });
@@ -523,12 +523,80 @@ describe('MCP output budgets', () => {
     const first = await callToolThroughServer(backend, 'query', args);
     const second = await callToolThroughServer(backend, 'query', args);
 
-    expect(first.isError).toBe(false);
+    expect(first.isError).toBe(true);
     expect(first.text).toBe(second.text);
     expect(Buffer.byteLength(first.text, 'utf8')).toBeLessThanOrEqual(8 * 4);
-    expect(first.text.endsWith('\n…')).toBe(true);
-    expect(first.text).not.toContain('\uFFFD');
+    expect(JSON.parse(first.text)).toHaveProperty('error');
+    expect(first.text).not.toContain(MCP_TRUNCATION_MARKER);
     expect(backend.callTool).toHaveBeenCalledWith('query', { search_query: 'auth' });
+  });
+
+  it('fits an over-budget context result by trimming every list, keeping valid JSON', async () => {
+    const ref = (name: string) => ({ uid: `Function:src/${name}.ts:${name}`, name });
+    const result = {
+      status: 'found',
+      symbol: { uid: 'Function:src/auth.ts:auth', name: 'auth' },
+      incoming: { calls: Array.from({ length: 40 }, (_, i) => ref(`caller${i}`)) },
+      outgoing: { calls: Array.from({ length: 12 }, (_, i) => ref(`callee${i}`)) },
+      processes: Array.from({ length: 30 }, (_, i) => ({ id: `proc_${i}`, name: `Flow ${i}` })),
+      staleness: { status: 'behind', commitsBehind: 3 },
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const { text, isError } = await callToolThroughServer(backend, 'context', {
+      name: 'auth',
+      maxTokens: 400,
+    });
+    const hint = getNextStepHint('context', { name: 'auth' }, false, result);
+
+    expect(isError).toBe(false);
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(400 * 4);
+    expect(text.endsWith(hint)).toBe(true);
+    const body = JSON.parse(text.slice(0, -hint.length));
+    expect(body.symbol).toEqual(result.symbol);
+    expect(body.staleness).toEqual(result.staleness);
+    const kept = body.incoming.calls.length;
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(12);
+    expect(body.incoming.calls).toEqual(result.incoming.calls.slice(0, kept));
+    expect(body.outgoing.calls).toEqual(result.outgoing.calls.slice(0, kept));
+    expect(body.trimmedForBudget).toEqual({
+      maxTokens: 400,
+      lists: {
+        processes: { shown: kept, total: 30 },
+        'incoming.calls': { shown: kept, total: 40 },
+        'outgoing.calls': { shown: kept, total: 12 },
+      },
+    });
+  });
+
+  it('fits an over-budget query result and keeps next inside the JSON', async () => {
+    const result = {
+      processes: Array.from({ length: 10 }, (_, i) => ({ id: `proc_${i}`, summary: `Flow ${i}` })),
+      process_symbols: Array.from({ length: 40 }, (_, i) => ({
+        id: `Function:src/s${i}.ts:s${i}`,
+        process_id: `proc_${i % 10}`,
+      })),
+      definitions: Array.from({ length: 25 }, (_, i) => ({ id: `Class:src/d${i}.ts:D${i}` })),
+      staleness: { status: 'current' },
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const { text, isError } = await callToolThroughServer(backend, 'query', {
+      search_query: 'auth',
+      maxTokens: 300,
+    });
+
+    expect(isError).toBe(false);
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(300 * 4);
+    const body = JSON.parse(text);
+    expect(body.next).toEqual(expect.any(String));
+    expect(body.staleness).toEqual({ status: 'current' });
+    expect(body.definitions.length).toBeLessThan(25);
+    const shownFlows = new Set(body.processes.map((p: { id: string }) => p.id));
+    for (const symbol of body.process_symbols) expect(shownFlows.has(symbol.process_id)).toBe(true);
+    expect(body.trimmedForBudget.lists.definitions).toEqual({
+      shown: body.definitions.length,
+      total: 25,
+    });
   });
 
   it('uses the environment default when maxTokens is omitted', async () => {
@@ -538,9 +606,10 @@ describe('MCP output budgets', () => {
       const backend = createMockBackend({
         callTool: vi.fn().mockResolvedValue({ payload: 'x'.repeat(200) }),
       });
-      const { text } = await callToolThroughServer(backend, 'context', { name: 'auth' });
+      const { text, isError } = await callToolThroughServer(backend, 'context', { name: 'auth' });
+      expect(isError).toBe(true);
       expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8 * 4);
-      expect(text.endsWith('\n…')).toBe(true);
+      expect(JSON.parse(text)).toHaveProperty('error');
     } finally {
       if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
       else process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = previous;
@@ -1106,16 +1175,16 @@ describe('MCP response filters', () => {
     expect(isError).toBe(true);
     expect(backend.callTool).not.toHaveBeenCalled();
   });
-  it('applies the existing byte budget after filtering, without changing the cutoff contract', async () => {
+  it('applies the budget after filtering and fails closed when the filtered view cannot fit', async () => {
     const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
     const { text, isError } = await callToolThroughServer(backend, 'context', {
       uid: payload.symbol.uid,
       response_sections: ['incoming'],
       maxTokens: 8,
     });
-    expect(isError).toBe(false);
+    expect(isError).toBe(true);
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(32);
-    expect(text.endsWith('\n…')).toBe(true);
+    expect(JSON.parse(text)).toHaveProperty('error');
     expect(backend.callTool).toHaveBeenCalledWith('context', { uid: payload.symbol.uid });
   });
 });
