@@ -32,6 +32,7 @@ import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
 import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resolution-config.js';
 import { unwrapCsharpElementType } from './accessor-unwrap.js';
 import { emitRazorViewComponentEdges } from './razor-view-components.js';
+import { csharpIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 const declarationImports = new WeakMap<
   readonly ParsedFile[],
@@ -175,6 +176,8 @@ const csharpScopeResolver: ScopeResolver = {
   // yield ONE edge, not one per site.
   collapseMemberCallsByCallerTarget: true,
   freeCallsRequireInstanceOwnership: true,
+
+  isGlobalNameFallbackPlausible: (ctx) => csharpIsGlobalNameFallbackPlausible(ctx),
 
   // C# hoists method return-type bindings to the enclosing Module
   // scope so `propagateImportedReturnTypes` can mirror them across
