@@ -323,7 +323,7 @@ gitnexus update                  # Install the latest published GitNexus (`npm i
 gitnexus query "<concept>"                                    # Process-grouped hybrid search
 gitnexus context <symbol> [--uid <uid> | --file <path>]       # 360° symbol view; flags disambiguate a shared name
 gitnexus impact <symbol> [--uid <uid> | --file <path> | --kind <kind>]  # Blast radius; flags disambiguate a shared name
-gitnexus trace <from> <to>       # Shortest directed path between two symbols
+gitnexus trace [from] [to] [--from-uid <uid>] [--to-uid <uid>]  # Shortest directed path; a UID flag replaces its name
 gitnexus detect-changes          # Map the working-tree diff to affected symbols and execution flows
 gitnexus check                   # Read-only structural checks against the indexed graph
 gitnexus cypher "<query>"        # Run a raw Cypher query against the knowledge graph

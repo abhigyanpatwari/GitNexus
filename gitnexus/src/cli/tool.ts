@@ -1,3 +1,4 @@
+import { resolveDetectChangesScope } from '../core/detect-changes-scope.js';
 /**
  * Direct CLI Tool Commands
  *
@@ -442,12 +443,17 @@ export async function detectChangesCommand(options?: {
   limit?: string;
   stalePolicy?: StalePolicy;
 }): Promise<void> {
+  const selection = resolveDetectChangesScope(options?.scope, options?.baseRef);
+  if ('error' in selection) {
+    output(selection, formatDetectChangesResult);
+    return;
+  }
   const limit = parseLimit(options?.limit);
   const backend = await getBackend();
   const staled = await stalePolicy(
     backend,
     await backend.callTool('detect_changes', {
-      scope: options?.scope || 'unstaged',
+      scope: selection.scope,
       base_ref: options?.baseRef,
       repo: options?.repo,
       branch: options?.branch,

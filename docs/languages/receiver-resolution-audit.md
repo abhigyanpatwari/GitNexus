@@ -139,3 +139,7 @@ In #3955, Java `indexElement` moved VISIBLE-GAP -> RESOLVES, so the Java row now
 reads 5 exact targets, no gaps, no wrong targets and 5 N/A. The committed count
 arm moved from 140 to 153 call drops (Java 50 -> 63) and from 174 to 187 drops
 of all kinds.
+
+In #4098, C# `indexElement` moved VISIBLE-GAP -> RESOLVES with the exact
+`User.Save` target, so the C# row now reads 9 exact targets, no gaps, no wrong
+targets and 1 N/A. The count arm is unchanged.

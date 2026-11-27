@@ -129,7 +129,7 @@ export const en = {
   'tool.usage.impact':
     'Usage: gitnexus impact <symbol_name> [--uid <uid>] [--file <path>] [--kind <kind>] [--direction upstream|downstream]',
   'tool.usage.trace':
-    'Usage: gitnexus trace <from> <to> [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
+    'Usage: gitnexus trace [from] [to] [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
   'tool.stalePolicy.behind': 'Index is {{commits}} commit(s) behind HEAD',
   'tool.stalePolicy.diverged': 'Index is not at HEAD (diverged)',
@@ -262,7 +262,7 @@ export const en = {
     '360-degree view of a code symbol: callers, callees, processes',
   'help.command.impact.description': 'Blast radius analysis: what breaks if you change a symbol',
   'help.command.trace.description':
-    'Find the shortest directed path between two symbols (call + class-member edges)',
+    'Find the shortest directed path between two symbols (call + class-member edges); each endpoint takes a name or its --from-uid/--to-uid (a lone name always fills from)',
   'help.command.cypher.description': 'Execute raw Cypher query against the knowledge graph',
   'help.command.detectChanges.description':
     'Map git diff hunks to indexed symbols and affected execution flows',
