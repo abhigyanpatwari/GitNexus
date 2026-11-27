@@ -25,7 +25,10 @@ interface Job {
 
 const ROOT = path.resolve(__dirname, '../../..');
 const readYaml = (file: string) => load(readFileSync(path.join(ROOT, file), 'utf8'));
-const docker = readYaml('.github/workflows/docker.yml') as { jobs: Record<string, Job> };
+const docker = readYaml('.github/workflows/docker.yml') as {
+  on: { push: { tags: string[] } };
+  jobs: Record<string, Job>;
+};
 const publish = readYaml('.github/workflows/publish.yml') as { jobs: Record<string, Job> };
 const gate = docker.jobs['release-gate'];
 const validator = readYaml('.github/actions/require-agent-release-evidence/action.yml') as {
@@ -62,12 +65,14 @@ function classify({
   event = 'push',
   ref = 'refs/tags/v2.0.0',
   tag = '',
+  publishedSha = sha,
   dryRun = false,
   packageVersion = '2.0.0',
 }: {
   event?: string;
   ref?: string;
   tag?: string;
+  publishedSha?: string;
   dryRun?: boolean;
   packageVersion?: string;
 } = {}) {
@@ -85,6 +90,7 @@ function classify({
       EVENT_NAME: event,
       GITHUB_REF: ref,
       INPUT_TAG: tag,
+      PUBLISHED_SHA: publishedSha,
       INPUT_DRY_RUN: String(dryRun),
       GITHUB_OUTPUT: output,
     },
@@ -102,7 +108,8 @@ function classify({
 
 describe('Docker release mode guard', () => {
   it('publishes a matching stable tag and pins its checkout SHA', () => {
-    expect(classify()).toEqual({
+    expect(docker.on.push.tags).toEqual(['v*-*']);
+    expect(classify({ tag: 'v2.0.0' })).toEqual({
       status: 0,
       output: { sha, version: '2.0.0', publish: 'true' },
     });
@@ -137,9 +144,11 @@ describe('Docker release mode guard', () => {
     { event: 'workflow_dispatch', ref: 'refs/heads/main' },
     { event: 'workflow_dispatch', ref: 'refs/tags/v2.0.0' },
     { event: 'push', ref: 'refs/heads/main' },
+    { event: 'push', ref: 'refs/tags/v2.0.0' },
+    { tag: 'v2.0.0', publishedSha: 'b'.repeat(40) },
     { tag: '2.0.0' },
     { ref: 'refs/tags/v2.0' },
-    { packageVersion: '2.0.1' },
+    { tag: 'v2.0.0', packageVersion: '2.0.1' },
     { tag: 'v2.0.2', packageVersion: '2.0.2' }, // A branch name is insufficient; the tag must exist.
   ])('rejects publication without a matching version tag: %j', (context) => {
     const result = classify(context);

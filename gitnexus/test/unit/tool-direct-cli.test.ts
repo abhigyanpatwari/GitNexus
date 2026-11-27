@@ -305,6 +305,22 @@ describe('direct CLI tool commands', () => {
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Risk level: low'));
   });
 
+  it.each([
+    [{ scope: 'stage' }, 'Invalid scope'],
+    [{ scope: '' }, 'Invalid scope'],
+    [{ scope: 'staged', baseRef: 'main' }, 'only valid for "compare" scope'],
+    [{ baseRef: 'main' }, 'only valid for "compare" scope'],
+    [{ scope: 'compare' }, 'required for "compare" scope'],
+  ])('rejects invalid detect-changes inputs before dispatch (%j)', async (options, message) => {
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand(options);
+
+    expect(callToolMock).not.toHaveBeenCalled();
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining(message));
+    expect(process.exitCode).toBe(1);
+  });
+
   it('prints "No changes detected." when changed_count is 0', async () => {
     callToolMock.mockResolvedValue({
       summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'low' },
