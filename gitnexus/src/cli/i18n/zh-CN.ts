@@ -120,7 +120,7 @@ export const zhCN = {
   'tool.usage.impact':
     '用法：gitnexus impact <符号名> [--uid <uid>] [--file <路径>] [--kind <类型>] [--direction upstream|downstream]',
   'tool.usage.trace':
-    '用法：gitnexus trace <起点> <终点> [-f|--file <路径>] [--from-file <路径>] [--to-file <路径>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
+    '用法：gitnexus trace [起点] [终点] [-f|--file <路径>] [--from-file <路径>] [--to-file <路径>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
@@ -240,7 +240,8 @@ export const zhCN = {
   'help.command.query.description': '搜索知识图谱中与概念相关的执行流程',
   'help.command.context.description': '查看代码符号的 360 度视图：调用者、被调用者、流程',
   'help.command.impact.description': '影响面分析：修改符号会影响什么',
-  'help.command.trace.description': '查找两个符号之间的最短有向路径（调用与类成员边）',
+  'help.command.trace.description':
+    '查找两个符号之间的最短有向路径（调用与类成员边）；每个端点可用名称或其 --from-uid/--to-uid 指定（单个名称始终作为起点）',
   'help.command.cypher.description': '对知识图谱执行原始 Cypher 查询',
   'help.command.detectChanges.description': '将 git diff hunk 映射到已索引符号和受影响执行流程',
   'help.command.check.description': '对已索引图谱运行结构检查',
