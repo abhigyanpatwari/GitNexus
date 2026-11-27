@@ -738,11 +738,11 @@ describe('NestJS decorator routes', () => {
 
   // ─── Routes inherited from a base class in the same file ───────────
   //
-  // Where a case describes code NestJS can run, the expectation was checked
-  // against a running NestJS 12.5.0 application: the listed URLs answer, the
-  // absent ones return 404. A chain that loops and a base class the file does
-  // not identify cannot be run that way; those cases pin what the extractor
-  // does with them.
+  // Where the extractor follows the chain, the expectation was checked against
+  // a running NestJS 12.5.0 application: the listed URLs answer, the absent
+  // ones return 404. Where it declines to — a chain that loops, a base class
+  // it cannot single out — the case pins that refusal, not what NestJS serves:
+  // some of that code runs, and NestJS then serves the inherited route too.
 
   it('mounts the handlers of a same-file base class under the controller prefix', () => {
     const routes = extract(`
