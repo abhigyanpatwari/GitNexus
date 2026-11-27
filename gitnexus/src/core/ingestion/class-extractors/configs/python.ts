@@ -7,4 +7,5 @@ export const pythonClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.Python,
   typeDeclarationNodes: ['class_definition'],
   ancestorScopeNodeTypes: ['class_definition'],
+  qualifiedNodeId: true,
 };
