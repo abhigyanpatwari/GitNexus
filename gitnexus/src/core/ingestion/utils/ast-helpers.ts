@@ -10,6 +10,11 @@ import {
 import { splitQualifiedName } from './qualified-name.js';
 import { isOverloadableCallable } from './callable-labels.js';
 
+/** Stable identity for a source range within one file. */
+export function sourceRangeKey(range: Range): string {
+  return `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
+}
+
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
 

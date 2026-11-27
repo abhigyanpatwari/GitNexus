@@ -34,14 +34,24 @@
  * would mark every declaration in such a file exported.
  */
 
-import type { Capture } from 'gitnexus-shared';
+import type { Capture, SymbolDefinition } from 'gitnexus-shared';
 import { canonicalModuleExportName, decodeIdentifierEscapes } from './utils/ecmascript-literals.js';
-import { syntheticCapture, type SyntaxNode } from './utils/ast-helpers.js';
+import { sourceRangeKey, syntheticCapture, type SyntaxNode } from './utils/ast-helpers.js';
 
 interface LocalExportSpecifier {
   readonly publicName: SyntaxNode;
   readonly typeOnly: boolean;
 }
+
+type EsmPublication = Pick<
+  SymbolDefinition,
+  'namedExports' | 'typeOnlyExports' | 'isDefaultExport'
+>;
+
+export type ConditionalEsmExports = {
+  readonly hasModuleSyntax: boolean;
+  readonly declarations: Record<string, EsmPublication>;
+};
 
 export interface EsmExportEvidence {
   /** Local names published by `export { … }`, `export default <id>`, `export = <id>`. */
@@ -51,6 +61,8 @@ export interface EsmExportEvidence {
   /** The file exports through a CommonJS assignment: a plain "not under
    *  `export`" is no verdict there. */
   readonly commonJs: boolean;
+  /** Positive ESM declarations for a mixed file whose package or compiler determines the format. */
+  readonly conditionalEsmExports?: ConditionalEsmExports;
   /** Local published as the default export by `export default <id>` or
    *  `export { <id> as default }`. */
   readonly defaultLocal: string | undefined;
@@ -258,6 +270,17 @@ const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
   // their `module`/`internal_module` and `statement_block` nodes above.
 ]);
 
+/** Static module declarations and import.meta are module syntax; import() also runs in scripts. */
+export function hasEsmSyntax(root: SyntaxNode, sourceText?: string): boolean {
+  return (
+    root.namedChildren.some(
+      (stmt) => stmt.type === 'import_statement' || stmt.type === 'export_statement',
+    ) ||
+    ((sourceText === undefined || sourceText.includes('import')) &&
+      root.descendantsOfType('meta_property').some((meta) => meta.firstChild?.type === 'import'))
+  );
+}
+
 /**
  * Scan a file's top level once. `undefined` means the file's export surface
  * cannot be read at all (ambient `.d.ts`), so no marker should be emitted.
@@ -265,6 +288,8 @@ const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
 export function collectEsmExportEvidence(
   root: SyntaxNode,
   filePath: string,
+  sourceText?: string,
+  format?: 'commonjs' | 'esm',
 ): EsmExportEvidence | undefined {
   if (filePath.endsWith('.d.ts')) return undefined;
   const namedLocals = new Set<string>();
@@ -274,7 +299,7 @@ export function collectEsmExportEvidence(
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
   // = …`, an alias (`const m = module.exports; m.x = …`), an `exports.x` — means
   // "not under `export`" says nothing.
-  let commonJs = hasCommonJsExportSurface(root);
+  let commonJs = format !== 'esm' && hasCommonJsExportSurface(root);
   for (const stmt of root.namedChildren) {
     if (stmt.type === 'export_statement') {
       // `export { a } from './x'` / `export type { T } from './t'` re-export
@@ -310,12 +335,24 @@ export function collectEsmExportEvidence(
             defaultLocals.add(decodeIdentifierEscapes(child.text));
         }
       }
-    } else if (hasTopLevelThisExportAssignment(stmt)) {
+    } else if (format !== 'esm' && hasTopLevelThisExportAssignment(stmt)) {
       commonJs = true;
     }
   }
   const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
-  return { namedLocals, localSpecifiers, commonJs, defaultLocal };
+  return {
+    namedLocals,
+    localSpecifiers,
+    commonJs,
+    defaultLocal,
+    ...(commonJs &&
+      format !== 'commonjs' && {
+        conditionalEsmExports: {
+          hasModuleSyntax: hasEsmSyntax(root, sourceText),
+          declarations: {},
+        },
+      }),
+  };
 }
 
 function isDefaultExportStatement(stmt: SyntaxNode): boolean {
@@ -415,6 +452,7 @@ function isModuleExportsObject(object: SyntaxNode): boolean {
 export function esmExportVerdict(
   nameNode: SyntaxNode,
   evidence: EsmExportEvidence,
+  commonJs = evidence.commonJs,
 ): boolean | undefined {
   // The name node's own declaration node is where the walk starts; the
   // declaration itself (a `method_definition`, a `function_declaration`) must
@@ -435,8 +473,9 @@ export function esmExportVerdict(
     if (current.type === 'object') {
       // `module.exports = { alpha() {} }`: the literal's own members are the
       // module's exports. Any other object literal is a nesting boundary.
-      if (isModuleExportsObject(current) && nameNode.parent?.parent?.id === current.id) return true;
-      return evidence.commonJs ? undefined : false;
+      if (commonJs && nameNode.parent?.parent?.id === current.id && isModuleExportsObject(current))
+        return true;
+      return commonJs ? undefined : false;
     }
     if (NESTING_BOUNDARIES.has(current.type) && current.id !== nameNode.parent?.id) {
       // `var` crosses blocks but never a function/namespace boundary. A
@@ -445,16 +484,26 @@ export function esmExportVerdict(
         current = current.parent;
         continue;
       }
-      return evidence.commonJs ? undefined : false;
+      return commonJs ? undefined : false;
     }
     current = current.parent;
   }
   if (underExport) return true;
-  if (evidence.commonJs) return undefined;
+  if (commonJs) return undefined;
   return (
     evidence.namedLocals.size > 0 &&
     evidence.namedLocals.has(decodeIdentifierEscapes(nameNode.text))
   );
+}
+
+/** Synthetic ESM defaults have no lexical name for the ordinary declaration walk. */
+export function recordEsmDefault(evidence: EsmExportEvidence | undefined, name?: Capture): void {
+  if (name && evidence?.conditionalEsmExports) {
+    evidence.conditionalEsmExports.declarations[sourceRangeKey(name.range)] = {
+      isDefaultExport: true,
+      namedExports: [],
+    };
+  }
 }
 
 /** Attach the same module export evidence to both grammar providers' declarations. */
@@ -463,7 +512,21 @@ export function addEsmExportMarkerCaptures(
   nameNode: SyntaxNode | undefined,
   evidence: EsmExportEvidence | undefined,
 ): void {
-  if (!evidence || !nameNode) return;
+  if (!evidence) return;
+  const name = grouped['@declaration.name'];
+  const esm = evidence.conditionalEsmExports;
+  if (esm?.hasModuleSyntax && name) {
+    if (grouped['@declaration.is-default-export']?.text === 'true') {
+      recordEsmDefault(evidence, name);
+    } else if (nameNode && esmExportVerdict(nameNode, evidence, false)) {
+      const isDefault = isEsmDefaultExport(nameNode, evidence);
+      esm.declarations[sourceRangeKey(name.range)] = {
+        ...(isDefault && { isDefaultExport: true }),
+        ...namedEsmPublications(nameNode, evidence, isDefault),
+      };
+    }
+  }
+  if (!nameNode) return;
   const verdict = esmExportVerdict(nameNode, evidence);
   if (verdict === undefined) return;
   grouped['@declaration.is-exported'] = syntheticCapture(

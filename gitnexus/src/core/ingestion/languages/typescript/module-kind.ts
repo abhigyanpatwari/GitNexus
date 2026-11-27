@@ -5,6 +5,7 @@ import { assertCloneable } from '../../workers/clone-safety.js';
 import { isCommonJsModule } from './cjs-export-assignment.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 import { boundNames } from './local-loaders.js';
+import { hasEsmSyntax, type ConditionalEsmExports } from '../../ts-js-export-marker.js';
 import type { CallEvidence } from './argument-evidence.js';
 import type { EnumValues } from './enum-arguments.js';
 
@@ -21,6 +22,7 @@ type DeclarationScope = {
   callArguments?: CallEvidence;
   enumValues?: EnumValues;
   possibleCommonJsDefaults?: string[];
+  conditionalEsmExports?: ConditionalEsmExports;
 };
 
 export function declarationScope(channel: unknown): DeclarationScope | undefined {
@@ -36,9 +38,8 @@ export function declarationScope(channel: unknown): DeclarationScope | undefined
 
 let pending: { filePath: string; value: boolean | DeclarationScope } | undefined;
 
-/** An import-bearing .ts file may emit a Node wrapper under its project's module setting. */
-export function recordPossibleCommonJsDefault(filePath: string, node: SyntaxNode): void {
-  if (pending?.filePath !== filePath) return;
+function pendingDeclarations(filePath: string): DeclarationScope | undefined {
+  if (pending?.filePath !== filePath) return undefined;
   if (typeof pending.value === 'boolean') {
     pending.value = {
       kind: 'typescript-declarations',
@@ -47,9 +48,28 @@ export function recordPossibleCommonJsDefault(filePath: string, node: SyntaxNode
       globalNames: [],
     };
   }
-  (pending.value.possibleCommonJsDefaults ??= []).push(
-    `${node.startPosition.row + 1}:${node.startPosition.column}`,
-  );
+  return pending.value;
+}
+
+/** An import-bearing .ts file may emit a Node wrapper under its project's module setting. */
+export function recordPossibleCommonJsDefault(filePath: string, node: SyntaxNode): void {
+  const scope = pendingDeclarations(filePath);
+  if (scope)
+    (scope.possibleCommonJsDefaults ??= []).push(
+      `${node.startPosition.row + 1}:${node.startPosition.column}`,
+    );
+}
+
+/** Workers serialize only explicit ESM publications for files with conflicting CommonJS evidence. */
+export function recordConditionalEsmExports(
+  filePath: string,
+  evidence: ConditionalEsmExports | undefined,
+  captures: readonly CaptureMatch[],
+): void {
+  // A file with no local declarations publishes the same empty local surface in either format.
+  if (!evidence || !captures.some((match) => match['@declaration.name'])) return;
+  const scope = pendingDeclarations(filePath);
+  if (scope) scope.conditionalEsmExports = evidence;
 }
 
 export function withCommonJsModuleKind(emit: CaptureEmitter): CaptureEmitter {
@@ -96,13 +116,7 @@ export function recordCommonJsModuleKind(
       if (directive) referencePaths.push(directive[1] ?? directive[2]);
     }
   }
-  const externalModule =
-    statements.some(
-      (statement) =>
-        statement?.type === 'import_statement' || statement?.type === 'export_statement',
-    ) ||
-    (sourceText?.includes('import') &&
-      root.descendantsOfType('meta_property').some((node) => node.firstChild?.type === 'import'));
+  const externalModule = hasEsmSyntax(root, sourceText);
   if (externalModule && !referencePaths.length && !sourceText?.includes('global')) return;
   const script = !externalModule && ordinarySource;
   if (!script && !externalModule) return;

@@ -40,7 +40,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { typescriptProvider } from '../typescript.js';
 import {
   ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
-  bindCompiledCommonJsDefaults,
+  bindModuleFormatExports,
   typescriptModuleExports,
 } from './module-exports.js';
 import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
@@ -110,7 +110,7 @@ const typescriptScopeResolver: ScopeResolver = {
   populateWorkspaceReferences(files, context) {
     canonicalizeEcmaWorkspaceBindings(files);
     const config = context.resolutionConfig as TypescriptResolutionConfig | undefined;
-    bindCompiledCommonJsDefaults(
+    bindModuleFormatExports(
       files,
       config?.tsconfigs ?? null,
       config?.nodeWorkspacePackages ?? null,

@@ -26,7 +26,7 @@
  * immediate side-channel collection. Performs no I/O.
  */
 
-import { recordCommonJsModuleKind } from './module-kind.js';
+import { recordCommonJsModuleKind, recordConditionalEsmExports } from './module-kind.js';
 import { enumConstants, type EnumValues } from './enum-arguments.js';
 import { argumentEvidence, callRangeKey, type CallEvidence } from './argument-evidence.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
@@ -38,7 +38,11 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
-import { collectEsmExportEvidence, addEsmExportMarkerCaptures } from '../../ts-js-export-marker.js';
+import {
+  collectEsmExportEvidence,
+  addEsmExportMarkerCaptures,
+  recordEsmDefault,
+} from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -50,6 +54,7 @@ import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import {
   cjsExportedName,
+  fixedNodeModuleFormat,
   isShadowedCjsExportAssignment,
   isUnexportedMemberAssignmentValue,
   isUndeclarableThisMemberValue,
@@ -420,7 +425,12 @@ export function emitTsScopeCaptures(
   const out: CaptureMatch[] = [];
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
-  const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
+  const exportEvidence = collectEsmExportEvidence(
+    tree.rootNode,
+    filePath,
+    sourceText,
+    fixedNodeModuleFormat(filePath),
+  );
   const returnedDefault = sourceText.includes('default')
     ? defaultFactoryResult(tree.rootNode)
     : undefined;
@@ -949,6 +959,7 @@ export function emitTsScopeCaptures(
   );
   if (returnedDefault && defaultDeclaration) {
     const { value } = returnedDefault;
+    recordEsmDefault(exportEvidence, defaultDeclaration['@declaration.name']);
     defaultDeclaration['@declaration.is-exported'] = syntheticCapture(
       '@declaration.is-exported',
       value,
@@ -968,6 +979,7 @@ export function emitTsScopeCaptures(
   recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out, callArguments, enumValues);
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
+  recordConditionalEsmExports(filePath, exportEvidence?.conditionalEsmExports, out);
   return out;
 }
 

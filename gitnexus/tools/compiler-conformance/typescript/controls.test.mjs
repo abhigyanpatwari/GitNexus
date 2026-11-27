@@ -14,6 +14,7 @@ import { HeritageSubstitutions } from '../../../dist/core/ingestion/heritage-sub
 import {
   checkCommonJsForwarding,
   checkModuleValues,
+  checkNativeEsmExports,
   checkNodeModuleFormat,
 } from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
@@ -31,6 +32,11 @@ const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test(
+  'native ESM namespaces and call targets agree with Node in both providers',
+  checkNativeEsmExports,
+);
 
 test('CommonJS loader calls match the exports of the compiled modules', checkCommonJsForwarding);
 test('the published graph retains the namespace constant read and prunes function-local reads', async () => {

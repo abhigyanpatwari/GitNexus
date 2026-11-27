@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+import { isCommonJsExportAssignment } from '../../../dist/core/ingestion/languages/typescript/cjs-export-receiver.js';
 import { typescriptModuleExports } from '../../../dist/core/ingestion/languages/typescript/module-exports.js';
 
 export async function checkCommonJsForwarding() {
@@ -70,6 +71,108 @@ export async function checkCommonJsForwarding() {
     assert.deepEqual(observed.sort(), expected.sort());
   } finally {
     rmSync(emitted, { recursive: true, force: true });
+  }
+}
+
+/** Compare real ESM namespace keys and imported call targets across both grammar providers. */
+export async function checkNativeEsmExports() {
+  const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-native-esm-'));
+  const src = path.join(root, 'src');
+  const out = path.join(root, 'out');
+  const formats = [
+    ['mjs', 'mjs'],
+    ['mts', 'mjs'],
+    ['js', 'js'],
+    ['ts', 'js'],
+  ];
+  try {
+    mkdirSync(src);
+    writeFileSync(path.join(src, 'package.json'), '{"type":"module"}');
+    writeFileSync(path.join(src, 'globals.d.ts'), 'declare const module: { exports: any };');
+    writeFileSync(
+      path.join(src, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          module: 'nodenext',
+          target: 'es2022',
+          types: [],
+          allowJs: true,
+          outDir: out,
+        },
+      }),
+    );
+    const fixture = new URL('../../../test/fixtures/typescript-native-esm/', import.meta.url);
+    for (const [ext, target] of formats) {
+      const directory = path.join(src, ext);
+      mkdirSync(directory);
+      for (const name of ['api', 'empty', 'barrel', 'use']) {
+        const source = readFileSync(new URL(name + '.mjs', fixture), 'utf8');
+        writeFileSync(
+          path.join(directory, name + '.' + ext),
+          source.replaceAll('.mjs', '.' + target),
+        );
+      }
+    }
+    for (const ext of ['cjs', 'cts']) {
+      writeFileSync(
+        path.join(src, 'legacy-' + ext + '.' + ext),
+        'module.exports = function cjsOnly() {};',
+      );
+    }
+    const cli = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
+    execFileSync(process.execPath, [cli, '--project', src]);
+    cpSync(path.join(src, 'package.json'), path.join(out, 'package.json'));
+    const exportsByFile = new Map();
+    const { graph } = await runPipelineFromRepo(src, () => {}, {
+      onScopeResolved({ parsedFiles, indexes }) {
+        for (const file of parsedFiles) {
+          exportsByFile.set(file.filePath, [...typescriptModuleExports(file).keys()].sort());
+          if (!file.filePath.includes('/empty.')) continue;
+          const writes = file.referenceSites.filter(
+            (site) => site.kind === 'write' && site.name === 'value',
+          );
+          assert.equal(writes.length, 1, file.filePath);
+          assert.equal(isCommonJsExportAssignment(writes[0], indexes, file), false, file.filePath);
+        }
+      },
+    });
+    for (const ext of ['cjs', 'cts']) {
+      const legacy = await import(pathToFileURL(path.join(out, 'legacy-' + ext + '.cjs')).href);
+      assert.equal(legacy.default.name, 'cjsOnly');
+      assert.deepEqual(exportsByFile.get('legacy-' + ext + '.' + ext), ['default']);
+    }
+    for (const [ext, target] of formats) {
+      const load = (name) => import(pathToFileURL(path.join(out, ext, name + '.' + target)).href);
+      const api = await load('api');
+      const barrel = await load('barrel');
+      assert.deepEqual(exportsByFile.get(ext + '/empty.' + ext), Object.keys(await load('empty')));
+      const consumer = await load('use');
+      assert.deepEqual([consumer.probeDefault(), consumer.probeHidden()], [undefined, undefined]);
+      const apiFile = ext + '/api.' + ext;
+      assert.deepEqual(Object.keys(api), ['default', 'direct', 'renamed']);
+      assert.deepEqual(Object.keys(barrel), ['direct', 'forwarded', 'renamed']);
+      assert.deepEqual(exportsByFile.get(apiFile), Object.keys(api), apiFile);
+      const actual = [];
+      for (const edge of graph.iterRelationshipsByType('CALLS')) {
+        const caller = graph.getNode(edge.sourceId);
+        if (caller?.label !== 'Function' || caller.properties.filePath !== ext + '/use.' + ext)
+          continue;
+        const callee = graph.getNode(edge.targetId).properties;
+        actual.push([caller.properties.name, callee.filePath, callee.name]);
+      }
+      assert.deepEqual(
+        actual.sort(),
+        [
+          ['useAlias', apiFile, api.renamed.name],
+          ['useDefault', apiFile, api.default.name],
+          ['useForward', apiFile, barrel.forwarded.name],
+          ['useStar', apiFile, barrel.direct.name],
+        ],
+        apiFile,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

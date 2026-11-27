@@ -29,7 +29,10 @@
  * immediate side-channel collection. Performs no I/O.
  */
 
-import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
+import {
+  recordCommonJsModuleKind,
+  recordConditionalEsmExports,
+} from '../typescript/module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { synthesizeTsJsClassIdentity } from '../typescript/class-identity.js';
 import {
@@ -60,6 +63,7 @@ import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { synthesizeCjsModuleExports } from '../typescript/cjs-module-exports.js';
 import { synthesizeTsLocalImports } from '../typescript/local-loaders.js';
 import {
+  fixedNodeModuleFormat,
   isShadowedCjsExportAssignment,
   isUnexportedMemberAssignmentValue,
   isUndeclarableThisMemberValue,
@@ -827,7 +831,12 @@ export function emitJsScopeCaptures(
 
   const rawMatches = getJsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
-  const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
+  const exportEvidence = collectEsmExportEvidence(
+    tree.rootNode,
+    filePath,
+    sourceText,
+    fixedNodeModuleFormat(filePath),
+  );
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
@@ -1123,5 +1132,6 @@ export function emitJsScopeCaptures(
   synthesizeJsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, JS_CALLABLE_CAPTURE_OPTIONS));
 
+  recordConditionalEsmExports(filePath, exportEvidence?.conditionalEsmExports, out);
   return out;
 }

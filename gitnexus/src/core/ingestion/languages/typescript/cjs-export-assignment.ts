@@ -180,6 +180,13 @@ const THIS_BINDING_NODE_TYPES = new Set([
   'class',
 ]);
 
+/** Node's explicit module extensions take precedence over package or syntax hints. */
+export function fixedNodeModuleFormat(filePath?: string): 'commonjs' | 'esm' | undefined {
+  if (filePath === undefined) return undefined;
+  if (/\.c[jt]s$/.test(filePath)) return 'commonjs';
+  if (/\.m[jt]s$/.test(filePath)) return 'esm';
+}
+
 /**
  * True when the file is a CommonJS module, so module-level `this` is
  * `module.exports` rather than `undefined`.
@@ -197,10 +204,8 @@ export function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
   // CommonJS whatever the body contains, `.mjs`/`.mts` are ESM. Without this a
   // `.cjs` file whose only content is `this.x = fn` carries no AST signal and
   // was classified non-CommonJS, silently dropping the export (#2729 review F14).
-  if (filePath !== undefined) {
-    if (/\.(cjs|cts)$/.test(filePath)) return true;
-    if (/\.(mjs|mts)$/.test(filePath)) return false;
-  }
+  const format = fixedNodeModuleFormat(filePath);
+  if (format) return format === 'commonjs';
 
   const cached = isCommonJsByRoot.get(root);
   if (cached !== undefined) return cached;

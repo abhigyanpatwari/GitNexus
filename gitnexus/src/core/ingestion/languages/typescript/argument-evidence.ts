@@ -1,4 +1,3 @@
-import type { Range } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
 import {
@@ -15,9 +14,7 @@ export type ArgumentEvidence =
 export type ArgumentCompatibility = boolean | 'assignable' | undefined;
 export type CallEvidence = Record<string, (ArgumentEvidence | null)[]>;
 
-export function callRangeKey(range: Range): string {
-  return `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
-}
+export { sourceRangeKey as callRangeKey } from '../../utils/ast-helpers.js';
 
 /** Only record a fresh object when every key and value type is known. */
 export function argumentEvidence(

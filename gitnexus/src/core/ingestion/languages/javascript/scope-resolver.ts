@@ -45,6 +45,7 @@ import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
 import {
+  bindModuleFormatExports,
   ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
   typescriptModuleExports,
 } from '../typescript/module-exports.js';
@@ -61,7 +62,13 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 
 const javascriptScopeResolver: ScopeResolver = {
   postExtractSourceTextPolicy: 'uncached-files',
-  populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
+  populateWorkspaceReferences(files, context) {
+    canonicalizeEcmaWorkspaceBindings(files);
+    const config = context.resolutionConfig as
+      | Awaited<ReturnType<typeof loadResolutionConfig>>
+      | undefined;
+    bindModuleFormatExports(files, null, config?.nodeWorkspacePackages ?? null);
+  },
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,

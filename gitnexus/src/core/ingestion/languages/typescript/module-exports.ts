@@ -1,34 +1,79 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { indexTopLevelExportsByName } from 'gitnexus-shared';
+import { sourceRangeKey } from '../../utils/ast-helpers.js';
 import { canonicalModuleExportName, canonicalTypeScriptName } from './identifiers.js';
 import { declarationScope } from './module-kind.js';
+import type { ConditionalEsmExports } from '../../ts-js-export-marker.js';
 import { tsconfigFor, type TsconfigIndex } from './tsconfig.js';
 import { nodePackageIsEsm, type NodeWorkspacePackages } from './workspace-packages.js';
 
 /** The export name ECMAScript gives a module's default export. */
 const DEFAULT_EXPORT_NAME = 'default';
 
-const compiledDefaults = new WeakMap<ParsedFile, SymbolDefinition>();
+type NativeModule = { format: 'esm' | 'commonjs'; definitions: readonly SymbolDefinition[] };
+const formatExports = new WeakMap<ParsedFile, NativeModule>();
 
-export function bindCompiledCommonJsDefaults(
+/** A guarded reference to module.exports can also occur in a native ES module. */
+export function hasCommonJsWrapper(file: ParsedFile): boolean {
+  const bound = formatExports.get(file);
+  if (bound) return bound.format === 'commonjs';
+  return (
+    file.captureSideChannel === true || declarationScope(file.captureSideChannel)?.commonJs === true
+  );
+}
+
+function explicitEsmDefinitions(
+  file: ParsedFile,
+  esm?: ConditionalEsmExports,
+): readonly SymbolDefinition[] {
+  if (!esm) return file.localDefs;
+  const definitions: SymbolDefinition[] = [];
+  for (const def of file.localDefs) {
+    const publication = def.nameRange && esm.declarations[sourceRangeKey(def.nameRange)];
+    if (publication) definitions.push({ ...def, isExported: true, ...publication });
+  }
+  return definitions;
+}
+
+/** Resolve ambiguous .js/.ts syntax using the project's compiler and Node package scope. */
+export function bindModuleFormatExports(
   files: readonly ParsedFile[],
   configs: TsconfigIndex | null,
   packages: NodeWorkspacePackages | null,
 ): void {
   for (const file of files) {
-    const positions = declarationScope(file.captureSideChannel)?.possibleCommonJsDefaults;
-    if (!positions?.length) continue;
-    compiledDefaults.delete(file);
-    const mode = tsconfigFor(configs, file.filePath)?.module;
-    const commonJs =
-      mode === 'commonjs' ||
-      (/^node(?:16|18|20|next)$/.test(mode ?? '') && !nodePackageIsEsm(file.filePath, packages));
-    if (!commonJs) continue;
-    const candidates = file.localDefs.filter((def) => {
-      const at = def.declarationRange;
-      return def.type === 'Function' && at && positions.includes(`${at.startLine}:${at.startCol}`);
-    });
-    if (candidates.length === 1) compiledDefaults.set(file, candidates[0]);
+    const scope = declarationScope(file.captureSideChannel);
+    const esm = scope?.conditionalEsmExports;
+    const positions = scope?.possibleCommonJsDefaults;
+    const possibleWrapper = file.captureSideChannel === true || scope?.commonJs;
+    if ((!esm && !positions?.length && !possibleWrapper) || !/\.[jt]sx?$/i.test(file.filePath))
+      continue;
+    formatExports.delete(file);
+    const isJs = /\.jsx?$/i.test(file.filePath);
+    const mode = isJs ? undefined : tsconfigFor(configs, file.filePath)?.module;
+    const nodeMode = /^node(?:16|18|20|next)$/.test(mode ?? '');
+    const esmEmit = /^(?:es6|es2015|es2020|es2022|esnext)$/.test(mode ?? '');
+    const usesPackageFormat = !mode || nodeMode || esmEmit || mode === 'preserve';
+    const packageEsm = usesPackageFormat && nodePackageIsEsm(file.filePath, packages);
+    if (packageEsm || ((isJs || esmEmit) && esm?.hasModuleSyntax)) {
+      formatExports.set(file, { format: 'esm', definitions: explicitEsmDefinitions(file, esm) });
+      continue;
+    }
+    if (!(mode === 'commonjs' || nodeMode)) continue;
+    let definitions = file.localDefs;
+    if (positions?.length) {
+      const candidates = file.localDefs.filter((def) => {
+        const at = def.declarationRange;
+        return (
+          def.type === 'Function' && at && positions.includes(`${at.startLine}:${at.startCol}`)
+        );
+      });
+      if (candidates.length === 1)
+        definitions = file.localDefs.map((def) =>
+          def === candidates[0] ? { ...def, isExported: true, isDefaultExport: true } : def,
+        );
+    }
+    formatExports.set(file, { format: 'commonjs', definitions });
   }
 }
 
@@ -39,12 +84,7 @@ export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = 
 
 /** Keep written graph identities while exposing canonical ECMAScript export names. */
 export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
-  const compiled = compiledDefaults.get(parsed);
-  const definitions = compiled
-    ? parsed.localDefs.map((def) =>
-        def === compiled ? { ...def, isExported: true, isDefaultExport: true } : def,
-      )
-    : parsed.localDefs;
+  const definitions = formatExports.get(parsed)?.definitions ?? parsed.localDefs;
   const scope = declarationScope(parsed.captureSideChannel);
   if (scope?.script) {
     if (!scope.commonJs) return new Map();
