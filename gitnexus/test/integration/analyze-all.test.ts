@@ -55,7 +55,7 @@ describe('analyze --all', () => {
     const missing = path.join(root, 'missing');
     const invalid = path.join(root, 'not a repo');
     const valid = path.join(root, 'repo with spaces');
-    const nonGit = path.join(root, 'non-git index');
+    const nonGit = path.join(valid, 'non-git index');
     mkdirSync(invalid);
     mkdirSync(valid);
     mkdirSync(nonGit);
@@ -70,7 +70,7 @@ describe('analyze --all', () => {
           path: repoPath,
           storagePath: path.join(repoPath, '.gitnexus'),
           indexedAt: new Date(0).toISOString(),
-          lastCommit: repoPath === nonGit ? '' : 'previous',
+          ...(repoPath === nonGit ? {} : { lastCommit: 'previous' }),
         })),
       ),
     );
@@ -86,5 +86,11 @@ describe('analyze --all', () => {
     expect(
       JSON.parse(readFileSync(path.join(valid, '.gitnexus', 'meta.json'), 'utf8')).stats.nodes,
     ).toBeGreaterThan(0);
+    expect(
+      JSON.parse(readFileSync(path.join(nonGit, '.gitnexus', 'meta.json'), 'utf8')),
+    ).toMatchObject({
+      repoPath: nonGit,
+      lastCommit: '',
+    });
   }, 100_000);
 });

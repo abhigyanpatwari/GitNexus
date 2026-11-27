@@ -75,9 +75,10 @@ export async function analyzeAllCommand(
     console.log(`\n  Analyzing ${repo.name} (${repo.path})`);
     // Each analyze can re-exec for heap sizing and exits after publishing the
     // graph. A separate process also isolates each repo's native DB handles.
-    // An empty indexed commit is also used by checkouts without a HEAD.
+    // Legacy registry entries can omit lastCommit. An empty commit is also
+    // used by non-Git folders and checkouts without a HEAD.
     // --skip-git still detects Git at an explicit path when it is present.
-    const repoArgs = repo.lastCommit === '' && !options.skipGit ? ['--skip-git'] : [];
+    const repoArgs = (repo.lastCommit ?? '') === '' && !options.skipGit ? ['--skip-git'] : [];
     const child = spawnSync(
       process.execPath,
       [...process.execArgv, process.argv[1], 'analyze', ...args, ...repoArgs, '--', repo.path],
