@@ -65,7 +65,7 @@ ${unboundCallableQuery('definition.function')}
 ;     an ambiguous fallback match is dropped at ranking time, so no false edge
 ;     to a same-named member in another file.
 (enum_body
-  (property_identifier) @name) @definition.property
+  (property_identifier) @name @definition.property)
 
 (enum_body
   (enum_assignment

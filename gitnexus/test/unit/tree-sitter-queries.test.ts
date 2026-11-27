@@ -167,6 +167,19 @@ describe('tree-sitter queries', () => {
       expect(memberNames).toContain('Active');
       expect(memberNames).toContain('Inactive');
 
+      // Verify multiline bare members have distinct definition node start lines (not enum_body start line)
+      const multiParser = new Parser();
+      multiParser.setLanguage(lang);
+      const multiQuery = new Parser.Query(lang, TYPESCRIPT_QUERIES);
+      const multiTree = multiParser.parse(`enum Multi {\n  First,\n  Second\n}`);
+      for (const match of multiQuery.matches(multiTree.rootNode)) {
+        const defCapture = match.captures.find((c) => c.name === 'definition.property');
+        const nameCapture = match.captures.find((c) => c.name === 'name');
+        if (defCapture && nameCapture?.node.text === 'Second') {
+          expect(defCapture.node.startPosition.row).toBe(2);
+        }
+      }
+
       // --- enum members with initialisers ---
       const initMemberNames = capturedDefinitionNames(
         lang,
