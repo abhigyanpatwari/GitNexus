@@ -36,3 +36,14 @@ export function forIn(entries: Map<Key, Value>) {
   // A for-in loop cannot destructure a property name.
   for (const [, value] in entries) value.save();
 }
+
+export async function asyncIterable(entries: AsyncIterable<[Key, Value]>) {
+  for await (const [, value] of entries) value.save();
+}
+export async function asyncGenerator(entries: AsyncGenerator<readonly [Key, Value], void, unknown>) {
+  for await (const [key, value] of entries) { key.save(); value.save(); }
+}
+export function syncLoopOverAsync(entries: AsyncIterable<[Key, Value]>) {
+  // @ts-expect-error A synchronous loop cannot consume an async-only iterator.
+  for (const [, value] of entries) value.save();
+}

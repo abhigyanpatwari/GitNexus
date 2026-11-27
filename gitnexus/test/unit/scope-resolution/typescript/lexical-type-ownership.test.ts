@@ -5,8 +5,31 @@ import {
   typescriptProvider,
 } from '../../../../src/core/ingestion/languages/typescript.js';
 import { lookupLexicalName } from 'gitnexus-shared';
+import { finalizeScopeModel } from '../../../../src/core/ingestion/finalize-orchestrator.js';
+import { bindsTypeParameter } from '../../../../src/core/ingestion/scope-resolution/scope/walkers.js';
 
 describe('lexical type fact ownership', () => {
+  it.each([
+    'class Service { [key]<Item>(item: Item): Item { return item; } }',
+    'interface Service { [key]<Item>(item: Item): Item }',
+    'abstract class Service { abstract [key]<Item>(item: Item): Item }',
+  ])('binds the generic parameter inside the computed method only: %s', (declaration) => {
+    const parsed = extractParsedFile(
+      typescriptProvider,
+      'declare const key: unique symbol; interface Item {}\n' + declaration + '\nlet outer: Item;',
+      'app.ts',
+    )!;
+    const indexes = finalizeScopeModel([parsed]);
+    const sites = parsed.referenceSites.filter(
+      (site) => site.kind === 'type-reference' && site.name === 'Item',
+    );
+    expect(sites.map((site) => bindsTypeParameter(site.inScope, 'Item', indexes))).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+
   describe.each([
     { provider: typescriptProvider, extension: 'ts' },
     { provider: javascriptProvider, extension: 'js' },

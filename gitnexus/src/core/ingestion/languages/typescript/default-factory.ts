@@ -1,10 +1,38 @@
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { FUNCTION_NODE_TYPES, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 
+/** A named function body or instance initializer can execute when its binding escapes. */
+function deferredBinding(node: SyntaxNode): SyntaxNode | undefined {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (FUNCTION_NODE_TYPES.has(parent.type) || parent.type === 'generator_function') {
+      if (parent.childForFieldName('body')?.id !== child.id && child.type !== 'formal_parameters')
+        continue;
+      if (
+        parent.type === 'function_declaration' ||
+        parent.type === 'generator_function_declaration'
+      )
+        return parent;
+      if (
+        parent.parent?.type === 'variable_declarator' &&
+        parent.parent.childForFieldName('value')?.id === parent.id
+      )
+        return parent.parent;
+    }
+    if (
+      parent.type === 'method_definition' ||
+      (parent.type === 'public_field_definition' &&
+        parent.childForFieldName('value')?.id === child.id &&
+        !parent.children.some((token) => token.type === 'static'))
+    ) {
+      const owner = parent.parent?.parent;
+      if (owner?.type === 'class_declaration' || owner?.type === 'abstract_class_declaration')
+        return owner;
+    }
+  }
+}
+
 /** A direct return supplies the identity of the value exported by a local factory call. */
-export function defaultFactoryResult(
-  root: SyntaxNode,
-): { name: string; value: SyntaxNode; callOffset: number; checkPriorWrites: boolean } | undefined {
+export function defaultFactoryResult(root: SyntaxNode) {
   const statements = root.namedChildren;
   const exportIndex = statements.findIndex(
     (node) =>
@@ -38,31 +66,68 @@ export function defaultFactoryResult(
     body?.length === 1 && body[0].type === 'return_statement' ? body[0].lastNamedChild : undefined;
   if (returned?.type !== 'arrow_function' && returned?.type !== 'function_expression')
     return undefined;
-  // Hoisted function declarations cannot run their bodies before this export.
-  // Any earlier executable statement could call code that reassigns the factory.
-  const checkPriorWrites = statements.some((statement, index) => {
-    // Static dependencies can run before the body, including through a cycle.
-    if (
-      statement.type === 'import_statement' ||
-      (statement.type === 'export_statement' && statement.childForFieldName('source'))
-    )
-      return true;
-    if (index >= exportIndex) return false;
-    const decl =
-      statement.type === 'export_statement'
-        ? statement.childForFieldName('declaration')
-        : statement;
-    return (
-      !decl ||
-      ![
-        'function_declaration',
-        'generator_function_declaration',
-        'comment',
-        'interface_declaration',
-        'type_alias_declaration',
-        'ambient_declaration',
-      ].includes(decl.type)
-    );
-  });
-  return { name, value: returned, callOffset: expression.startIndex, checkPriorWrites };
+  const callOffset = expression.startIndex;
+  const hasDependency = statements.some(
+    (node) =>
+      node.type === 'import_statement' ||
+      (node.type === 'export_statement' && node.childForFieldName('source') !== null),
+  );
+  // Index names only if a write to this factory occurs inside a deferred body.
+  let references: Map<string, SyntaxNode[]> | undefined;
+  const unreachable = new Set<number>();
+  function isPriorWrite(write: SyntaxNode): boolean {
+    const pending = [write];
+    const seen = new Set<number>();
+    for (let node = pending.pop(); node; node = pending.pop()) {
+      const owner = deferredBinding(node);
+      if (!owner) {
+        if (node.startIndex < callOffset) return true;
+        continue;
+      }
+      if (seen.has(owner.id) || unreachable.has(owner.id)) continue;
+      seen.add(owner.id);
+      const declaration = owner.type === 'variable_declarator' ? owner.parent : owner;
+      const exported =
+        declaration?.parent?.type === 'export_statement' ? declaration.parent : undefined;
+      if ((exported ?? declaration)?.parent?.id !== root.id) {
+        // A namespace or object can expose its nested bindings under a property key.
+        pending.push(owner);
+        continue;
+      }
+      const binding = owner.childForFieldName('name');
+      if (!binding || (hasDependency && exported)) return true;
+      if (!references) {
+        references = new Map();
+        for (const ref of root.descendantsOfType([
+          'identifier',
+          'type_identifier',
+          'shorthand_property_identifier',
+        ])) {
+          const key = canonicalTypeScriptName(ref.text);
+          const uses = references.get(key);
+          if (uses) uses.push(ref);
+          else references.set(key, [ref]);
+        }
+      }
+      // Direct eval can refer to a lexical binding by a name assembled at runtime.
+      if (references.has('eval')) return true;
+      for (const ref of references.get(canonicalTypeScriptName(binding.text)) ?? []) {
+        if (ref.id === binding.id) continue;
+        if (hasDependency && ref.parent?.type === 'export_specifier') return true;
+        pending.push(ref);
+      }
+      if (owner.type === 'class_declaration' || owner.type === 'abstract_class_declaration') {
+        // A static initializer can construct its own class through 'this'. A decorator
+        // receives the class without needing to reference its declared name.
+        for (const ref of owner.descendantsOfType(['this', 'decorator'])) pending.push(ref);
+      }
+    }
+    for (const owner of seen) unreachable.add(owner);
+    return false;
+  }
+  return {
+    name,
+    value: returned,
+    isPriorWrite,
+  };
 }

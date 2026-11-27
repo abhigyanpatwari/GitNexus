@@ -12,6 +12,7 @@ export type ArgumentEvidence =
   | { fields: [string, string][] }
   | { parameters: number }
   | { spread: string | null };
+export type ArgumentCompatibility = boolean | 'assignable' | undefined;
 export type CallEvidence = Record<string, (ArgumentEvidence | null)[]>;
 
 export function callRangeKey(range: Range): string {
@@ -83,7 +84,7 @@ export function acceptsArgumentEvidence(
   annotation: string,
   type: string,
   evidence?: ArgumentEvidence | null,
-): boolean | undefined {
+): ArgumentCompatibility {
   const literal = literalValue(annotation);
   if (literal !== undefined) {
     if (typeof evidence === 'string') return literalValue(evidence) === literal;
@@ -104,6 +105,9 @@ export function acceptsArgumentEvidence(
     return evidence.parameters <= parameters.length;
   }
   if (!annotation.startsWith('{') || !annotation.endsWith('}')) return undefined;
+  // TypeScript tries subtype matches before assignable matches. A fresh literal
+  // with excess fields still fits {} in the second pass.
+  if (annotation.slice(1, -1).trim() === '') return evidence.fields.length ? 'assignable' : true;
   const fields = new Map(evidence.fields);
   const accepted = new Set<string>();
   for (const field of annotation.slice(1, -1).split(/[;,]/u)) {

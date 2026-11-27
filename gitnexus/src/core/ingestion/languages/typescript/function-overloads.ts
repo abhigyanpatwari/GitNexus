@@ -1,12 +1,10 @@
 import { makeScopeId } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
-import { findAllCallableBindingsInScope } from '../../scope-resolution/scope/walkers.js';
 import {
-  hasSpreadArguments,
-  mayCallTsFunctionOverload,
-  selectTsPrimitiveOverload,
-} from './call-arguments.js';
+  findAllCallableBindingsInScope,
+  findClassBindingInScope,
+} from '../../scope-resolution/scope/walkers.js';
+import { mayCallTsFunctionOverload, resolveTsOverloadSet } from './call-arguments.js';
 
 export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] = (
   site,
@@ -36,14 +34,29 @@ export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] 
   const signatures = siblings
     .filter((binding) => binding.def.isOverloadSignature)
     .map((binding) => binding.def);
-  const selected = selectTsPrimitiveOverload(signatures, site, scopes);
-  if (selected) return { kind: 'resolved', definition: selected };
-  const matches = hasSpreadArguments(site)
-    ? signatures
-    : narrowOverloadCandidates(signatures, site.arity, site.argumentTypes);
-  if (matches.length === 1) return { kind: 'resolved', definition: matches[0] };
+  const result = resolveTsOverloadSet(signatures, site, scopes);
+  if (result.kind !== 'unknown') return result;
+  const bodies = siblings.filter(({ def }) => def.type === 'Function' && !def.isOverloadSignature);
+  if (bodies.length !== 1) return result;
+  const candidates = new Set(result.candidateIds);
+  const viable = signatures.filter((signature) => candidates.has(signature.nodeId));
+  const first = viable[0];
+  const returned = first?.returnType;
+  const commonReturnSource =
+    returned &&
+    viable.every(
+      (signature) => signature.returnType === returned && !signature.typeParameters?.length,
+    ) &&
+    findClassBindingInScope(scope, returned, scopes, undefined, {
+      purpose: 'type',
+      uniqueQualifiedNameFallback: false,
+    })
+      ? first
+      : undefined;
   return {
-    kind: matches.length ? 'unknown' : 'inapplicable',
-    candidateIds: (matches.length ? matches : signatures).map((signature) => signature.nodeId),
+    kind: 'implementation',
+    definition: bodies[0].def,
+    candidateIds: result.candidateIds,
+    commonReturnSource,
   };
 };

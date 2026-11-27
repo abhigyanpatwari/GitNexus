@@ -761,7 +761,7 @@ export interface NameLookupOptions {
  * — deterministic, stable across reparses of the same source, interned.
  */
 export interface Scope {
-  /** Type parameters declared by a signature with no named declaration. */
+  /** Type parameters introduced by this scope, including computed and unnamed signatures. */
   readonly typeParameters?: readonly TypeParameter[];
   readonly nameClaims?: readonly NameClaim[];
   readonly lookupPolicy?: ScopeLookupPolicy;

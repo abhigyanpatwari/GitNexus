@@ -55,7 +55,7 @@ export interface TypeParameter {
    * `where` clauses) — see `parseTypeParameterList`.
    */
   bound?: string;
-  /** Default type used when the corresponding argument is omitted. */
+  /** Source spelling of the default argument. A non-type parameter can supply a value expression. */
   defaultType?: string;
 }
 
@@ -74,6 +74,8 @@ export interface SymbolDefinition {
    *  (e.g. `App.Models.User`). Falls back to the simple symbol name when no
    *  package/namespace/module scope exists or no explicit qualified metadata is provided. */
   qualifiedName?: string;
+  /** Evaluated literal member key when it contains a qualified-name separator. */
+  literalMemberName?: string;
   /** A callable signature that participates in overload selection independently of its implementation. */
   isOverloadSignature?: boolean;
   parameterCount?: number;
@@ -83,6 +85,8 @@ export interface SymbolDefinition {
   /** Per-parameter type names for overload disambiguation (e.g. ['int', 'String']).
    *  Populated when parameter types are resolvable from AST (any typed language). */
   parameterTypes?: string[];
+  /** Exact positional annotations when a provider compares written overload signatures. */
+  declaredParameterTypes?: string[];
   /** Additive per-parameter type shape sidecar for languages that need cv/ref/pointer distinctions.
    *  Does not participate in graph node identity unless a resolver explicitly opts in. */
   parameterTypeClasses?: ParameterTypeClass[];

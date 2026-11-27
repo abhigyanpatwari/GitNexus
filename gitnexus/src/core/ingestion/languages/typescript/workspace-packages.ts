@@ -493,6 +493,23 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown> |
   }
 }
 
+/** A checkout can sit inside a package. A node_modules directory ends that package's scope. */
+async function inheritsEsmPackage(repoRoot: string): Promise<boolean> {
+  let directory = path.resolve(repoRoot);
+  while (path.basename(directory) !== 'node_modules') {
+    try {
+      const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+      return manifest?.type === 'module';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return false;
+}
+
 async function readYamlPackages(filePath: string): Promise<string[]> {
   let raw: string;
   try {
@@ -607,6 +624,7 @@ async function loadNodeWorkspacePackagesUncached(
     }
   }
 
+  if (!packageModules.has('') && (await inheritsEsmPackage(repoRoot))) packageModules.set('', true);
   if ([...packageModules.values()].includes(true)) return { byName, packageModules };
   return byName.size === 0 ? null : { byName };
 }

@@ -94,6 +94,15 @@ export function closureWrite(repo: Key | Value) {
 
 export function reversed(value: Value | Key) { value.save(); }
 
+export namespace Store {
+  export let repo: Key | Value = new Key();
+  if (repo instanceof Key) {
+    repo.before();
+    repo = new Value();
+    repo.save();
+  }
+}
+
 class Base { run() {} }
 class First extends Base { run() {} }
 class Second extends Base { run() {} }

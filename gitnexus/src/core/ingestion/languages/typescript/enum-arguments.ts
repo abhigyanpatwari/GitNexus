@@ -2,13 +2,7 @@ import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
-import {
-  canonicalTypeScriptName,
-  literalMethodName,
-  numericLiteralValue,
-  signedNumericLiteral,
-} from './identifiers.js';
+import { canonicalTypeScriptName, literalMethodName, numericLiteralValue } from './identifiers.js';
 import { declarationScope } from './module-kind.js';
 
 type Constant = string | number;
@@ -20,9 +14,123 @@ const valuesByTree = new WeakMap<
   Map<string, Map<string, Constant>>
 >();
 
+// Successive enum members can double a prior string at every declaration.
+const maxFoldedStringLength = 64 * 1024;
+
+function binaryConstant(
+  op: string | undefined,
+  left: Constant,
+  right: Constant,
+): Constant | undefined {
+  if (op === '+' && (typeof left === 'string' || typeof right === 'string')) {
+    const first = String(left);
+    const second = String(right);
+    return first.length + second.length <= maxFoldedStringLength ? first + second : undefined;
+  }
+  if (typeof left !== 'number' || typeof right !== 'number') return undefined;
+  switch (op) {
+    case '+':
+      return left + right;
+    case '-':
+      return left - right;
+    case '*':
+      return left * right;
+    case '**':
+      return left ** right;
+    case '/':
+      return left / right;
+    case '%':
+      return left % right;
+    case '<<':
+      return left << right;
+    case '>>':
+      return left >> right;
+    case '>>>':
+      return left >>> right;
+    case '|':
+      return left | right;
+    case '&':
+      return left & right;
+    case '^':
+      return left ^ right;
+    default:
+      return undefined;
+  }
+}
+
+/** Only fold literal expressions and references to previously known members of this enum. */
+function initializerValue(
+  node: SyntaxNode | null,
+  owner: string,
+  members: ReadonlyMap<string, Constant>,
+  depth = 0,
+): Constant | undefined {
+  if (!node || depth > 64) return undefined;
+  switch (node.type) {
+    case 'number': {
+      const value = numericLiteralValue(node.text);
+      return typeof value === 'number' ? value : undefined;
+    }
+    case 'string':
+    case 'template_string':
+      return literalMethodName(node);
+    case 'identifier':
+      return members.get(canonicalTypeScriptName(node.text));
+    case 'member_expression':
+    case 'subscript_expression': {
+      const receiver = node.childForFieldName('object');
+      if (receiver?.type !== 'identifier' || canonicalTypeScriptName(receiver.text) !== owner)
+        return undefined;
+      const property = node.childForFieldName('property');
+      const name =
+        property?.type === 'property_identifier'
+          ? canonicalTypeScriptName(property.text)
+          : literalMethodName(node.childForFieldName('index'));
+      return name === undefined ? undefined : members.get(name);
+    }
+    case 'parenthesized_expression':
+      return initializerValue(
+        node.namedChildren.find((child) => child.type !== 'comment') ?? null,
+        owner,
+        members,
+        depth + 1,
+      );
+    case 'unary_expression': {
+      const operand = initializerValue(
+        node.childForFieldName('argument'),
+        owner,
+        members,
+        depth + 1,
+      );
+      if (typeof operand !== 'number') return undefined;
+      switch (node.childForFieldName('operator')?.type) {
+        case '+':
+          return operand;
+        case '-':
+          return -operand;
+        case '~':
+          return ~operand;
+        default:
+          return undefined;
+      }
+    }
+    case 'binary_expression': {
+      const left = initializerValue(node.childForFieldName('left'), owner, members, depth + 1);
+      if (left === undefined) return undefined;
+      const right = initializerValue(node.childForFieldName('right'), owner, members, depth + 1);
+      return right === undefined
+        ? undefined
+        : binaryConstant(node.childForFieldName('operator')?.type, left, right);
+    }
+    default:
+      return undefined;
+  }
+}
+
 /** Computed initializers interrupt auto-increment until the next known numeric value. */
 export function enumConstants(declaration: SyntaxNode): [string, Constant][] {
-  const values: [string, Constant][] = [];
+  const values = new Map<string, Constant>();
+  const owner = canonicalTypeScriptName(declaration.childForFieldName('name')?.text ?? '');
   let next: number | undefined = 0;
   for (const member of declaration.childForFieldName('body')?.namedChildren ?? []) {
     if (member.type === 'comment') continue;
@@ -32,17 +140,12 @@ export function enumConstants(declaration: SyntaxNode): [string, Constant][] {
         ? canonicalTypeScriptName(key.text)
         : literalMethodName(key);
     const init = member.childForFieldName('value');
-    let value: Constant | undefined = next;
-    if (init?.type === 'string') value = decodeStringLiteral(init.text) ?? undefined;
-    else if (init) {
-      const spelling = init.type === 'number' ? init.text : signedNumericLiteral(init);
-      const number = spelling === undefined ? undefined : numericLiteralValue(spelling);
-      value = typeof number === 'number' && Number.isFinite(number) ? number : undefined;
-    }
-    if (name !== undefined && value !== undefined) values.push([name, value]);
-    next = typeof value === 'number' ? value + 1 : undefined;
+    const value: Constant | undefined = init ? initializerValue(init, owner, values) : next;
+    const numeric = typeof value === 'number' && Number.isFinite(value);
+    if (name !== undefined && (typeof value === 'string' || numeric)) values.set(name, value);
+    next = numeric ? value + 1 : undefined;
   }
-  return values;
+  return [...values];
 }
 
 export function indexEnumArguments(file: ParsedFile, indexes: ScopeResolutionIndexes): void {

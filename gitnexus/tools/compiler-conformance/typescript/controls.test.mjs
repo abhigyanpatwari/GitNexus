@@ -18,7 +18,12 @@ import {
 } from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
-import { compareProject, comparePublishedCalls } from './check.mjs';
+import {
+  compareProject,
+  compareProjects,
+  comparePublishedCalls,
+  publishedMethodOwners,
+} from './check.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 import diagnostics from './diagnostics.json' with { type: 'json' };
 
@@ -157,7 +162,80 @@ test('published calls retain the compiler target at each stored call range', () 
   );
 });
 
+test('an unchecked shadowed receiver cannot acquire the typed receiver’s published edge', () => {
+  const key = 'compiler-conformance/typescript-shadowed-receiver';
+  const project = path.resolve(root, '../..', key);
+  const { publishedCalls, uncheckedMemberSites } = compilerReport(project, diagnostics[key]);
+  const unchecked = uncheckedMemberSites.find(
+    (site) => site.file === 'app.ts' && site.start === '6:2',
+  );
+  assert.ok(unchecked && !unchecked.constructedTarget);
+  const typedCall = publishedCalls.find((site) => site.file === 'app.ts' && site.start === '13:2');
+  assert.ok(typedCall);
+  const wrong = { ...unchecked, caller: 'app.ts#5:7', target: typedCall.target };
+  assert.throws(
+    () => comparePublishedCalls(publishedCalls, [...publishedCalls, wrong]),
+    /Unexpected published CALLS/,
+  );
+});
+
 test('runtime module exports agree with the JavaScript emitted by TypeScript', checkModuleValues);
+
+test('two stored ownership edges cannot collapse into one method owner', async () => {
+  const { graph } = await runPipelineFromRepo(root, () => {});
+  const [edge] = graph.iterRelationshipsByType('HAS_METHOD');
+  assert.equal(publishedMethodOwners(graph).get(edge.targetId)?.id, edge.sourceId);
+  graph.addRelationship({ ...edge, id: edge.id + '-duplicate' });
+  assert.throws(() => publishedMethodOwners(graph), /Multiple HAS_METHOD/);
+});
+
+test('a failed compiler fixture still reports failures from later projects', async (t) => {
+  const projects = [];
+  for (const name of ['first', 'second']) {
+    const project = mkdtempSync(path.join(tmpdir(), `gitnexus-ts-${name}-`));
+    t.after(() => rmSync(project, { recursive: true, force: true }));
+    writeFileSync(path.join(project, 'invalid.ts'), 'const value: string = 123;');
+    projects.push(project);
+  }
+  await assert.rejects(compareProjects(projects, {}), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(
+      error.errors.map((failure) => failure.message),
+      projects.map((project) => path.basename(project)),
+    );
+    assert.ok(
+      error.errors.every((failure) => failure.cause.message.includes('TypeScript diagnostics')),
+    );
+    return true;
+  });
+});
+
+test('swapping a static method and a dotted instance method fails the published call comparison', async (t) => {
+  const project = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-static-method-'));
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  writeFileSync(
+    path.join(project, 'keys.ts'),
+    `export class C {
+  static m() { return 1; }
+  ['static.m']() { return 2; }
+}
+export function run(c: C) { C.m(); c['static.m'](); }
+`,
+  );
+  const { CALLS, publishedCalls } = compilerReport(project);
+  assert.equal(publishedCalls.length, 2);
+  assert.notEqual(CALLS.sites[0].target, CALLS.sites[1].target);
+  const [first, second] = publishedCalls;
+  assert.throws(
+    () =>
+      comparePublishedCalls(publishedCalls, [
+        { ...first, target: second.target },
+        { ...second, target: first.target },
+      ]),
+    /Unexpected published CALLS/,
+  );
+  await compareProject(project);
+});
 
 test('a call in a returned function belongs to that function', () => {
   const project = path.resolve(root, '../typescript-local-binding-identities');
@@ -200,15 +278,18 @@ function invoke(value: Derived) { value['read-value'](); value[100](); }
 `,
   );
   const report = compilerReport(project, [], true);
-  const targets = (relation) => report[relation].edges.map(({ to }) => to).sort();
-  assert.deepEqual(targets('METHOD_OVERRIDES'), ['keys.ts#1:0.100', 'keys.ts#1:0.read-value']);
-  assert.deepEqual(targets('CALLS'), ['keys.ts#2:0.100', 'keys.ts#2:0.read-value']);
-  assert.deepEqual(targets('HAS_METHOD'), [
-    'keys.ts#1:0.100',
-    'keys.ts#1:0.read-value',
-    'keys.ts#2:0.100',
-    'keys.ts#2:0.read-value',
-  ]);
+  const targets = (relation) => report[relation].edges.map(({ to }) => JSON.parse(to)).sort();
+  const base = [
+    ['keys.ts#1:0', false, '100'],
+    ['keys.ts#1:0', false, 'read-value'],
+  ];
+  const derived = [
+    ['keys.ts#2:0', false, '100'],
+    ['keys.ts#2:0', false, 'read-value'],
+  ];
+  assert.deepEqual(targets('METHOD_OVERRIDES'), base);
+  assert.deepEqual(targets('CALLS'), derived);
+  assert.deepEqual(targets('HAS_METHOD'), [...base, ...derived]);
   await compareProject(project);
 });
 
@@ -258,10 +339,10 @@ class Derived extends Base implements Contract { [Symbol.iterator]() {} [second]
   );
   const facts = compilerReport(project);
   assert.deepEqual(facts.METHOD_OVERRIDES.edges, [
-    { from: 'keys.ts#4:0', to: 'keys.ts#3:0.[Symbol.iterator]' },
+    { from: 'keys.ts#4:0', to: JSON.stringify(['keys.ts#3:0', false, '[Symbol.iterator]']) },
   ]);
   assert.deepEqual(facts.METHOD_IMPLEMENTS.edges, [
-    { from: 'keys.ts#4:0.[Symbol.iterator]', to: 'keys.ts#2:21' },
+    { from: JSON.stringify(['keys.ts#4:0', false, '[Symbol.iterator]']), to: 'keys.ts#2:21' },
   ]);
 });
 
@@ -350,7 +431,7 @@ test('the compiler identifies an anonymous default class in its heritage and ove
   const report = compilerReport(project, [], true);
   assert.deepEqual(report.EXTENDS.edges, [{ from: 'base.ts#2:15', to: 'base.ts#1:7' }]);
   assert.deepEqual(report.METHOD_OVERRIDES.edges, [
-    { from: 'base.ts#2:15', to: 'base.ts#1:7.run' },
+    { from: 'base.ts#2:15', to: JSON.stringify(['base.ts#1:7', false, 'run']) },
   ]);
   assert.ok(report.DECLARATIONS.edges.some(({ to }) => to === 'Class:default@base.ts#2:15'));
 });
@@ -481,9 +562,12 @@ test('same-line local classes retain distinct construction and method targets', 
   const calls = compilerReport(path.resolve(root, '../typescript-local-classes')).CALLS;
   const left = 'index.ts#2:25';
   const right = 'index.ts#2:97';
-  for (const suffix of ['', '.act']) {
-    const leftEdge = calls.edges.find(({ to }) => to === left + suffix);
-    const rightEdge = calls.edges.find(({ to }) => to === right + suffix);
+  for (const [leftTarget, rightTarget] of [
+    [left, right],
+    [JSON.stringify([left, false, 'act']), JSON.stringify([right, false, 'act'])],
+  ]) {
+    const leftEdge = calls.edges.find(({ to }) => to === leftTarget);
+    const rightEdge = calls.edges.find(({ to }) => to === rightTarget);
     assert.ok(leftEdge && rightEdge);
     const swapped = calls.edges.map((edge) =>
       edge === leftEdge

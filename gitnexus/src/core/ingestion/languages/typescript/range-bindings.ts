@@ -21,8 +21,11 @@ export const populateTsRangeBindings: ScopeResolver['populateRangeBindings'] = (
         });
         if (!source) continue;
         const spelling = source.declaredSpelling ?? source.rawName;
-        const container = /^(Iterable|ReadonlyArray|Array)\s*</.exec(spelling)?.[1];
-        if (!container) continue;
+        const container =
+          /^(Iterable|ReadonlyArray|Array|AsyncIterable|AsyncIterableIterator|AsyncGenerator)\s*</u.exec(
+            spelling,
+          )?.[1];
+        if (!container || (container.startsWith('Async') && !slot.asynchronous)) continue;
         const item = typeApplicationArguments(spelling)?.[0]?.replace(/^readonly\s+/, '');
         if (!item?.startsWith('[')) continue;
         const element = typeApplicationArguments(item)?.[slot.tupleIdx];

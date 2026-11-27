@@ -6,21 +6,32 @@ export const canonicalTypeScriptName = (name: string): string => decodeIdentifie
 
 export { canonicalModuleExportName } from '../../utils/ecmascript-literals.js';
 
+/** Query candidates for literalMethodName, which checks grouping and substitutions. */
+export const literalPropertyKeyQuery = `[(string) (number) (template_string) (parenthesized_expression)
+  (unary_expression operator: ["+" "-"] argument: (number))]`;
+
+const decimalDigits = String.raw`\d(?:_?\d)*`;
+const decimalInteger = String.raw`(?:0|[1-9](?:_?\d)*)`;
+const decimalMantissa = `(?:${decimalInteger}(?:\\.(?:${decimalDigits})?)?|\\.${decimalDigits})`;
+const decimalLiteral = new RegExp(
+  `^(?:${decimalInteger}n|${decimalMantissa}(?:[eE][+-]?${decimalDigits})?)$`,
+  'u',
+);
+const radixLiteral =
+  /^(?:0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*)n?$/u;
+
 export function numericLiteralValue(spelling: string): number | bigint | undefined {
-  if (!/^[+-]?(?:\d|\.\d)/u.test(spelling)) return undefined;
   const sign = spelling[0];
-  const digits = (sign === '-' || sign === '+' ? spelling.slice(1) : spelling).replaceAll('_', '');
+  const unsigned = sign === '-' || sign === '+' ? spelling.slice(1) : spelling;
+  if (!decimalLiteral.test(unsigned) && !radixLiteral.test(unsigned)) return undefined;
+  const digits = unsigned.replaceAll('_', '');
   if (digits.endsWith('n')) {
     if (sign === '+') return undefined;
-    try {
-      const value = BigInt(digits.slice(0, -1));
-      return sign === '-' ? -value : value;
-    } catch {
-      return undefined;
-    }
+    const value = BigInt(digits.slice(0, -1));
+    return sign === '-' ? -value : value;
   }
   const value = Number(digits);
-  if (!Number.isNaN(value)) return sign === '-' ? -value : value;
+  return sign === '-' ? -value : value;
 }
 
 /** A leading sign is its own syntax node and can be separated from the operand by trivia. */
@@ -36,11 +47,17 @@ export function signedNumericLiteral(node: SyntaxNode): string | undefined {
 
 /** A constant ECMAScript property key, shared by declarations and bracket calls. */
 export function literalMethodName(node: SyntaxNode | null): string | undefined {
-  if (node?.type === 'computed_property_name') {
+  while (node?.type === 'computed_property_name' || node?.type === 'parenthesized_expression') {
     node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
   }
-  if (node?.type === 'string') return decodeStringLiteral(node.text) ?? undefined;
   if (!node) return undefined;
+  if (
+    node.type === 'template_string' &&
+    node.namedChildren.some((child) => child.type === 'template_substitution')
+  )
+    return undefined;
+  if (node.type === 'string' || node.type === 'template_string')
+    return decodeStringLiteral(node.text) ?? undefined;
   const spelling = node.type === 'number' ? node.text : signedNumericLiteral(node);
   const value = spelling === undefined ? undefined : numericLiteralValue(spelling);
   return value === undefined ? undefined : String(value);

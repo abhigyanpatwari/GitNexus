@@ -11,6 +11,10 @@ interface Sink { append(...values: string[]): void; }
 interface Sink { append(count: number, ...values: string[]): void; }
 export function append(s: Sink) { s.append('a'); s.append(1, 'a'); }
 
+interface Sink { accept(value: unknown): 'older'; }
+interface Sink { accept(value: {}): 'newer'; }
+export function acceptRecord(s: Sink) { return s.accept({ id: 1 }); }
+
 interface Account { open(): void; }
 interface Account { close(): void; }
 class CloudAccount implements Account {

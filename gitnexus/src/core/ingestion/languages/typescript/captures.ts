@@ -457,17 +457,29 @@ export function emitTsScopeCaptures(
       : grouped['@reference.call.member']
         ? '@reference.name'
         : undefined;
-    if (methodKey && groupedNodes[methodKey]) {
-      const key = literalMethodName(groupedNodes[methodKey]);
-      if (key !== undefined) {
-        grouped[methodKey] = { ...grouped[methodKey], text: key };
-        if (methodKey === '@reference.name') {
-          bracketReceivers ??= new Map();
-          bracketReceivers.set(
-            callRangeKey(grouped['@reference.call.member'].range),
-            callRangeKey(grouped['@reference.receiver'].range),
-          );
-        }
+    const nameNode = methodKey && groupedNodes[methodKey];
+    if (
+      methodKey &&
+      nameNode &&
+      nameNode.type !== 'property_identifier' &&
+      nameNode.type !== 'private_property_identifier'
+    ) {
+      const key = literalMethodName(nameNode);
+      if (key === undefined) continue;
+      grouped[methodKey] = { ...grouped[methodKey], text: key };
+      if (methodKey === '@reference.name') {
+        bracketReceivers ??= new Map();
+        bracketReceivers.set(
+          callRangeKey(grouped['@reference.call.member'].range),
+          callRangeKey(grouped['@reference.receiver'].range),
+        );
+      } else if (key.includes('.')) {
+        // A dot inside the property key cannot be recovered by splitting its qualified name.
+        grouped['@declaration.literal-member-name'] = syntheticCapture(
+          '@declaration.literal-member-name',
+          nameNode,
+          key,
+        );
       }
     }
     synthesizeTsJsClassIdentity(grouped, groupedNodes);
@@ -697,7 +709,7 @@ export function emitTsScopeCaptures(
     if (declAnchor !== undefined) {
       const fnNode = findFunctionNode(tree.rootNode, declAnchor.range, declAnchorNode);
       if (fnNode !== null) {
-        const arity = computeTsArityMetadata(fnNode);
+        const arity = computeTsArityMetadata(fnNode, !!grouped['@declaration.overload-signature']);
         if (arity.parameterCount !== undefined) {
           grouped['@declaration.parameter-count'] = syntheticCapture(
             '@declaration.parameter-count',
@@ -717,6 +729,13 @@ export function emitTsScopeCaptures(
             '@declaration.parameter-types',
             fnNode,
             JSON.stringify(arity.parameterTypes),
+          );
+        }
+        if (arity.declaredParameterTypes !== undefined) {
+          grouped['@declaration.declared-parameter-types'] = syntheticCapture(
+            '@declaration.declared-parameter-types',
+            fnNode,
+            JSON.stringify(arity.declaredParameterTypes),
           );
         }
       }
@@ -916,11 +935,12 @@ export function emitTsScopeCaptures(
     tree.rootNode,
     filePath,
     out,
-    returnedDefault?.checkPriorWrites && defaultDeclaration
-      ? (written, moduleOffset) => {
+    returnedDefault && defaultDeclaration
+      ? (written, write) => {
           if (
+            defaultDeclaration &&
             written === returnedDefault.name &&
-            (moduleOffset === undefined || moduleOffset < returnedDefault.callOffset)
+            returnedDefault.isPriorWrite(write)
           ) {
             defaultDeclaration = undefined;
           }
@@ -1218,7 +1238,7 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
 /**
  * `for (const [k, v] of mapId)` over a `Map<K,V>` — synthesize per-slot
  * type bindings so `v` resolves like a `Map` iterator tuple element.
- * Uses sentinel `__MAP_TUPLE_i__:rhs` consumed by compound-receiver.
+ * The sentinel also records whether an asynchronous iterator may supply the tuple.
  */
 export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
   for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
@@ -1228,6 +1248,9 @@ export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMa
     if (left === null || right === null) continue;
     if (left.type !== 'array_pattern' || right.type !== 'identifier') continue;
     const rhs = right.text;
+    const prefix = node.children.some((child) => child.type === 'await')
+      ? '__ASYNC_MAP_TUPLE_'
+      : '__MAP_TUPLE_';
     let slot = 0;
     // Top-level separators mark slots even when a slot has no simple binding.
     for (const child of left.children) {
@@ -1242,7 +1265,7 @@ export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMa
         '@type-binding.type': syntheticCapture(
           '@type-binding.type',
           child,
-          `__MAP_TUPLE_${slot}__:${rhs}`,
+          `${prefix}${slot}__:${rhs}`,
         ),
         '@type-binding.map-tuple-entry': syntheticCapture(
           '@type-binding.map-tuple-entry',

@@ -58,13 +58,18 @@ interface TsArityMetadata {
   readonly parameterCount: number | undefined;
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;
+  readonly declaredParameterTypes?: readonly string[];
 }
 
-export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
+export function computeTsArityMetadata(
+  fnNode: SyntaxNode,
+  isOverloadSignature = false,
+): TsArityMetadata {
   const params = typescriptMethodConfig.extractParameters?.(fnNode) ?? [];
 
   let hasRest = false;
   let optionalCount = 0;
+  let needsWrittenTypes = false;
   const sharedTypes = declarationParameterTypes(params);
   let normalized: string[] | undefined;
   let index = 0;
@@ -72,6 +77,7 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
     if (p.isVariadic) hasRest = true;
     else if (p.isOptional) optionalCount++;
     const t = p.type !== null && p.type !== undefined ? stripGenericsAndArraySuffix(p.type) : '';
+    if (isOverloadSignature && (p.rawType ?? '') !== t) needsWrittenTypes = true;
     if (t !== sharedTypes[index]) {
       normalized ??= sharedTypes.slice();
       normalized[index] = t;
@@ -96,6 +102,9 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
     parameterCount,
     requiredParameterCount,
     parameterTypes,
+    ...(isOverloadSignature && (needsWrittenTypes || hasRest)
+      ? { declaredParameterTypes: params.map((p) => p.rawType ?? '') }
+      : {}),
   };
 }
 

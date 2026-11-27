@@ -3,6 +3,11 @@
     "compiler-conformance/typescript-imported-project-globals": ["app/tsconfig.json"],
     "compiler-conformance/typescript-standalone-project": ["tsconfig.json", "tsconfig.tool.json"]
   },
+  "diagnosticsOnly": [
+    "lang-resolution/typescript-callable-alternatives",
+    "lang-resolution/typescript-hoc-wrapped",
+    "lang-resolution/typescript-hof-callbacks"
+  ],
   "methodFacts": ["lang-resolution/typescript-method-enrichment"],
   "propertyAccess": [
     "compiler-conformance/typescript-block-shadowing",

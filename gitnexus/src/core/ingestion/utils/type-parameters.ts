@@ -220,17 +220,13 @@ function* ungroupedOffsets(text: string, start = 0): Generator<number> {
 
 /** Comments and quoted strings are opaque even when they contain each other's delimiters. */
 function* opaqueSpans(text: string, start: number) {
+  let lastCommentEnd = start;
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
-    if (ch === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
-      let end = i + 2;
-      if (text[i + 1] === '*') {
-        const close = text.indexOf('*/', end);
-        end = close === -1 ? text.length : close + 2;
-      } else {
-        while (end < text.length && !'\n\r\u2028\u2029'.includes(text[end])) end++;
-      }
+    const end = ch === '/' ? endOfComment(text, i) : undefined;
+    if (end !== undefined) {
       yield { start: i, end, comment: true };
+      lastCommentEnd = end;
       i = end - 1;
     } else if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
       yield { start: i, end: i + 2, comment: false };
@@ -240,12 +236,23 @@ function* opaqueSpans(text: string, start: number) {
       for (; end < text.length && text[end] !== ch; end++) {
         if (text[end] === '\\') end++;
       }
-      if (end < text.length && !isLifetimePair(text, i, end)) {
+      if (end < text.length && !isLifetimePair(text, i, end, lastCommentEnd)) {
         yield { start: i, end: end + 1, comment: false };
         i = end;
       }
     }
   }
+}
+
+function endOfComment(text: string, start: number): number | undefined {
+  if (text[start + 1] === '*') {
+    const close = text.indexOf('*/', start + 2);
+    return close === -1 ? text.length : close + 2;
+  }
+  if (text[start + 1] !== '/') return undefined;
+  let end = start + 2;
+  while (end < text.length && !'\n\r\u2028\u2029'.includes(text[end])) end++;
+  return end;
 }
 
 /** Structural offsets in the original source spelling. */
@@ -272,23 +279,30 @@ export function withoutTypeComments(text: string): string {
 }
 
 /** In <'a, T, 'b> each apostrophe starts a name. Neither quotes the comma. */
-function isLifetimePair(text: string, start: number, end: number): boolean {
-  if (
-    text[start] !== "'" ||
-    !isIdentifierChar(text[start + 1] ?? '') ||
-    !isIdentifierChar(text[end + 1] ?? '')
-  )
-    return false;
-  const startsToken = (index: number) => {
-    let before = index - 1;
-    while (before >= 0 && /\s/u.test(text[before])) before--;
-    return before < 0 || '<,:&+'.includes(text[before]);
-  };
-  if (!startsToken(start)) return false;
-  if (startsToken(end)) return true;
-  // A comment between lifetime parameters can contain the next apostrophe.
-  // A character literal with a suffix, such as 'x'_tag, closes at the value.
-  return /^'[A-Za-z_]\w*\s*,\s*\/[*/]/u.test(text.slice(start, end));
+function isLifetimePair(text: string, start: number, end: number, lastCommentEnd: number): boolean {
+  if (text[start] !== "'") return false;
+  let before = start - 1;
+  while (before >= 0 && /\s/u.test(text[before])) before--;
+  if (before >= lastCommentEnd && !'<,:&+'.includes(text[before])) return false;
+  const name = /'[_\p{XID_Start}][_\p{XID_Continue}]*/uy;
+  name.lastIndex = start;
+  if (!name.test(text) || name.lastIndex === end) return false; // e.g. 'x'_suffix
+
+  // If the apparent closing quote is another lifetime or lies in a comment
+  // after a separator, the outer scanner must see the intervening tokens.
+  let separator = false;
+  for (let i = name.lastIndex; i < end; i++) {
+    if (/\s/u.test(text[i])) continue;
+    const after = text[i] === '/' ? endOfComment(text, i) : undefined;
+    if (after !== undefined) {
+      if (after > end) return separator && after < text.length;
+      i = after - 1;
+    } else {
+      separator = '<,:&+='.includes(text[i]);
+    }
+  }
+  name.lastIndex = end;
+  return separator && name.test(text);
 }
 
 function isIdentifierChar(ch: string): boolean {

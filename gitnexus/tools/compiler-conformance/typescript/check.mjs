@@ -11,6 +11,17 @@ import { compareReports } from '../compare.mjs';
 import { graphDeclaration } from '../gitnexus-report.mjs';
 import { compilerReport, emptyReport, graphRelations, relations } from './compiler-report.mjs';
 
+export function publishedMethodOwners(graph) {
+  const owners = new Map();
+  for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
+    const owner = graph.getNode(edge.sourceId);
+    assert.ok(owner, 'Unpublished method owner: ' + edge.sourceId);
+    assert.ok(!owners.has(edge.targetId), 'Multiple HAS_METHOD edges for ' + edge.targetId);
+    owners.set(edge.targetId, owner);
+  }
+  return owners;
+}
+
 function graphReport(
   graph,
   boundCalls,
@@ -61,17 +72,17 @@ function graphReport(
     }
     return graphDeclaration(node);
   }
-  const owners = new Map();
-  for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
-    const owner = graph.getNode(edge.sourceId);
-    if (owner) owners.set(edge.targetId, owner);
-  }
+  const owners = publishedMethodOwners(graph);
   function callableIdentity(node) {
     const owner = owners.get(node.id);
     if (node.label === 'Method' && ['Interface', 'Const', 'Variable'].includes(owner?.label))
       return graphDeclaration(node);
     return node.label === 'Method' && owner
-      ? graphIdentity(owner) + (node.properties.isStatic ? '.static.' : '.') + node.properties.name
+      ? JSON.stringify([
+          graphIdentity(owner),
+          node.properties.isStatic === true,
+          node.properties.name,
+        ])
       : graphIdentity(node);
   }
   result.PARAMETER_CALLS.sites = publishedParameterCalls(graph, parameterCalls);
@@ -455,6 +466,27 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   };
 }
 
+export async function compareProjects(fixtures, diagnostics, diagnosticsOnly = new Set()) {
+  assert.ok(fixtures.length, 'No TypeScript fixtures found');
+  const failures = [];
+  for (const root of fixtures) {
+    const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
+    try {
+      if (diagnosticsOnly.has(key)) {
+        compilerReport(root, diagnostics[key]);
+        console.log(path.basename(root), 'TypeScript diagnostics only');
+      } else {
+        const { counts } = await compareProject(root, {}, diagnostics[key]);
+        console.log(path.basename(root), counts);
+      }
+    } catch (cause) {
+      failures.push(new Error(path.basename(root), { cause }));
+    }
+  }
+  if (failures.length)
+    throw new AggregateError(failures, `${failures.length} TypeScript conformance fixtures failed`);
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const controls = ['controls.test.mjs', 'capture-controls.test.mjs', 'product/mcp-tools.ts'].map(
     (file) => fileURLToPath(new URL(file, import.meta.url)),
@@ -476,19 +508,27 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const diagnostics = JSON.parse(
     readFileSync(new URL('./diagnostics.json', import.meta.url), 'utf8'),
   );
-  const fixtures =
-    process.argv.length > 2
-      ? process.argv.slice(2).map((dir) => path.resolve(dir))
-      : [
-          ...readdirSync(corpus, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory() && entry.name.startsWith('typescript-'))
-            .map((entry) => path.join(corpus, entry.name)),
-          ...manifest.projects.map((project) => path.join(fixturesDirectory, project)),
-        ];
-  assert.ok(fixtures.length, 'No TypeScript fixtures found');
-  for (const root of fixtures) {
-    const key = path.relative(path.join(corpus, '..'), root).split(path.sep).join('/');
-    const { counts } = await compareProject(root, {}, diagnostics[key]);
-    console.log(path.basename(root), counts);
+  if (process.argv.length > 2) {
+    await compareProjects(
+      process.argv.slice(2).map((dir) => path.resolve(dir)),
+      diagnostics,
+    );
+  } else {
+    const projects = [
+      ...readdirSync(corpus, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith('typescript-'))
+        .map((entry) => 'compiler-conformance/' + entry.name),
+      ...manifest.projects,
+      ...manifest.diagnosticsOnly,
+    ];
+    const registered = new Set(projects);
+    assert.equal(registered.size, projects.length, 'Duplicate TypeScript project registration');
+    for (const key of Object.keys(diagnostics))
+      assert.ok(registered.has(key), 'Diagnostics for an unregistered TypeScript project: ' + key);
+    await compareProjects(
+      projects.map((key) => path.join(fixturesDirectory, key)),
+      diagnostics,
+      new Set(manifest.diagnosticsOnly),
+    );
   }
 }

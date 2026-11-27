@@ -14,6 +14,7 @@ import {
   getResolutionOutcomes,
   runPipelineFromRepo,
   suppressionReasonsAt,
+  useFixture,
   writeFixtureRepo,
   type OutcomeSite,
   type PipelineResult,
@@ -799,6 +800,76 @@ describe('TypeScript overload disambiguation via inferLiteralType', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('TypeScript overload family call edges', () => {
+  const bindings = new Map<number, { status: string; targetDefIds: readonly string[] }>();
+  const result = useFixture(
+    'ts-overload-family',
+    {
+      'index.ts': `export function pick(x: { key: number }): number;
+export function pick(x: { key: string }): string;
+export function pick(x: { key: string | number }) { return x.key; }
+export function run(x: { key: string }) { return pick(x); }
+export function repeat(x: { key: string }) { pick(x); pick(x); }
+export function spread(xs: [{ key: string }]) { return pick(...xs); }
+export function badArity() { return pick(); }
+function mode(x: 'read'): void;
+function mode(x: 'write'): void;
+function mode(x: string) {}
+export function badLiteral() { mode('other'); }
+export function badSpread(xs: [{ key: string }]) { pick(1, 2, ...xs); }
+class Client { send() {} }
+class Other { stop() {} }
+function connect(x: { key: number }): Client;
+function connect(x: { key: string }): Client;
+function connect(x: unknown) { return new Client(); }
+export function sharedReturn(x: { key: string }) { const client = connect(x); client.send(); }
+function choose(x: { key: number }): Other;
+function choose(x: { key: string }): Client;
+function choose(x: unknown) { return new Client(); }
+export function uncertainReturn(x: { key: string }) { const client = choose(x); client.send(); }`,
+    },
+    {
+      onScopeResolved({ parsedFiles, referenceBindings }) {
+        for (const file of parsedFiles) {
+          for (const site of file.referenceSites) {
+            const binding = referenceBindings.get(site);
+            if (site.kind === 'call' && binding) bindings.set(site.atRange.startLine, binding);
+          }
+        }
+      },
+    },
+  );
+
+  it('publishes one implementation edge per caller when the signature is uncertain', () => {
+    const calls = getRelationships(result(), 'CALLS');
+    expect(
+      calls
+        .filter((edge) => edge.target === 'pick')
+        .map((edge) => edge.source)
+        .sort(),
+    ).toEqual(['repeat', 'run', 'spread']);
+    expect(bindings.get(6)?.status).toBe('unresolved');
+    expect(bindings.get(6)?.targetDefIds).toHaveLength(2);
+  });
+
+  it('leaves a provably inapplicable call without a runtime edge', () => {
+    const calls = getRelationships(result(), 'CALLS');
+    expect(
+      calls.filter((edge) => ['badArity', 'badLiteral', 'badSpread'].includes(edge.source)),
+    ).toEqual([]);
+    expect(bindings.get(7)?.status).toBe('blocked');
+    expect(bindings.get(11)?.status).toBe('blocked');
+    expect(bindings.get(12)?.status).toBe('blocked');
+  });
+
+  it('types the result only when every remaining signature returns the same class', () => {
+    const calls = getRelationships(result(), 'CALLS');
+    expect(calls.filter((edge) => edge.target === 'send').map((edge) => edge.source)).toEqual([
+      'sharedReturn',
+    ]);
+  });
+});
+
 // Overloaded method disambiguation: interface with overloaded find + save,
 // concrete class implements all three. TypeScript overloads collapse to one
 // implementation signature — expect the implementation body, not individual

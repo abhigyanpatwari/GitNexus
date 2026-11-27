@@ -34,7 +34,7 @@ const visibleGlobals = new WeakMap<ParsedFile, ReadonlyMap<string, readonly Bind
 /** Keep a single project table when each importer shadows a different name. */
 class UnshadowedGlobals implements ReadonlyMap<string, BindingRef[]> {
   constructor(
-    private readonly globals: ReadonlyMap<string, BindingRef[]>,
+    readonly globals: ReadonlyMap<string, BindingRef[]>,
     private readonly shadowed: ReadonlySet<string>,
   ) {}
   get size() {
@@ -64,6 +64,11 @@ class UnshadowedGlobals implements ReadonlyMap<string, BindingRef[]> {
   ) {
     for (const [name, refs] of this) callback.call(thisArg, refs, name, this);
   }
+}
+
+/** Candidate spellings may include a shadowed global. Resolution still uses the importer's view. */
+export function overloadNameTable(bindings: ReadonlyMap<string, readonly BindingRef[]>) {
+  return bindings instanceof UnshadowedGlobals ? bindings.globals : bindings;
 }
 
 export const projectNameFallback: ScopeResolver['isGlobalNameFallbackPlausible'] = ({

@@ -64,7 +64,7 @@ import {
  *  pathological recursion. */
 const COMPOUND_RECEIVER_MAX_DEPTH = 8;
 
-const MAP_TUPLE_SENTINEL_RE = /^__MAP_TUPLE_(\d+)__:(.+)$/;
+const MAP_TUPLE_SENTINEL_RE = /^__(ASYNC_)?MAP_TUPLE_(\d+)__:(.+)$/;
 
 /** Cast type the resolver can look up directly: a simple identifier. */
 const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
@@ -82,12 +82,14 @@ const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
 const UNPARSEABLE_CAST_TYPE_RE =
   /^[a-zA-Z_]\w*(?:\s*\.\s*[a-zA-Z_]\w*)*(?:\s*<[^()]*>)?(?:\s*\[\s*\])*$/;
 
-export function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
+export function parseMapTupleSentinel(
+  text: string,
+): { tupleIdx: number; rhs: string; asynchronous: boolean } | null {
   const match = MAP_TUPLE_SENTINEL_RE.exec(text);
   if (match === null) return null;
-  const [, idxStr, rhs] = match;
+  const [, asyncPrefix, idxStr, rhs] = match;
   if (idxStr === undefined || rhs === undefined) return null;
-  return { tupleIdx: Number(idxStr), rhs };
+  return { tupleIdx: Number(idxStr), rhs, asynchronous: asyncPrefix !== undefined };
 }
 
 /**

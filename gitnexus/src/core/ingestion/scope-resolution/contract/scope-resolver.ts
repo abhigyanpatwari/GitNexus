@@ -330,6 +330,17 @@ export type ReceiverMemberResolution =
       readonly detail?: string;
     };
 
+/** The executable target can be known even when no source signature was selected. */
+export type UnqualifiedCallResolution =
+  | ReceiverMemberResolution
+  | {
+      readonly kind: 'implementation';
+      readonly definition: SymbolDefinition;
+      readonly candidateIds: readonly string[];
+      /** A declaration whose return type every viable signature shares. */
+      readonly commonReturnSource?: SymbolDefinition;
+    };
+
 export interface ImportResolutionContext {
   readonly parsedFiles: readonly ParsedFile[];
   readonly parsedImport?: ParsedImport;
@@ -1846,7 +1857,7 @@ export interface ScopeResolver {
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
-  ) => ReceiverMemberResolution | undefined;
+  ) => UnqualifiedCallResolution | undefined;
 
   /** Select among explicit constructors once the written type has been resolved.
    * A rejection is authoritative. Undefined keeps the shared arity-based lookup. */

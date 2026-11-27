@@ -2258,7 +2258,7 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   const qualify = (def: SymbolDefinition, classDef: SymbolDefinition): void => {
     const q = def.qualifiedName;
     if (q === undefined || q.length === 0) return;
-    if (q.includes('.')) return; // already qualified (dotted)
+    if (q.includes('.') && q !== def.literalMemberName) return; // already qualified
     // A synthesized anonymous-class def (Java `$`-chain binary name,
     // #2550/#2555 — `M3$2`, `EnumWrap$Mode$1`) already carries its
     // COMPLETE name. Prefixing it (`M3.M3$2`) desyncs from the

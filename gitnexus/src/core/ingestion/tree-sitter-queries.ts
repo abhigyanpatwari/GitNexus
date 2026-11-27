@@ -16,6 +16,7 @@ import {
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
 } from './ts-js-hoc-utils.js';
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
+import { literalPropertyKeyQuery } from './languages/typescript/identifiers.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -96,9 +97,9 @@ ${unboundCallableQuery('definition.function')}
 
 ; Literal class and interface keys take their name from the provider so that
 ; escaped strings and different numeric spellings resolve to the same key.
-[(method_definition name: [(string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @name @name.literal)
- (method_signature name: [(string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @name @name.literal)
- (abstract_method_signature name: [(string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @name @name.literal)] @definition.method
+[(method_definition name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal)
+ (method_signature name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal)
+ (abstract_method_signature name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal)] @definition.method
 
 ; Abstract method signatures in abstract classes
 (abstract_method_signature

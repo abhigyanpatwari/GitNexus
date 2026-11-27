@@ -71,6 +71,15 @@ describe('parseTypeParameterList', () => {
       [{ name: 'T' }, { name: 'N', defaultType: '(3 >= 2)' }],
     ],
     ["<'a, /* 'x, > */ T: Repo, 'b>", [{ name: 'T', bound: 'Repo' }]],
+    ["<'a, T, 'b>", [{ name: 'T' }]],
+    ["<'a, T, /* lifetime */ 'b>", [{ name: 'T' }]],
+    ["<'a, T, /* ' */ 'b>", [{ name: 'T' }]],
+    ["<'α, T, 'β>", [{ name: 'T' }]],
+    [
+      "<'a, T, const C: char = 'x'>",
+      [{ name: 'T' }, { name: 'C', bound: 'char', defaultType: "'x'" }],
+    ],
+    ["<T extends 'a, b' | 'c', U>", [{ name: 'T', bound: "'a, b' | 'c'" }, { name: 'U' }]],
   ])('parses %s', (text, expected) => {
     expect(parseTypeParameterList(text)).toEqual(expected);
   });

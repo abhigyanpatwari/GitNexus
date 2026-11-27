@@ -32,7 +32,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import type { ReceiverMemberResolution, ScopeResolver } from '../contract/scope-resolver.js';
+import type { ScopeResolver, UnqualifiedCallResolution } from '../contract/scope-resolver.js';
 import {
   callSuppressionIdentities,
   providerCallOutcome,
@@ -357,7 +357,7 @@ export function emitFreeCallFallback(
       // Language visibility vetoes the constructed TYPE (Class/Struct), not a
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
-      let resolution: ReceiverMemberResolution | undefined;
+      let resolution: UnqualifiedCallResolution | undefined;
       if (site.callForm === 'constructor') {
         // `ns.Type{}` names its type through a namespace import: a type the
         // language will not let that qualifier reach is not found, rather than
@@ -437,7 +437,7 @@ export function emitFreeCallFallback(
       } else if (site.rawQualifiedName === undefined) {
         resolution = options.resolveUnqualifiedCall?.(site, scopes, model);
       }
-      if (resolution?.kind === 'resolved') {
+      if (resolution?.kind === 'resolved' || resolution?.kind === 'implementation') {
         fnDef = resolution.definition;
         fnDefFromProvider = true;
       } else if (resolution !== undefined) {
@@ -979,7 +979,13 @@ export function emitFreeCallFallback(
       }
       // Observe the source declaration BEFORE constructor retargeting, caller
       // mapping and edge collapse can discard or change its identity.
-      if (options.recordSourceBinding !== undefined) {
+      if (resolution?.kind === 'implementation') {
+        options.recordSourceBinding?.(site, {
+          status: 'unresolved',
+          targetDefIds: resolution.candidateIds,
+          basis: 'overload-unknown',
+        });
+      } else if (options.recordSourceBinding !== undefined) {
         const sourceDef = writtenDefinition ?? fnDef;
         const candidateIds = [
           ...new Set(sourceCandidates?.map((candidate) => candidate.nodeId) ?? [sourceDef.nodeId]),
@@ -1031,8 +1037,13 @@ export function emitFreeCallFallback(
         site.atRange,
       );
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
-      options.selectedCalls?.set(selectedCallKey(parsed.filePath, site.atRange), fnDef);
-      options.onSelectedCall?.(selectedCallKey(parsed.filePath, site.atRange), fnDef);
+      if (options.selectedCalls || options.onSelectedCall) {
+        const returnSource =
+          resolution?.kind === 'implementation' ? (resolution.commonReturnSource ?? null) : fnDef;
+        const callKey = selectedCallKey(parsed.filePath, site.atRange);
+        options.selectedCalls?.set(callKey, returnSource);
+        options.onSelectedCall?.(callKey, returnSource);
+      }
       if (fnDefFromProvider) {
         handledSites.add(siteKey(parsed.filePath, site));
         options.recordResolutionOutcome?.(

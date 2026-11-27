@@ -15,7 +15,10 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadNodeWorkspacePackages } from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
+import {
+  loadNodeWorkspacePackages,
+  nodePackageIsEsm,
+} from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 
 const roots: string[] = [];
 
@@ -38,6 +41,23 @@ afterAll(() => {
 });
 
 describe('workspace boundary', () => {
+  it('inherits the nearest parent module format without admitting packages outside the checkout', async () => {
+    const parent = repo({
+      'package.json': JSON.stringify({ name: 'outside', type: 'module' }),
+      'app/repo/src/index.ts': '',
+      'app/repo/nested/package.json': '{}',
+      'app/node_modules/dependency/src/index.ts': '',
+    });
+    const packages = await loadNodeWorkspacePackages(path.join(parent, 'app/repo'));
+    expect(nodePackageIsEsm('src/index.ts', packages)).toBe(true);
+    expect(nodePackageIsEsm('nested/index.ts', packages)).toBe(false);
+    expect(packages?.byName.has('outside')).toBe(false);
+    const dependency = await loadNodeWorkspacePackages(
+      path.join(parent, 'app/node_modules/dependency'),
+    );
+    expect(nodePackageIsEsm('src/index.ts', dependency)).toBe(false);
+  });
+
   it('captures fresh rename configuration without replacing the indexing memo', async () => {
     const root = repo({ 'package.json': pkg('original') });
     const indexed = await loadNodeWorkspacePackages(root);

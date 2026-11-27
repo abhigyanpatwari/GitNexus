@@ -8,6 +8,18 @@ function config(opts: { port: number }): void;
 function config(opts: { host: string }): void;
 function config(opts: object) {}
 
+function acceptObject(value: {}): 'object';
+function acceptObject(value: unknown): 'other';
+function acceptObject(value: unknown) { return 'object'; }
+
+function acceptRecord(value: {}): void;
+function acceptRecord(value: string): void;
+function acceptRecord(value: unknown): void {}
+
+function acceptArray(value: unknown[]): void;
+function acceptArray(value: {}): void;
+function acceptArray(value: unknown): void {}
+
 function on(event: "open", cb: () => void): void;
 function on(event: "close", cb: (code: number) => void): void;
 function on(event: string, cb: (...args: any[]) => void) {}
@@ -19,6 +31,10 @@ export function run(other: string) {
   animal.speak();
   config({ port: 80 });
   config({ host: "local" });
+  acceptObject({ id: 1 });
+  acceptObject({});
+  acceptRecord({ id: 1 });
+  acceptArray({ id: 1 });
   on("open", () => {});
   on("close", (code) => { void code; });
 }

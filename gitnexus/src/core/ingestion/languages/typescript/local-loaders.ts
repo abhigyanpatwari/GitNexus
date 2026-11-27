@@ -37,6 +37,7 @@ interface LexicalScope {
   parent?: LexicalScope;
   readonly claims: NameClaim[];
   readonly names: Set<string>;
+  variableAnnotations?: Map<string, SyntaxNode>;
 }
 interface LocatedNode {
   readonly node: SyntaxNode;
@@ -56,10 +57,6 @@ type BindingWrite = LocatedNode & {
 };
 type WriteSite = LocatedNode & { readonly names: readonly SyntaxNode[] };
 
-interface BindingWrites {
-  readonly nodes: SyntaxNode[];
-  readonly executionScopes: Set<LexicalScope>;
-}
 const rangeKey = (range: Range) =>
   `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
 const scopeKey = (range: Range, kind: ScopeKind) => `${kind}:${rangeKey(range)}`;
@@ -201,13 +198,14 @@ function readInstanceofGuard(node: SyntaxNode, scope: LexicalScope): InstanceofG
   return { name: canonicalTypeScriptName(value.text), type, consequence, scope, uses: [] };
 }
 
-function unwrapWriteTarget(target: SyntaxNode | null): SyntaxNode | null {
+function unwrapWriteTarget(target: SyntaxNode | null, allowAssertions = true): SyntaxNode | null {
   while (
     target?.type === 'parenthesized_expression' ||
-    target?.type === 'non_null_expression' ||
-    target?.type === 'as_expression' ||
-    target?.type === 'satisfies_expression' ||
-    target?.type === 'type_assertion'
+    (allowAssertions &&
+      (target?.type === 'non_null_expression' ||
+        target?.type === 'as_expression' ||
+        target?.type === 'satisfies_expression' ||
+        target?.type === 'type_assertion'))
   ) {
     target =
       target.namedChildren.find(
@@ -277,36 +275,32 @@ function narrowingCutoff(guard: InstanceofGuard, writes: readonly SyntaxNode[]):
 }
 
 function indexBindingWrites(writes: readonly BindingWrite[]) {
-  const writesByOwner = new Map<LexicalScope, Map<string, BindingWrites>>();
+  const writesByOwner = new Map<LexicalScope, Map<string, Map<LexicalScope, SyntaxNode[]>>>();
   for (const { scope, name, node, executionScope } of writes) {
     let byName = writesByOwner.get(scope);
     if (!byName) {
       byName = new Map();
       writesByOwner.set(scope, byName);
     }
-    let binding = byName.get(name);
-    if (!binding) {
-      binding = { nodes: [], executionScopes: new Set() };
-      byName.set(name, binding);
+    let byExecution = byName.get(name);
+    if (!byExecution) {
+      byExecution = new Map();
+      byName.set(name, byExecution);
     }
-    binding.nodes.push(node);
-    binding.executionScopes.add(executionScope);
+    const nodes = byExecution.get(executionScope);
+    if (nodes) nodes.push(node);
+    else byExecution.set(executionScope, [node]);
   }
   return writesByOwner;
-}
-
-function functionNodeFor(node: SyntaxNode): SyntaxNode | null {
-  for (let parent = node.parent; parent; parent = parent.parent) {
-    if (FUNCTION_TYPES.has(parent.type) || parent.type === 'program') return parent;
-  }
-  return null;
 }
 
 function containsNode(outer: SyntaxNode, inner: SyntaxNode): boolean {
   return outer.startIndex <= inner.startIndex && inner.endIndex <= outer.endIndex;
 }
 
-function parameterAnnotation(owner: LexicalScope, name: string): SyntaxNode | undefined {
+function bindingAnnotation(owner: LexicalScope, name: string): SyntaxNode | undefined {
+  const variable = owner.variableAnnotations?.get(name);
+  if (variable) return variable;
   for (const parameter of owner.node?.childForFieldName('parameters')?.namedChildren ?? []) {
     const pattern = parameter.childForFieldName('pattern');
     if (pattern?.type === 'identifier' && canonicalTypeScriptName(pattern.text) === name)
@@ -361,7 +355,7 @@ function assignedReceiverType(
   while (index >= 0 && writes[index].startIndex >= use.startIndex) index--;
   const write = writes[index];
   if (!write || !containsNode(guard.consequence, write)) return undefined;
-  const arms = namedUnion(parameterAnnotation(declaredIn, guard.name));
+  const arms = namedUnion(bindingAnnotation(declaredIn, guard.name));
   if (!arms) return undefined;
   for (
     let ancestor = use.parent;
@@ -387,7 +381,8 @@ function assignedReceiverType(
       : write.type !== 'assignment_expression' || !reachesUse(write, use)
   )
     return undefined;
-  if (unwrapWriteTarget(write.childForFieldName('left'))?.type !== 'identifier') return undefined;
+  if (unwrapWriteTarget(write.childForFieldName('left'), false)?.type !== 'identifier')
+    return undefined;
   let lookup = atUse;
   while (lookup.parent && lookup.node && !containsNode(lookup.node, write)) lookup = lookup.parent;
   const rhs = write.childForFieldName('right');
@@ -407,7 +402,7 @@ function assignedReceiverType(
   const name = canonicalTypeScriptName(rhs.text);
   const owner = bindingOwner(lookup, name, escapedNames);
   if (!owner || writesByOwner.get(owner)?.has(name)) return undefined;
-  const annotation = parameterAnnotation(owner, name);
+  const annotation = bindingAnnotation(owner, name);
   const type = iteration
     ? annotation?.type === 'array_type' && annotation.firstNamedChild
     : annotation;
@@ -432,14 +427,11 @@ function emitInstanceofNarrowings(
     if (!owner) continue;
     const functionScope = functionOwner(scope);
     const bindingWrites = writesByOwner.get(owner)?.get(name);
-    const directWrites =
-      bindingWrites?.nodes.filter(
-        (write) => functionNodeFor(write)?.id === functionScope.node?.id,
-      ) ?? [];
+    const directWrites = bindingWrites?.get(functionScope) ?? [];
     const cutoff = narrowingCutoff(guard, directWrites);
     let remaining: string | undefined;
     if (guard.alternative) {
-      const arms = namedUnion(parameterAnnotation(owner, name));
+      const arms = namedUnion(bindingAnnotation(owner, name));
       const excluded = canonicalTypeScriptName(type.text);
       if (
         !arms?.includes(excluded) ||
@@ -604,7 +596,7 @@ export function synthesizeTsLocalImports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
-  onModuleBindingWrite?: (name: string, moduleOffset: number | undefined) => void,
+  onModuleBindingWrite?: (name: string, write: SyntaxNode) => void,
 ): ReadonlyMap<number, ReadonlySet<string>> {
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
@@ -699,6 +691,14 @@ export function synthesizeTsLocalImports(
     }
     if (node.type === 'variable_declarator') {
       const owner = node.parent?.type === 'variable_declaration' ? functionOwner(current) : current;
+      if (narrowing) {
+        const name = node.childForFieldName('name');
+        const type = node.childForFieldName('type')?.lastNamedChild;
+        if (name?.type === 'identifier' && type) {
+          owner.variableAnnotations ??= new Map();
+          owner.variableAnnotations.set(canonicalTypeScriptName(name.text), type);
+        }
+      }
       // Declaration queries anchor values on the whole declaration (and JS
       // also captures its export wrapper). The claim must contain those exact
       // declaration ranges while activation still follows this initializer.
@@ -826,14 +826,8 @@ export function synthesizeTsLocalImports(
       const owner = bindingOwner(scope, name.text);
       if (onModuleBindingWrite) {
         const canonical = canonicalTypeScriptName(name.text);
-        if (bindingOwner(scope, canonical, escaped) === module) {
-          // A callback can run before a lexically earlier statement. Only direct
-          // writes during module evaluation have a comparable source offset.
-          onModuleBindingWrite(
-            canonical,
-            functionOwner(scope) === module ? node.startIndex : undefined,
-          );
-        }
+        if (bindingOwner(scope, canonical, escaped) === module)
+          onModuleBindingWrite(canonical, node);
       }
       if (name.text === 'require' && !owner) ambientLoaderWritten = true;
       if (owner) bindingWrites.push({ node, scope: owner, name: name.text });

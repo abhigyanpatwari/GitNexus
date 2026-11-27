@@ -750,6 +750,13 @@ function buildDefFromDeclarationMatch(
   const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
   const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+  const isOverloadSignature = match['@declaration.overload-signature'] !== undefined;
+  // A signature can share the coarse types unless its provider normalized an
+  // annotation or inserted a marker (such as a trailing variadic sentinel).
+  const declaredParameterTypes = isOverloadSignature
+    ? (parseJsonStringArrayCapture(match['@declaration.declared-parameter-types']) ??
+      parameterTypes)
+    : undefined;
   const parameterTypeClasses = parseJsonParameterTypeClassesCapture(
     match['@declaration.parameter-type-classes'],
   );
@@ -773,6 +780,7 @@ function buildDefFromDeclarationMatch(
   const namedExports = parseJsonStringArrayCapture(match['@declaration.named-exports']);
   const typeOnlyExports = parseJsonStringArrayCapture(match['@declaration.type-only-exports']);
   const graphPosition = match['@declaration.graph-position']?.range;
+  const literalMemberName = match['@declaration.literal-member-name']?.text;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -784,9 +792,11 @@ function buildDefFromDeclarationMatch(
       ? { graphPosition: { startLine: graphPosition.startLine, startCol: graphPosition.startCol } }
       : {}),
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
+    ...(literalMemberName !== undefined ? { literalMemberName } : {}),
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
+    ...(declaredParameterTypes !== undefined ? { declaredParameterTypes } : {}),
     ...(parameterTypeClasses !== undefined ? { parameterTypeClasses } : {}),
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
@@ -794,7 +804,7 @@ function buildDefFromDeclarationMatch(
     ...(typeParameters !== undefined ? { typeParameters } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
-    ...(match['@declaration.overload-signature'] ? { isOverloadSignature: true } : {}),
+    ...(isOverloadSignature ? { isOverloadSignature: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
     ...(isExported !== undefined ? { isExported } : {}),
@@ -1963,6 +1973,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.type-parameters',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.literal-member-name',
   '@declaration.graph-position',
   '@declaration.is-synthetic',
   '@declaration.is-exported',
@@ -2004,6 +2015,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-count',
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
+  '@declaration.declared-parameter-types',
   '@declaration.parameter-type-classes',
   '@declaration.return-type',
   '@declaration.template-constraints',

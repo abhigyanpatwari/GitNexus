@@ -10,18 +10,23 @@ import {
   type SymbolDefinition,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import type {
+  ReceiverMemberResolution,
+  ScopeResolver,
+} from '../../scope-resolution/contract/scope-resolver.js';
 import {
   findAllCallableBindingsInScope,
   findClassBindingInScope,
   findReceiverTypeBinding,
 } from '../../scope-resolution/scope/walkers.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
-import { receiverTypeIsOutOfScope } from './global-declarations.js';
+import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
+import { overloadNameTable, receiverTypeIsOutOfScope } from './global-declarations.js';
 import {
   acceptsArgumentEvidence,
   callRangeKey,
   isLiteralParameter,
+  type ArgumentCompatibility,
   type ArgumentEvidence,
 } from './argument-evidence.js';
 import { declarationScope } from './module-kind.js';
@@ -32,12 +37,12 @@ type Argument = Extract<CallableFlowSite, { kind: 'argument' }>;
 const argumentsByCall = new WeakMap<ReferenceSite, Argument[]>();
 const evidenceByCall = new WeakMap<ReferenceSite, (ArgumentEvidence | null)[]>();
 
-export function hasSpreadArguments(site: ReferenceSite): boolean {
-  return (
-    evidenceByCall
-      .get(site)
-      ?.some((arg) => arg !== null && typeof arg === 'object' && 'spread' in arg) === true
-  );
+function isSpreadArgument(arg: ArgumentEvidence | null): arg is { spread: string | null } {
+  return typeof arg === 'object' && arg !== null && 'spread' in arg;
+}
+
+function hasSpreadArguments(site: ReferenceSite): boolean {
+  return evidenceByCall.get(site)?.some(isSpreadArgument) ?? false;
 }
 const receiverCalls = new WeakMap<ReferenceSite, ReferenceSite>();
 type OverloadUse = { argument: Argument; call: ReferenceSite; owners: ReadonlySet<string> };
@@ -62,10 +67,6 @@ const primitiveTypes = new Set([
   'undefined',
 ]);
 
-function rangeKey(range: Range): string {
-  return `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
-}
-
 /** Join worker facts after imports and their local aliases have been bound. */
 export function indexTsCallArguments(
   files: readonly ParsedFile[],
@@ -88,7 +89,7 @@ export function indexTsCallArguments(
         continue;
       const previous = firstOwner.get(def.qualifiedName);
       if (previous) {
-        const name = def.qualifiedName.slice(def.qualifiedName.lastIndexOf('.') + 1);
+        const name = simpleQualifiedName(def) ?? '';
         const owners = overloads.get(name);
         if (owners) {
           owners.add(previous);
@@ -121,7 +122,10 @@ export function indexTsCallArguments(
   if (overloadedFunctions.size) {
     for (const bindings of indexes.bindings.values()) collectNames(bindings);
     for (const bindings of indexes.bindingAugmentations.values()) collectNames(bindings);
-    for (const bindings of indexes.namespaceFqnBindings.values()) collectNames(bindings);
+    const namespaceTables = new Set(
+      Array.from(indexes.namespaceFqnBindings.values(), overloadNameTable),
+    );
+    for (const bindings of namespaceTables) collectNames(bindings);
     collectNames(indexes.workspaceFqnBindings);
   }
   if (!overloads.size && !names.size) return;
@@ -167,7 +171,7 @@ export function indexTsCallArguments(
         (fact.source.expressionKind !== 'binding' && fact.source.expressionKind !== 'bound-member')
       )
         continue;
-      const call = calls.get(rangeKey(fact.callSite));
+      const call = calls.get(callRangeKey(fact.callSite));
       if (!call || call.argumentTypes?.[fact.parameterIndex] !== '') continue;
       const owners = overloads.get(call.name);
       if (!owners && !(call.callForm === 'free' && names.has(call.name))) continue;
@@ -188,7 +192,7 @@ export function indexTsCallArguments(
       }
     }
     for (const assignment of file.callResultAssignmentSites ?? []) {
-      const outer = calls.get(rangeKey(assignment.callSite));
+      const outer = calls.get(callRangeKey(assignment.callSite));
       let candidates = outer && overloads.get(outer.name);
       if (outer?.callForm === 'free') {
         candidates = names.has(outer.name) ? overloadedFunctions : undefined;
@@ -207,7 +211,7 @@ export function indexTsCallArguments(
       const { startLine, startCol } = outer.atRange;
       const lines = receiver.split('\n');
       const inner = calls.get(
-        rangeKey({
+        callRangeKey({
           startLine,
           startCol,
           endLine: startLine + lines.length - 1,
@@ -350,7 +354,7 @@ function acceptsPrimitiveArguments(
   indexes: ScopeResolutionIndexes,
   evidence?: readonly (ArgumentEvidence | null)[],
   enumArguments?: ReadonlyMap<number, NonNullable<ReturnType<typeof enumArgument>>>,
-): boolean | undefined {
+): ArgumentCompatibility {
   if (!signature.declarationRange) return undefined;
   const formals = signature.parameterTypes;
   if (
@@ -366,26 +370,29 @@ function acceptsPrimitiveArguments(
     }),
   );
   if (!scope) return undefined;
-  const params = [...scope.typeBindings.values()]
-    .filter((binding) => binding.source === 'parameter-annotation' && binding.bindingRange)
-    .sort((a, b) => byPosition(a.bindingRange!, b.bindingRange!))
-    .map((binding) => binding.declaredSpelling ?? binding.rawName);
+  const params =
+    signature.declaredParameterTypes ??
+    [...scope.typeBindings.values()]
+      .filter((binding) => binding.source === 'parameter-annotation' && binding.bindingRange)
+      .sort((a, b) => byPosition(a.bindingRange!, b.bindingRange!))
+      .map((binding) => binding.declaredSpelling ?? binding.rawName);
   let annotations: readonly string[];
   let restElement: string | undefined;
   if (signature.parameterCount === undefined && formals?.at(-1) === 'params') {
     if (params.length !== formals.length - 1) return undefined;
-    const rest = params.pop();
+    const rest = params.at(-1);
     if (!rest) return undefined;
+    const fixed = params.slice(0, -1);
     const tuple = fixedPrimitiveTuple(rest);
     if (tuple) {
-      const count = params.length + tuple.length;
+      const count = fixed.length + tuple.length;
       if (types.length > count || (tuple.length > 0 && types.length < count)) return false;
-      if (types.length < params.length) return undefined;
-      annotations = [...params, ...tuple];
+      if (types.length < fixed.length) return undefined;
+      annotations = [...fixed, ...tuple];
     } else {
-      if (!rest.endsWith('[]') || types.length < params.length) return undefined;
+      if (!rest.endsWith('[]') || types.length < fixed.length) return undefined;
       restElement = rest.slice(0, -2).trim();
-      annotations = params;
+      annotations = fixed;
     }
   } else if (params.length === signature.parameterCount) {
     annotations = params;
@@ -398,6 +405,7 @@ function acceptsPrimitiveArguments(
     annotations = signature.parameterTypes;
   } else return undefined;
   let unknown = false;
+  let assignableOnly = false;
   for (const [i, type] of types.entries()) {
     const annotation = annotations[i] ?? restElement;
     if (annotation === undefined) return undefined;
@@ -409,6 +417,10 @@ function acceptsPrimitiveArguments(
       : acceptsArgumentEvidence(annotation, type, evidence?.[i]);
     if (checked === false) return false;
     if (checked === true) continue;
+    if (checked === 'assignable') {
+      assignableOnly = true;
+      continue;
+    }
     const alternatives = annotation.split('|').map((part) => part.trim());
     if (
       !alternatives.every(
@@ -417,7 +429,9 @@ function acceptsPrimitiveArguments(
           part === 'unknown' ||
           part === 'any' ||
           part === 'never' ||
-          (part.endsWith('[]') && primitiveTypes.has(part.slice(0, -2))),
+          (part.endsWith('[]') &&
+            (primitiveTypes.has(part.slice(0, -2)) ||
+              ['unknown', 'any'].includes(part.slice(0, -2)))),
       )
     ) {
       unknown = true;
@@ -427,7 +441,7 @@ function acceptsPrimitiveArguments(
       continue;
     return false;
   }
-  return unknown ? undefined : true;
+  return unknown ? undefined : assignableOnly ? 'assignable' : true;
 }
 
 /** Later interface declarations contribute their overload group first. */
@@ -468,18 +482,7 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
     const methods = [...declarations.keys()].flatMap((id) =>
       model.methods.lookupAllByOwner(id, name),
     );
-    if (methods.length) {
-      const selected = selectTsPrimitiveOverload(methods, site, indexes, declarations);
-      if (selected) return { kind: 'resolved', definition: selected };
-      const candidates = hasSpreadArguments(site)
-        ? methods
-        : narrowOverloadCandidates(methods, site.arity, site.argumentTypes);
-      if (candidates.length === 1) return { kind: 'resolved', definition: candidates[0] };
-      return {
-        kind: candidates.length ? 'unknown' : 'inapplicable',
-        candidateIds: (candidates.length ? candidates : methods).map((method) => method.nodeId),
-      };
-    }
+    if (methods.length) return resolveTsOverloadSet(methods, site, indexes, declarations);
   }
   if ((!argumentsByCall.has(site) && !evidenceByCall.has(site)) || !site.argumentTypes)
     return undefined;
@@ -497,18 +500,45 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   if (signatures.length < 2 || methods.length - signatures.length > 1) return undefined;
   const selected = selectTsPrimitiveOverload(signatures, site, indexes);
   if (selected) return { kind: 'resolved', definition: selected };
+  if (selected === null)
+    return { kind: 'inapplicable', candidateIds: signatures.map((sig) => sig.nodeId) };
   return hasSpreadArguments(site)
     ? { kind: 'unknown', candidateIds: signatures.map((sig) => sig.nodeId) }
     : undefined;
 };
 
-/** Compare written primitive annotations in declaration order for one overload family. */
+export function resolveTsOverloadSet(
+  signatures: SymbolDefinition[],
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+  declarations?: ReadonlyMap<string, number>,
+): ReceiverMemberResolution {
+  const selected = selectTsPrimitiveOverload(signatures, site, indexes, declarations);
+  if (selected) return { kind: 'resolved', definition: selected };
+  const spread = hasSpreadArguments(site);
+  let candidates: readonly SymbolDefinition[] = [];
+  if (selected !== null) {
+    if (spread) {
+      const fixedCount = evidenceByCall.get(site)!.filter((arg) => !isSpreadArgument(arg)).length;
+      candidates = signatures.filter(
+        (sig) => sig.parameterCount === undefined || fixedCount <= sig.parameterCount,
+      );
+    } else candidates = narrowOverloadCandidates(signatures, site.arity, site.argumentTypes);
+  }
+  if (!spread && candidates.length === 1) return { kind: 'resolved', definition: candidates[0] };
+  return {
+    kind: candidates.length ? 'unknown' : 'inapplicable',
+    candidateIds: (candidates.length ? candidates : signatures).map((sig) => sig.nodeId),
+  };
+}
+
+/** Null means every signature was disproved; undefined means the evidence was incomplete. */
 export function selectTsPrimitiveOverload(
   signatures: SymbolDefinition[],
   site: ReferenceSite,
   indexes: ScopeResolutionIndexes,
   declarations?: ReadonlyMap<string, number>,
-): SymbolDefinition | undefined {
+): SymbolDefinition | null | undefined {
   if (!site.argumentTypes) return undefined;
   let types = [...site.argumentTypes];
   let enumArguments: Map<number, NonNullable<ReturnType<typeof enumArgument>>> | undefined;
@@ -534,7 +564,7 @@ export function selectTsPrimitiveOverload(
     const expandedEnums =
       enumArguments && new Map<number, NonNullable<ReturnType<typeof enumArgument>>>();
     for (const [index, arg] of evidence.entries()) {
-      if (arg !== null && typeof arg === 'object' && 'spread' in arg) {
+      if (isSpreadArgument(arg)) {
         if (!arg.spread) return undefined;
         const binding = findReceiverTypeBinding(site.inScope, arg.spread, indexes, {
           purpose: 'value',
@@ -572,6 +602,7 @@ export function selectTsPrimitiveOverload(
       (declarations?.get(a.ownerId ?? '') ?? 0) - (declarations?.get(b.ownerId ?? '') ?? 0) ||
       byPosition(a.declarationRange!, b.declarationRange!),
   );
+  let firstAssignable: SymbolDefinition | undefined;
   for (const signature of signatures) {
     const applicable = acceptsPrimitiveArguments(
       signature,
@@ -581,7 +612,8 @@ export function selectTsPrimitiveOverload(
       enumArguments,
     );
     if (applicable === undefined) return undefined;
-    if (applicable) return signature;
+    if (applicable === true) return signature;
+    if (applicable === 'assignable') firstAssignable ??= signature;
   }
-  return undefined;
+  return firstAssignable ?? null;
 }

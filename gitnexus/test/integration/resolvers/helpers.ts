@@ -33,13 +33,17 @@ export {
  * Materialize `files` in a temp repo, run the pipeline once for the enclosing
  * `describe`, and remove the repo after it. Returns the accessor for the result.
  */
-export function useFixture(prefix: string, files: Record<string, string>): () => PipelineResult {
+export function useFixture(
+  prefix: string,
+  files: Record<string, string>,
+  options?: PipelineOptions,
+): () => PipelineResult {
   let root = '';
   let result: PipelineResult | undefined;
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-${prefix}-`));
     writeFixtureRepo(root, files);
-    result = await runPipelineFromRepo(root, () => {});
+    result = await runPipelineFromRepo(root, () => {}, options);
   }, 60000);
   afterAll(() => {
     if (root !== '') fs.rmSync(root, { recursive: true, force: true });

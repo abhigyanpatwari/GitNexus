@@ -77,14 +77,19 @@ function declarationName(node, checker) {
   if (node.name) {
     const name = node.name;
     if (name.kind === SyntaxKind.ComputedPropertyName) {
-      const key = name.expression;
+      let key = name.expression;
+      while (key.kind === SyntaxKind.ParenthesizedExpression) key = key.expression;
       if (
         checker &&
         key.kind === SyntaxKind.PrefixUnaryExpression &&
         key.operand.kind === SyntaxKind.NumericLiteral
       )
         return checker.getSymbolAtLocation(name)?.name;
-      if (key.kind === SyntaxKind.StringLiteral || key.kind === SyntaxKind.NumericLiteral)
+      if (
+        key.kind === SyntaxKind.StringLiteral ||
+        key.kind === SyntaxKind.NumericLiteral ||
+        key.kind === SyntaxKind.NoSubstitutionTemplateLiteral
+      )
         return key.text;
     }
     return name.text ?? name.getText();
@@ -113,7 +118,8 @@ function identity(root, node) {
 // A TypeScript callable has one runtime method even when its signatures
 // occupy different lines. Keep the selected declaration in the site report.
 function graphIdentity(root, node, project) {
-  if (node.kind === SyntaxKind.Constructor) return identity(root, node.parent) + '.constructor';
+  if (node.kind === SyntaxKind.Constructor)
+    return JSON.stringify([identity(root, node.parent), false, 'constructor']);
   if (node.kind === SyntaxKind.MethodDeclaration || node.kind === SyntaxKind.MethodSignature) {
     // A merged interface or an object literal identifies a method by its declaration.
     if (
@@ -126,10 +132,13 @@ function graphIdentity(root, node, project) {
       node.parent.parent.kind === SyntaxKind.TypeAliasDeclaration
         ? node.parent.parent
         : node.parent;
-    const separator = node.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
-      ? '.static.'
-      : '.';
-    return identity(root, owner) + separator + declarationName(node, project.checker);
+    const isStatic =
+      node.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword) ?? false;
+    return JSON.stringify([
+      identity(root, owner),
+      isStatic,
+      declarationName(node, project.checker),
+    ]);
   }
   // Nested functions carry positional graph identities for each declaration.
   if (
