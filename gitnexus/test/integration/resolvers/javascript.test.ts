@@ -1146,3 +1146,49 @@ describe.each(['js', 'ts'])('private class members in a .%s file (#1646)', (ext)
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Indexed element of a JSDoc-typed array: repos[0].save() (JAVASCRIPT-01)
+// ---------------------------------------------------------------------------
+
+describe('JavaScript indexed element of a JSDoc-typed array', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-typed-array-index'),
+      () => {},
+    );
+  }, 60000);
+
+  const saveTargets = (caller: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === caller && c.target === 'save')
+      .map((c) => c.rel.targetId);
+
+  it.each(['paramArray', 'paramGeneric', 'typedConst'])(
+    'resolves %s repos[0].save() to User#save only',
+    (caller) => {
+      expect(saveTargets(caller)).toEqual(['Method:src/models.js:User.save#0']);
+    },
+  );
+
+  it('resolves a Decoy[] element to Decoy#save only', () => {
+    expect(saveTargets('decoyArray')).toEqual(['Method:src/models.js:Decoy.save#0']);
+  });
+
+  it('leaves a partial index of User[][] unresolved', () => {
+    expect(saveTargets('partialIndex')).toEqual([]);
+  });
+
+  it('leaves an untyped receiver unresolved', () => {
+    expect(saveTargets('untyped')).toEqual([]);
+  });
+
+  it.each(['mapIndex', 'promiseIndex'])(
+    'leaves %s unresolved: a non-array generic is not an indexed container',
+    (caller) => {
+      expect(saveTargets(caller)).toEqual([]);
+    },
+  );
+});

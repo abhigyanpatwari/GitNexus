@@ -22,18 +22,18 @@ and no same-named call to a different owner. WRONG-TARGET records incorrect edge
 | `nonNullAssert`         | N/A            | JavaScript has no non-null assertion operator.                                |
 | `awaitParen`            | RESOLVES       | `(await svc.getUserAsync()).save();`                                          |
 | `explicitTypeArgs`      | N/A            | JavaScript has no type-argument syntax.                                       |
-| `indexElement`          | VISIBLE-GAP    | `repos[0].save();`                                                            |
+| `indexElement`          | RESOLVES       | `repos[0].save();`                                                            |
 | `fieldReceiverCall`     | RESOLVES       | `this.repo.save();`                                                           |
 | `decoratedReceiverBase` | N/A            | JavaScript method receivers carry no type decoration.                         |
 | `decoratedFieldType`    | N/A            | JavaScript fields carry no declared type, so there is no decoration to strip. |
 
-JSDoc supplies the types in the passing plain, deep, optional and awaited chains. `indexElement` remains a visible gap with `@param {User[]} repos`; JavaScript has no `ScopeResolver.elementTypeOf` hook. `untypedChain` is an intentional negative control, not a request to guess a target from its method name.
+JSDoc supplies the types in the passing plain, deep, optional, awaited and indexed chains. `indexElement` resolves with `@param {User[]} repos` through the provider's array-only `elementTypeOf` hook. `untypedChain` is an intentional negative control, not a request to guess a target from its method name.
 
 ## Planning candidates
 
 | ID            | Evidence         | Gap or boundary                                                           | Next planning step and acceptance                                                                                                                                             |
 | ------------- | ---------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| JAVASCRIPT-01 | Measured gap     | A typed array does not establish the receiver type for `repos[0].save()`. | Preserve the container/element distinction and add a provider-owned element route. Require the exact User.save target, a same-name decoy and unsupported-container negatives. |
+| JAVASCRIPT-01 | Fixed            | A typed array did not establish the receiver type for `repos[0].save()`. | The provider now answers the index route for array spellings only (`jsArrayElementType`). [The typed-array fixture](../../gitnexus/test/fixtures/lang-resolution/javascript-typed-array-index/) requires the exact `User.save` for `{User[]}`, `{Array<User>}` and `@type` locals, `Decoy.save` for a `Decoy[]` decoy, and no target for a partial `User[][]` index, an untyped receiver, or an indexed `Map<string, User>` / `Promise<User>`. |
 | JAVASCRIPT-02 | Negative control | `untypedChain` remains VISIBLE-GAP by design.                             | Keep the untyped receiver unresolved while adding typed coverage; resolving a same-named method elsewhere is a precision regression.                                          |
 
 ## Code and regression entry points
