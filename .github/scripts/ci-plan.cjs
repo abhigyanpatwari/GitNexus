@@ -137,6 +137,52 @@ async function successfulPR({ github, context, revision, tree, parent }) {
   }
 }
 
+async function reusableLanes(github, repo, runId, changed) {
+  const params = { ...repo, run_id: runId, per_page: 100 };
+  const [artifacts, jobs] = await Promise.all([
+    github.paginate(github.rest.actions.listWorkflowRunArtifacts, params),
+    github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+      ...params,
+      filter: 'latest',
+    }),
+  ]);
+  // The release audit can start hours after the planner.
+  const neededUntil = Date.now() + 24 * 60 * 60 * 1000;
+  const available = new Set(
+    artifacts
+      .filter((a) => !a.expired && Date.parse(a.expires_at) >= neededUntil)
+      .map((a) => a.name),
+  );
+  const passed = new Set(jobs.filter((j) => j.conclusion === 'success').map((j) => j.name));
+  const reused = new Set();
+  if (!passed.has('CI Gate')) return reused;
+  for (const lane of changed) {
+    if (!checks[lane].every((name) => passed.has(name))) continue;
+    if (['cli', 'web', 'java'].includes(lane) && !available.has('coverage-reports')) continue;
+    if (
+      lane === 'eval' &&
+      !['execution-pytest-locked', 'execution-preflight'].every((a) => available.has(a))
+    )
+      continue;
+    reused.add(lane);
+  }
+  // Java LCOV travels inside the CLI report. If that report must be
+  // regenerated, so must the conformance coverage appended to it.
+  if (!reused.has('cli')) reused.delete('java');
+  if (changed.has('java') && !reused.has('java')) reused.delete('cli');
+  return reused;
+}
+
+function fallbackReason(error, deadline) {
+  if (deadline.aborted && (error === deadline.reason || error.status >= 400))
+    return 'GitHub evidence lookup timed out.';
+  if (Number.isInteger(error.status) && error.status >= 400)
+    return `GitHub evidence lookup failed (HTTP ${error.status}).`;
+  if (Object.hasOwn(error, 'stderr') || error.syscall === 'spawnSync ' + gitExecutable)
+    return 'Git could not read the changes for this revision.';
+  throw error;
+}
+
 async function plan({ github, context, core }) {
   const git = (...args) =>
     execFileSync(gitExecutable, args, {
@@ -149,7 +195,7 @@ async function plan({ github, context, core }) {
   let changed = new Set(lanes);
   let source = '';
   let fallback = '';
-  const reused = new Set();
+  let reused = new Set();
   const deadline = AbortSignal.timeout(60_000);
   try {
     const parent = git('rev-parse', '--verify', 'HEAD^1').trim();
@@ -163,55 +209,20 @@ async function plan({ github, context, core }) {
         deadline.throwIfAborted();
         options.request = { ...options.request, signal: deadline };
       });
-      const run = await successfulPR({
+      const runId = await successfulPR({
         github,
         context,
         revision: git('rev-parse', 'HEAD').trim(),
         tree: git('rev-parse', 'HEAD^{tree}').trim(),
         parent,
       });
-      if (run) {
-        const params = { ...context.repo, run_id: run, per_page: 100 };
-        const [artifacts, jobs] = await Promise.all([
-          github.paginate(github.rest.actions.listWorkflowRunArtifacts, params),
-          github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-            ...params,
-            filter: 'latest',
-          }),
-        ]);
-        // The release audit can start hours after the planner.
-        const neededUntil = Date.now() + 24 * 60 * 60 * 1000;
-        const available = new Set(
-          artifacts
-            .filter((a) => !a.expired && Date.parse(a.expires_at) >= neededUntil)
-            .map((a) => a.name),
-        );
-        const passed = new Set(jobs.filter((j) => j.conclusion === 'success').map((j) => j.name));
-        for (const lane of changed) {
-          if (!passed.has('CI Gate') || !checks[lane].every((name) => passed.has(name))) continue;
-          if (['cli', 'web', 'java'].includes(lane) && !available.has('coverage-reports')) continue;
-          if (
-            lane === 'eval' &&
-            !['execution-pytest-locked', 'execution-preflight'].every((a) => available.has(a))
-          )
-            continue;
-          reused.add(lane);
-        }
-        // Java LCOV travels inside the CLI report. If that report must be
-        // regenerated, so must the conformance coverage appended to it.
-        if (!reused.has('cli')) reused.delete('java');
-        if (changed.has('java') && !reused.has('java')) reused.delete('cli');
-        source = String(run);
+      if (runId) {
+        reused = await reusableLanes(github, context.repo, runId, changed);
+        source = String(runId);
       }
     }
   } catch (error) {
-    if (deadline.aborted && (error === deadline.reason || error.status >= 400))
-      fallback = 'GitHub evidence lookup timed out.';
-    else if (Number.isInteger(error.status) && error.status >= 400)
-      fallback = `GitHub evidence lookup failed (HTTP ${error.status}).`;
-    else if (Object.hasOwn(error, 'stderr') || error.syscall === 'spawnSync ' + gitExecutable)
-      fallback = 'Git could not read the changes for this revision.';
-    else throw error;
+    fallback = fallbackReason(error, deadline);
     changed = new Set(lanes);
     reused.clear();
     source = '';
