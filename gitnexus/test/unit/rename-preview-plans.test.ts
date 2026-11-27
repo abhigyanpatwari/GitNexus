@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -215,6 +216,51 @@ describe('immutable rename preview capabilities', () => {
     await fs.writeFile(path.join(root, 'Rakefile'), 'task :build do\nend\n');
     expect(await renameSourceInventory(root)).toEqual(['Rakefile', 'a.ts']);
     await expect(take(token)).rejects.toMatchObject({ code: 'source_set_changed' });
+  });
+  it('adds extensionless shebang scripts but no other extensionless entries (#2707)', async () => {
+    await fs.writeFile(path.join(root, 'deploy'), '#!/usr/bin/env python3\ndef deploy(): pass\n');
+    await fs.writeFile(path.join(root, 'notes'), 'plain text\n');
+    await fs.mkdir(path.join(root, '.target'));
+    const kind = process.platform === 'win32' ? 'junction' : 'dir';
+    await fs.symlink(path.join(root, '.target'), path.join(root, 'linked'), kind);
+    expect(await renameSourceInventory(root)).toEqual(['a.ts', 'deploy']);
+  });
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'fails the inventory when an extensionless candidate cannot be read (#2707)',
+    async () => {
+      const locked = path.join(root, 'locked-script');
+      await fs.writeFile(locked, '#!/usr/bin/env python3\n');
+      await fs.chmod(locked, 0o000);
+      try {
+        await expect(renameSourceInventory(root)).rejects.toMatchObject({ code: 'EACCES' });
+      } finally {
+        await fs.chmod(locked, 0o644);
+      }
+    },
+  );
+  it.skipIf(process.platform === 'win32')(
+    'does not open an extensionless FIFO, which would block (#2707)',
+    async () => {
+      execFileSync('mkfifo', [path.join(root, 'pipe')]);
+      await fs.writeFile(path.join(root, 'deploy'), '#!/usr/bin/env python3\n');
+      expect(await renameSourceInventory(root)).toEqual(['a.ts', 'deploy']);
+    },
+    10_000,
+  );
+  it('reads only the head of a large extensionless file (#2707)', async () => {
+    const big = await fs.open(path.join(root, 'big-script'), 'w');
+    await big.write('#!/usr/bin/env python3\n');
+    await big.truncate(256 * 1024 * 1024);
+    await big.close();
+    const readFile = vi.spyOn(fs, 'readFile');
+    try {
+      expect(await renameSourceInventory(root)).toEqual(['a.ts', 'big-script']);
+      expect(readFile.mock.calls.filter(([file]) => String(file).endsWith('big-script'))).toEqual(
+        [],
+      );
+    } finally {
+      readFile.mockRestore();
+    }
   });
   it('rejects a changed physical target with identical source bytes', async () => {
     for (const directory of ['.first', '.second']) {

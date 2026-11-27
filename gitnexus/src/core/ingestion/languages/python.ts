@@ -13,6 +13,7 @@ import { isNotebookFilename, SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
+import { shebangClassifier } from '../utils/shebang.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
@@ -224,6 +225,7 @@ export const pythonProvider = defineLanguage({
   // Notebook captures map JSON rows but retain extracted Python columns.
   referenceSourceText: (_text, filePath) => (isNotebookFilename(filePath) ? null : undefined),
   extensions: ['.py', '.ipynb'],
+  ...shebangClassifier(/^(python|pypy)[\d.]*$/),
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [
     {

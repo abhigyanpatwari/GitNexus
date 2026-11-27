@@ -9,7 +9,12 @@ import {
   type RenamePlan,
   type RenameSymbol,
 } from 'gitnexus-shared';
-import { walkRepositoryPaths } from '../../../core/ingestion/filesystem-walker.js';
+import {
+  READ_CONCURRENCY,
+  walkRepositoryPaths,
+} from '../../../core/ingestion/filesystem-walker.js';
+import { SHEBANG_HEAD_BYTES } from '../../../core/ingestion/utils/shebang.js';
+import { mapConcurrent } from '../../../lib/utils.js';
 import { validateRenameResolution, type RenameResolutionVersion } from './resolution-version.js';
 
 const MAX_BYTES = 64 * 1024 * 1024;
@@ -60,23 +65,57 @@ export async function readRenameSourceVersion(file: string): Promise<RenameSourc
   return { real, hash: digest.digest('hex') };
 }
 
+/** The first bytes of a file; empty for entries that are not regular files (directories, FIFOs) or vanished. */
+async function readHead(root: string, file: string): Promise<string> {
+  try {
+    const absolute = path.join(root, file);
+    // Opening a FIFO for reading blocks until a writer appears, so only open regular files.
+    if (!(await fs.stat(absolute)).isFile()) return '';
+    const handle = await fs.open(absolute, 'r');
+    try {
+      const buffer = Buffer.alloc(SHEBANG_HEAD_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      return buffer.toString('utf8', 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EISDIR' || code === 'ENOENT') return '';
+    throw error;
+  }
+}
+
 /** Include untracked and oversized sources; a size filter must not hide new targets. */
 export async function renameSourceInventory(root: string): Promise<string[]> {
   // Provider modules belong to rename execution, never MCP server startup.
-  const { getProviderForFile, needsContentLanguageClassification } =
+  const { getLanguageForFileContent, getProviderForFile, needsContentLanguageClassification } =
     await import('../../../core/ingestion/languages/index.js');
   let sources: string[] = [];
   await walkRepositoryPaths(root, undefined, {
     quiet: true,
     onPathsDiscovered: async (files) => {
-      sources = files
-        .filter(
-          (file) =>
-            getLanguageFromFilename(file) ||
-            getProviderForFile(file) ||
-            needsContentLanguageClassification(file),
-        )
-        .sort();
+      const byPath = files.filter(
+        (file) => getLanguageFromFilename(file) || getProviderForFile(file),
+      );
+      // Extensionless files are sources only if their first line says so (shebang
+      // scripts); a LICENSE or a directory symlink must not join the inventory.
+      // Read just the head: this runs before the walker's size cap applies.
+      const known = new Set(byPath);
+      const candidates = files.filter(
+        (file) => !known.has(file) && needsContentLanguageClassification(file),
+      );
+      // A real read failure must fail the inventory, not silently drop a source.
+      let readError: unknown;
+      const heads = await mapConcurrent(candidates, (file) => readHead(root, file), {
+        concurrency: READ_CONCURRENCY,
+        onError: (error) => (readError ??= error),
+      });
+      if (readError !== undefined) throw readError;
+      const scripts = candidates.filter(
+        (file, i) => getLanguageForFileContent(file, heads[i] ?? '') !== null,
+      );
+      sources = [...byPath, ...scripts].sort();
     },
   });
   return sources;

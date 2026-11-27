@@ -18,6 +18,7 @@ import {
   rubyFactoryType,
 } from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
+import { shebangClassifier } from '../utils/shebang.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor, type SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
@@ -180,6 +181,7 @@ export const rubyProvider = defineLanguage({
   rename: rubyRenameProvider,
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
+  ...shebangClassifier(/^ruby[\d.]*$/),
   entryPointPatterns: [/^call$/, /^perform$/, /^execute$/],
   astFrameworkPatterns: [
     {

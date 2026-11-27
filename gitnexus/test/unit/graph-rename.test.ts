@@ -146,6 +146,48 @@ describe('graph and SemanticModel rename', () => {
     },
   );
 
+  it('renames despite an extensionless binary file in the index (#2707)', async () => {
+    const file = 'model.py';
+    const source = 'def target(): pass\ntarget()\n';
+    const binary = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0xff, 0x80, 0x00]);
+    await fs.writeFile(path.join(root, 'tool'), binary);
+    const nodes = await fixture(file, source, [
+      { id: 'File:tool', label: 'File', properties: { name: 'tool', filePath: 'tool' } },
+    ] as GraphNode[]);
+    nodes[1]!.properties.startLine = 0;
+    await expectSupportedPreviewAndApply(
+      file,
+      source,
+      { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 },
+      nodes,
+      'def Renamed(): pass\nRenamed()\n',
+    );
+    expect(await fs.readFile(path.join(root, 'tool'))).toEqual(binary);
+  });
+
+  it('renames despite an extensionless symlink to a file outside the repo (#2707)', async () => {
+    const file = 'model.py';
+    const source = 'def target(): pass\ntarget()\n';
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'graph-rename-outside-'));
+    try {
+      await fs.writeFile(path.join(outside, 'tool'), '#!/usr/bin/env python3\n');
+      await fs.symlink(path.join(outside, 'tool'), path.join(root, 'tool'));
+      const nodes = await fixture(file, source, [
+        { id: 'File:tool', label: 'File', properties: { name: 'tool', filePath: 'tool' } },
+      ] as GraphNode[]);
+      nodes[1]!.properties.startLine = 0;
+      await expectSupportedPreviewAndApply(
+        file,
+        source,
+        { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 },
+        nodes,
+        'def Renamed(): pass\nRenamed()\n',
+      );
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a collision with a provider-canonical escaped declaration', async () => {
     const file = 'model.ts';
     const source = 'function target() {}\nconst Re\\u006eamed = 1;\ntarget();\n';

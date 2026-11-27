@@ -11,6 +11,7 @@ import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { swiftClassConfig } from '../class-extractors/configs/swift.js';
 import { defineLanguage } from '../language-provider.js';
+import { shebangClassifier } from '../utils/shebang.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
@@ -179,6 +180,7 @@ export const swiftProvider = defineLanguage({
   rename: swiftRenameProvider,
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
+  ...shebangClassifier(/^swift$/),
   preprocessSource: preprocessSwiftConditionalDirectives,
   entryPointPatterns: [
     /^viewDidLoad$/,

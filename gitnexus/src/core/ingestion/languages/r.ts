@@ -12,6 +12,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
+import { shebangClassifier } from '../utils/shebang.js';
 import { typeConfig as rTypeConfig } from '../type-extractors/r.js';
 import { R_QUERIES } from '../tree-sitter-queries.js';
 import { RFieldExtractor } from '../field-extractors/r.js';
@@ -183,6 +184,7 @@ const R_BUILT_INS: ReadonlySet<string> = new Set([
 export const rProvider = defineLanguage({
   id: SupportedLanguages.R,
   extensions: ['.R', '.r'],
+  ...shebangClassifier(/^Rscript$/),
   entryPointPatterns: [],
   astFrameworkPatterns: [],
   treeSitterQueries: R_QUERIES,

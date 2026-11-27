@@ -93,6 +93,15 @@ const DISTINCT_DECLARATION_BASES: ReadonlySet<string> = new Set([
   'adl-ordinary-lookup-blocked',
 ]);
 
+/** Not text, outside the repository, or no longer a file: such a candidate is skipped, not a rename failure. */
+function isUnclassifiableSource(error: unknown): boolean {
+  if (error instanceof RenameFailure) {
+    return error.code === 'unsupported_encoding' || error.code === 'outside_repository';
+  }
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EISDIR' || code === 'ENOENT';
+}
+
 /** A fresh provider-owned semantic pass uses graph identities, never text-search edits. */
 export async function planGraphRename(
   repoPath: string,
@@ -174,10 +183,16 @@ export async function planGraphRename(
           !provider.interoperatesWithSourceProvider?.(filenameProvider, node.properties.filePath)))
     )
       continue;
-    const sourceProvider = getProviderForFileContent(
-      node.properties.filePath,
-      await readSource(node.properties.filePath),
-    );
+    let source: string;
+    try {
+      source = await readSource(node.properties.filePath);
+    } catch (error) {
+      // A file only read to classify its content (extensionless, so no filename
+      // language) may be binary or not text; it is not a rename source then.
+      if (!filenameProvider && isUnclassifiableSource(error)) continue;
+      throw error;
+    }
+    const sourceProvider = getProviderForFileContent(node.properties.filePath, source);
     if (!sourceProvider) continue;
     if (
       sourceProvider.id !== language &&
