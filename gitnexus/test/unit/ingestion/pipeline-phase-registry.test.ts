@@ -81,6 +81,7 @@ const FULL_ORDER = [
   'pruneLocalSymbols',
   'mro',
   'springAopInheritance',
+  'symfonyConfig',
   'di',
   'communities',
   'processes',
@@ -90,6 +91,7 @@ const WITHOUT_GRAPH_PHASES = FULL_ORDER.filter(
   (n) =>
     n !== 'mro' &&
     n !== 'springAopInheritance' &&
+    n !== 'symfonyConfig' &&
     n !== 'di' &&
     n !== 'communities' &&
     n !== 'processes',

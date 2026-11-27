@@ -17,6 +17,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { DiResolver } from './types.js';
 import { springDiResolver } from './spring.js';
+import { symfonyDiResolver } from './symfony.js';
 
 /** The resolver contract lives in the leaf `./types.js` so an implementation
  *  can depend on it without depending on this registry (which imports every
@@ -48,4 +49,5 @@ export const DI_RESOLVERS: ReadonlyMap<SupportedLanguages, DiResolver> = new Map
 >([
   [SupportedLanguages.Java, springDiResolver],
   [SupportedLanguages.Kotlin, springDiResolver],
+  [SupportedLanguages.PHP, symfonyDiResolver],
 ]);
