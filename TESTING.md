@@ -96,7 +96,7 @@ Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/re
 
 ## Cross-platform testing
 
-Windows and macOS CI runs only the platform-sensitive test subset (~50 files out of 373). The full suite runs on Ubuntu.
+Release CI runs the platform-sensitive subset on Windows and macOS. PRs that select the CLI suite run sharded coverage on Ubuntu.
 
 The subset is defined in `gitnexus/scripts/cross-platform-tests.ts` and includes:
 
@@ -113,7 +113,7 @@ When adding a platform-sensitive test, add it to the appropriate section in `scr
 
 CI uses `vitest-shard-balancer` to distribute test files by measured duration.
 Timing history lives in GitHub Actions storage; adding a test does not require
-editing a weight table. Windows, macOS, and Ubuntu coverage each have their own
+editing a weight table. The release-only Windows and macOS shards and Ubuntu coverage each have their own
 profile because native startup and coverage costs differ.
 
 The `shard-plan` job restores history once and uploads `shard-timing-input`.
@@ -136,7 +136,7 @@ modules. Native blobs are merged on their originating OS. Only main-branch push
 runs that pass the execution audit publish the updated history to the Actions
 cache. Cache expiry affects balance, not test discovery or completeness.
 
-For a local reproduction, download the run's `shard-timing-input` artifact into
+To reproduce a native shard, use a release run. For coverage, use the release or PR run that executed it. Download its `shard-timing-input` artifact into
 `gitnexus/.vitest/timings/` and set `GITNEXUS_SHARD_PROFILE` to `windows-latest`,
 `macos-latest`, or `coverage` (the default). Then use the same `--shard=i/n`
 argument with `npm run test:cross-platform -- --shard=i/n` or `npm test -- --shard=i/n`.
@@ -160,16 +160,18 @@ PRs compare the checked-out merge commit with its first parent. The `Select CI c
 
 | Change | PR checks |
 | --- | --- |
-| CLI | CLI and test typechecks, sharded Linux Vitest coverage |
+| CLI | CLI and test typechecks, sharded Linux Vitest coverage, Java conformance for runtime source changes |
 | Web | Web typecheck, unit tests with coverage, Chromium E2E |
 | Shared package | CLI, web, Java conformance and Chromium |
 | Eval | Locked pytest suite and workflow evidence preflight |
 | Docker server | Docker-server integration tests |
-| Documentation alone | CI status jobs, without package installs |
+| Documentation alone | CI status and CodeQL check names, without package coverage or scanner setup |
 
-Code PRs also run formatting and lint. Parser, ingestion, package and backend changes select additional ABI, Java or browser checks as applicable. Same-repository code PRs run SonarQube with coverage for the selected packages. The coverage merge enforces each package's thresholds. The `CI Gate` requires the selected jobs to succeed.
+Code PRs also run formatting, lint, and the shared language-boundary check. Changes to root agent instructions and package configuration select the tests that read those files. Parser, ingestion, package and backend changes select additional ABI, Java or browser checks as applicable. Same-repository code PRs run SonarQube with coverage for the selected packages. The coverage merge enforces each package's thresholds. The `CI Gate` requires the selected jobs to succeed.
 
-Publish runs the native Windows and macOS shards, packaged installs, containment tests, benchmarks, tool accuracy and the full execution audit before an RC or stable release. It also runs any PR suites missing for the release candidate. To reuse a check, Publish verifies the merged PR, the successful CI jobs, and the tree and parents of the merge revision GitHub recorded for the reusable workflow. A squash merge can qualify even though its commit SHA changed. A different base, a direct push without matching CI, or an unavailable lookup triggers fresh checks. Publish reruns a suite when its receipt is missing, has an unreadable expiry, or has less than 24 hours left. If a delayed release loses a receipt after planning, use **Re-run all jobs** to select fresh checks. **Re-run failed jobs** keeps the original plan.
+Publish runs the native Windows and macOS shards, packaged installs, containment tests, benchmarks, tool accuracy and the full execution audit before an RC or stable release. It also runs any PR suites missing for the release candidate. To reuse a check, Publish verifies a merged same-repository PR, the successful CI jobs, and the tree and parents of the merge revision GitHub recorded for the reusable workflow. A squash merge can qualify even though its commit SHA changed. A different base, a direct push without matching CI, or an unavailable lookup triggers fresh checks. Publish reruns a suite when its receipt is missing, has an unreadable expiry, or has less than 24 hours left. If a delayed release loses a receipt after planning, use **Re-run all jobs** to select fresh checks. **Re-run failed jobs** keeps the original plan.
+
+Paired benchmarks compare against the nearest earlier first-parent RC marker with a successful main Publish run that passed all seven benchmark jobs. Stable Docker images build after npm publication for the same commit.
 
 Reused package reports and eval receipts feed the same release audit as fresh results. Main's SonarQube scan reads both package reports from the Publish run. The six legacy three-shard platform check names summarize the full native matrix on releases.
 
@@ -183,7 +185,7 @@ on Linux is satisfied only by a pass of that exact test in another required job.
 Test identities include the file, suite/title and source location. Ambiguous
 parameterized cases must have unique titles. Missing receipts, missing test files,
 unhandled runner errors, failed hooks, failed assertions, and tests with no pass
-all fail the gate. Web tests are checked separately with the same rules.
+all fail the gate. Web PRs check their test inventory and require a pass for every web test before uploading the execution report. The release audit applies the same rules to that report.
 
 The locked pytest suite and Linux/Windows containment jobs also upload JUnit
 receipts. The same gate checks every Python test file was collected and every
@@ -194,8 +196,7 @@ results are available in the release run's `test-reports` artifact.
 
 ### Duplicate-test scan (advisory)
 
-The `Duplicate test scan` job in `ci.yml` runs `npm run test:dupes` on the lines a PR
-changes, and the PR report lists what it finds under **Possible duplicate tests**. It
+The `Duplicate test scan` job in `ci.yml` runs `npm run test:dupes` on the changed lines when a PR selects CLI coverage, and the PR report lists what it finds under **Possible duplicate tests**. It
 never fails a build. It reports:
 
 | Kind                 | Meaning                                                                     |

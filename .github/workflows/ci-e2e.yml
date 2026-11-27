@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   check-changes:
-    # Keep the branch-protection context on PRs that need no browser.
+    # Report why the Chromium job is running.
     if: inputs.run-browser
     name: Check web module changes
     runs-on: ubuntu-latest
