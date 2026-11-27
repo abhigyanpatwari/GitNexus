@@ -1,9 +1,5 @@
 # Drift guard for the shipped engineering-skill copies (#2431).
-# ci.yml carries `paths-ignore: ['**.md', ...]`, so an md-only skill edit —
-# the most common future edit to these trees — would otherwise merge without
-# gitnexus/test/unit/shipped-skills-sync.test.ts ever running, and the drift
-# would first surface in someone else's CI run. This workflow triggers
-# exactly on the guarded trees.
+# Docs-only PRs skip package coverage. Run the sync checks for shipped skills here.
 name: Skill copy sync
 
 on:
