@@ -136,6 +136,49 @@
       }
     },
     {
+      "_note": "#4084. On the 1,204-file release corpus, the 941 added references match the reviewed main-corpus targets, including two sites shifted by six lines. TypeScript confirms the retained primary fields at all 65 removed interface-dispatch sites. Three Map value-slot field reads distinguish this source from 88fee68e.",
+      "baselineSourceTrees": [
+        "4d44c393f50c0d1a71f2cda2381d769d59c19657",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "8131f7dd2f35e1a71e8de3fc1f4ee0dd7ab7da03",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "sourceDigest": "f4c1b2e125f6ec2768dbd9b6ca44843e68d1caa4d09a141cc5c2abbd0e240f11",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "warm": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "edit": ["c5e175a112066981a3a5b0fb7f2cc65391df25dad7e63601ad7c4da1a3e1453a", 38025, 107954],
+        "two-edits": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ],
+        "repack": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ]
+      },
+      "candidate": {
+        "cold": ["805477e9790470de2012e19614d15f755c8a3ba61194e0faa2f540327c6d42f7", 38031, 113539],
+        "warm": ["805477e9790470de2012e19614d15f755c8a3ba61194e0faa2f540327c6d42f7", 38031, 113539],
+        "edit": ["ab21b7920ccbff3898fb449dd399cc56ffb76b6f69e73ab7c81f81672f8c3a5a", 38032, 113540],
+        "two-edits": [
+          "170262b46b1113f15e67fa77ea27c912dff3b1c472740fbae229d6ac5f809f6a",
+          38034,
+          113542
+        ],
+        "repack": [
+          "170262b46b1113f15e67fa77ea27c912dff3b1c472740fbae229d6ac5f809f6a",
+          38034,
+          113542
+        ]
+      }
+    },
+    {
       "baselineSourceTrees": [
         "4d44c393f50c0d1a71f2cda2381d769d59c19657",
         "196f9344962250e43352d23bec6a81cdc739a257"
