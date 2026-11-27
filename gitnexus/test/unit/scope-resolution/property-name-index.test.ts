@@ -71,6 +71,54 @@ describe('buildPropertyNameIndex', () => {
     expect(index.get('noPath')).toBeUndefined();
   });
 
+  it('leaves out members of an enum, which are read through the enum itself', () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'Enum:Mode.vue:Mode',
+      label: 'Enum',
+      properties: { name: 'Mode', filePath: 'Mode.vue', startLine: 1, endLine: 1 },
+    });
+    addProperty(graph, 'Property:Mode.vue:Mode.Off', 'Off', 'Mode.vue');
+    addProperty(graph, 'Property:State.vue:state.Off', 'Off', 'State.vue');
+    graph.addRelationship({
+      id: 'HAS_PROPERTY:Enum:Mode.vue:Mode->Property:Mode.vue:Mode.Off',
+      sourceId: 'Enum:Mode.vue:Mode',
+      targetId: 'Property:Mode.vue:Mode.Off',
+      type: 'HAS_PROPERTY',
+      confidence: 1,
+      reason: '',
+    });
+
+    expect(
+      buildPropertyNameIndex(graph)
+        .get('Off')
+        ?.map((c) => c.id),
+    ).toEqual(['Property:State.vue:state.Off']);
+  });
+
+  it('keeps a member id that a class also owns', () => {
+    // A same-named class and enum in one file share `Property:<file>:Job.Busy`.
+    const graph = createKnowledgeGraph();
+    for (const label of ['Enum', 'Class'] as const) {
+      graph.addNode({
+        id: `${label}:A.vue:Job`,
+        label,
+        properties: { name: 'Job', filePath: 'A.vue', startLine: 1, endLine: 1 },
+      });
+      graph.addRelationship({
+        id: `HAS_PROPERTY:${label}:A.vue:Job->Property:A.vue:Job.Busy`,
+        sourceId: `${label}:A.vue:Job`,
+        targetId: 'Property:A.vue:Job.Busy',
+        type: 'HAS_PROPERTY',
+        confidence: 1,
+        reason: '',
+      });
+    }
+    addProperty(graph, 'Property:A.vue:Job.Busy', 'Busy', 'A.vue');
+
+    expect(buildPropertyNameIndex(graph).get('Busy')).toHaveLength(1);
+  });
+
   it('does not double-count a node seen twice', () => {
     const graph = createKnowledgeGraph();
     addProperty(graph, 'Property:a.js:cfg.dup', 'dup', 'a.js');

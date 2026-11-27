@@ -18,10 +18,11 @@ import {
   DART_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
 
-function capturedDefinitionFunctionNames(
+function capturedDefinitionNames(
   language: Parameters<Parser['setLanguage']>[0],
   querySource: string,
   src: string,
+  definition: string,
 ): string[] {
   const parser = new Parser();
   parser.setLanguage(language);
@@ -29,16 +30,22 @@ function capturedDefinitionFunctionNames(
   const tree = parser.parse(src);
   const names: string[] = [];
   for (const match of query.matches(tree.rootNode)) {
-    let isFunction = false;
+    let isDefinition = false;
     let name: string | undefined;
     for (const capture of match.captures) {
-      if (capture.name === 'definition.function') isFunction = true;
+      if (capture.name === definition) isDefinition = true;
       if (capture.name === 'name') name = capture.node.text;
     }
-    if (isFunction && name !== undefined) names.push(name);
+    if (isDefinition && name !== undefined) names.push(name);
   }
   return names;
 }
+
+const capturedDefinitionFunctionNames = (
+  language: Parameters<Parser['setLanguage']>[0],
+  querySource: string,
+  src: string,
+): string[] => capturedDefinitionNames(language, querySource, src, 'definition.function');
 
 describe('tree-sitter queries', () => {
   describe('TypeScript queries', () => {
@@ -50,6 +57,21 @@ describe('tree-sitter queries', () => {
     it('captures interface declarations', () => {
       expect(TYPESCRIPT_QUERIES).toContain('interface_declaration');
       expect(TYPESCRIPT_QUERIES).toContain('@definition.interface');
+    });
+
+    it('captures enum declarations and their identifier-named members', () => {
+      const src = "const enum E { A, B = 1, 'q-r' = 2 }";
+      expect(
+        capturedDefinitionNames(TypeScript.typescript, TYPESCRIPT_QUERIES, src, 'definition.enum'),
+      ).toEqual(['E']);
+      expect(
+        capturedDefinitionNames(
+          TypeScript.typescript,
+          TYPESCRIPT_QUERIES,
+          src,
+          'definition.property',
+        ),
+      ).toEqual(['A', 'B']);
     });
 
     it('captures function declarations', () => {
