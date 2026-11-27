@@ -53,5 +53,7 @@ export const MODULE_MEMBERSHIP_REASON = 'module-membership';
 
 /** Persisted IMPORTS reason values shared by emitters and initialization-cycle checks. */
 export const DOCUMENTATION_LINK_REASON = 'markdown-link';
+/** A Blade view naming another view (`@extends`, `@include`, `<x-…>`); rendering order, not module initialization. */
+export const BLADE_VIEW_REFERENCE_REASON = 'blade-view-reference';
 export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
 export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
