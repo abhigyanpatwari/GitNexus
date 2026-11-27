@@ -1,7 +1,6 @@
 const { execFileSync } = require('node:child_process');
 
-// These are independently reusable checks. An unfamiliar build input takes
-// the conservative path. --no-renames gives both packages a vote on a move.
+// A lane can reuse its listed jobs. CLI and Java also share one LCOV report.
 const coverage = 'tests / ubuntu / coverage merge';
 const checks = {
   quality: ['quality / format', 'quality / lint'],
@@ -199,7 +198,14 @@ async function plan({ github, context, core }) {
     lanes.map((lane) => [lane, release ? !reused.has(lane) : changed.has(lane)]),
   );
   const packages = ['cli', 'web'].filter((lane) => release || changed.has(lane));
-  const result = { run, reused: [...reused], source, packages, release };
+  const result = {
+    run,
+    reused: [...reused],
+    source,
+    packages,
+    coverage: packages.length > 0,
+    release,
+  };
   core.info(JSON.stringify(result));
   core.setOutput('plan', JSON.stringify(result));
   const selected = lanes.filter((lane) => run[lane]);

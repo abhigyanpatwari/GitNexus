@@ -17,6 +17,7 @@ type Lane =
   | 'java'
   | 'workflows';
 type Plan = {
+  coverage: boolean;
   release: boolean;
   source: string;
   reused: Lane[];
@@ -220,6 +221,7 @@ describe('release reuse', () => {
     const api = fixture();
     const result = await api.select('pull_request');
     expect(result.release).toBe(false);
+    expect(result.coverage).toBe(true);
     expect(result.packages).toEqual(['web']);
     expect(result.run).toMatchObject({ cli: false, web: true, browser: true, eval: false });
     expect(api.rest.repos.listPullRequestsAssociatedWithCommit).not.toHaveBeenCalled();
@@ -234,6 +236,15 @@ describe('release reuse', () => {
     git('commit', '-qm', 'move from web and update CLI', '--no-gpg-sign');
     const result = await fixture().select('pull_request');
     expect(result.run).toMatchObject({ cli: true, web: true });
+  });
+
+  it('omits package coverage for a documentation-only PR', async () => {
+    writeFileSync(path.join(cwd, 'README.md'), 'documentation');
+    git('add', 'README.md');
+    git('commit', '-qm', 'docs', '--no-gpg-sign');
+    const result = await fixture().select('pull_request');
+    expect(result.coverage).toBe(false);
+    expect(result.packages).toEqual([]);
   });
 
   it('reuses successful web checks and runs the missing release suites', async () => {

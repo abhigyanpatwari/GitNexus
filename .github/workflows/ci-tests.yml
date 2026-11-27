@@ -533,7 +533,7 @@ jobs:
     outputs:
       package-counts: ${{ steps.counts.outputs.counts }}
     needs: [tests, java-compiler-conformance, shard-plan]
-    if: ${{ !cancelled() && (fromJSON(inputs.plan).packages[0] != '' || fromJSON(inputs.plan).run.docker) }}
+    if: ${{ !cancelled() && (fromJSON(inputs.plan).coverage || fromJSON(inputs.plan).run.docker) }}
     runs-on: ubuntu-latest
     # The optional LCOV upload has its own two-minute timeout after the tests.
     timeout-minutes: 17
@@ -655,13 +655,13 @@ jobs:
         if: fromJSON(inputs.plan).run.docker
         run: node --test docker-server.test.mjs
       - name: Stage selected package evidence
-        if: success() && fromJSON(inputs.plan).packages[0] != ''
+        if: success() && fromJSON(inputs.plan).coverage
         env:
           CLI: ${{ contains(fromJSON(inputs.plan).packages, 'cli') }}
           WEB: ${{ contains(fromJSON(inputs.plan).packages, 'web') }}
         run: bash .github/scripts/copy-ci-reports.sh . "$RUNNER_TEMP/package-evidence" evidence
       - name: Upload test reports
-        if: success() && fromJSON(inputs.plan).packages[0] != ''
+        if: success() && fromJSON(inputs.plan).coverage
         uses: ./.github/actions/upload-test-artifact
         with:
           name: coverage-reports
@@ -670,7 +670,7 @@ jobs:
           retention-days: 5
       - name: Count PR package tests
         id: counts
-        if: github.event_name == 'pull_request' && fromJSON(inputs.plan).packages[0] != ''
+        if: github.event_name == 'pull_request' && fromJSON(inputs.plan).coverage
         run: |
           counts=$(jq -sr '"\(map(.numPassedTests) | add) passed, \(map(.numPendingTests) | add) skipped"' \
             "$RUNNER_TEMP"/package-evidence/*/*test-results.json)
@@ -679,7 +679,7 @@ jobs:
       # original test outcomes and let the scanner report any transfer failure.
       - name: Stage LCOV for the scanner
         if: >-
-          !cancelled() && fromJSON(inputs.plan).packages[0] != '' &&
+          !cancelled() && fromJSON(inputs.plan).coverage &&
           ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'push' && github.ref == 'refs/heads/main'))
         env:
@@ -688,7 +688,7 @@ jobs:
         run: bash .github/scripts/copy-ci-reports.sh . "$RUNNER_TEMP/sonar-coverage" lcov
       - name: Upload SonarQube coverage
         if: >-
-          !cancelled() && fromJSON(inputs.plan).packages[0] != '' &&
+          !cancelled() && fromJSON(inputs.plan).coverage &&
           (!fromJSON(inputs.plan).run.java || steps.java-lcov.outcome == 'success') && ((github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -2085,7 +2085,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           COVERAGE: ${{ needs.coverage-merge.result }}
-          RUN_COVERAGE: ${{ fromJSON(inputs.plan).packages[0] != '' || fromJSON(inputs.plan).run.docker }}
+          RUN_COVERAGE: ${{ fromJSON(inputs.plan).coverage || fromJSON(inputs.plan).run.docker }}
           EVAL: ${{ needs.eval-tests.result }}
           ABI: ${{ needs.abi-assert.result }}
           RUN_EVAL: ${{ fromJSON(inputs.plan).run.eval }}
