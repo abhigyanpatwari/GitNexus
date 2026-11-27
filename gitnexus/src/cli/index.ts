@@ -578,8 +578,10 @@ program
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program
-  .command('trace <from> <to>')
-  .description('Find the shortest directed path between two symbols (call + class-member edges)')
+  .command('trace [from] [to]')
+  .description(
+    'Find the shortest directed path between two symbols (call + class-member edges); each endpoint takes a name or its --from-uid/--to-uid (a lone name always fills from)',
+  )
   .option('--from-uid <uid>', 'Source symbol UID (zero-ambiguity)')
   .option('-f, --file <path>', 'Source file path hint (alias for --from-file)')
   .option('--from-file <path>', 'Source file path hint')
