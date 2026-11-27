@@ -110,6 +110,42 @@ describe.skipIf(process.platform === 'win32')('SonarQube gate', () => {
   );
 });
 
+describe.skipIf(process.platform === 'win32')('selected CI checks', () => {
+  const ci = readWorkflow('ci');
+  const gate = namedStep(ci.jobs['ci-status'].steps ?? [], 'Check all jobs passed');
+
+  it('takes the required checks from the plan and the actual results from the jobs', () => {
+    expect(gate.env?.PLAN_RESULT).toBe('${{ needs.plan.result }}');
+    expect(gate.env?.E2E).toBe('${{ needs.e2e.result }}');
+    expect(gate.env?.E2E_REQUIRED).toContain('.run.browser');
+    expect(gate.env?.QUALITY).toBe('${{ needs.quality.result }}');
+    for (const lane of ['quality', 'cli', 'web', 'workflows']) {
+      expect(gate.env?.QUALITY_REQUIRED).toContain('.run.' + lane);
+    }
+  });
+
+  it.each([
+    ['required E2E skipped', { E2E: 'skipped', E2E_REQUIRED: 'true' }, 1],
+    ['optional E2E skipped', { E2E: 'skipped', E2E_REQUIRED: 'false' }, 0],
+    ['required quality skipped', { QUALITY: 'skipped', QUALITY_REQUIRED: 'true' }, 1],
+    ['optional quality skipped', { QUALITY: 'skipped', QUALITY_REQUIRED: 'false' }, 0],
+    ['plan failed', { PLAN_RESULT: 'failure' }, 1],
+  ] as const)('%s', (_description, env, expected) => {
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', gate.run!], {
+      env: {
+        PLAN_RESULT: 'success',
+        E2E: 'success',
+        QUALITY: 'success',
+        TESTS: 'success',
+        SONAR: 'success',
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(expected);
+  });
+});
+
 describe('SonarQube coverage handoff', () => {
   it('keeps threshold failures blocking while allowing both reports to reach the scanner', () => {
     const step = (name: string) => namedStep(producer, name);

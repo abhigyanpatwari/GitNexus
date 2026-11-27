@@ -134,6 +134,7 @@ describe('release reuse', () => {
           context: { eventName, repo: { owner: 'org', repo: 'repo' } },
           core,
         });
+        expect(core.setOutput).toHaveBeenCalledExactlyOnceWith('plan', expect.any(String));
         return JSON.parse(core.setOutput.mock.calls[0][1]);
       },
     };
@@ -142,6 +143,7 @@ describe('release reuse', () => {
   it('diffs the checked-out PR without consulting release history', async () => {
     const api = fixture();
     const result = await api.select('pull_request');
+    expect(result.release).toBe(false);
     expect(result.packages).toEqual(['web']);
     expect(result.run).toMatchObject({ cli: false, web: true, browser: true, eval: false });
     expect(api.rest.repos.listPullRequestsAssociatedWithCommit).not.toHaveBeenCalled();
@@ -150,6 +152,7 @@ describe('release reuse', () => {
   it('reuses successful web checks and runs the missing release suites', async () => {
     const api = fixture();
     const result = await api.select();
+    expect(result.release).toBe(true);
     expect(result.source).toBe('123');
     expect(result.reused.sort()).toEqual(['browser', 'quality', 'web']);
     expect(result.run).toMatchObject({ cli: true, web: false, browser: false, eval: true });
