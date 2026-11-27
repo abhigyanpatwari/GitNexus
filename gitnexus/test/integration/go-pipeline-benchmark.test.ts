@@ -811,7 +811,9 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         console.log(
           `  ${results[i - 1].totalPairs} → ${results[i].totalPairs}: ${scaling.toFixed(2)}x (${scaling < 1.5 ? 'linear' : scaling < 3 ? 'superlinear' : 'WARNING: quadratic'})`,
         );
-        expect(scaling).toBeLessThan(1.5);
+        // #2835 records healthy per-pair ratios up to 1.95 across hosts.
+        // An added scan per pair measured 3.45 on the same fourfold size step (#4242).
+        expect(scaling).toBeLessThan(2.5);
       }
     }
   }, 300_000);
