@@ -7,6 +7,7 @@ export const swiftClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.Swift,
   typeDeclarationNodes: ['class_declaration', 'protocol_declaration'],
   ancestorScopeNodeTypes: ['class_declaration', 'protocol_declaration'],
+  qualifiedNodeId: true,
   extractType(node) {
     if (node.type === 'protocol_declaration') return 'Interface';
     if (node.type !== 'class_declaration') return undefined;

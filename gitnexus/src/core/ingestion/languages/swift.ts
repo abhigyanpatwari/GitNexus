@@ -175,6 +175,15 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'NotificationCenter',
 ]);
 
+const swiftClassExtractor = createClassExtractor(swiftClassConfig);
+
+const swiftResolveContainerTypeOwner = (
+  node: SyntaxNode,
+): { readonly name: string; readonly label: NodeLabel } | null => {
+  const owner = swiftClassExtractor.extract(node);
+  return owner === null ? null : { name: owner.qualifiedName, label: owner.type };
+};
+
 export const swiftProvider = defineLanguage({
   rename: swiftRenameProvider,
   id: SupportedLanguages.Swift,
@@ -244,7 +253,8 @@ export const swiftProvider = defineLanguage({
     extractFunctionName: swiftExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(swiftVariableConfig),
-  classExtractor: createClassExtractor(swiftClassConfig),
+  classExtractor: swiftClassExtractor,
+  resolveContainerTypeOwner: swiftResolveContainerTypeOwner,
   // ── Swift doc comments (`///`, `/** */`) → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
