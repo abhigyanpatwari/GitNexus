@@ -145,6 +145,22 @@ describe('analyzeCommand --self-commit bridge (#2639)', () => {
     );
   });
 
+  it('scopes --self-commit to a custom instruction file', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {
+      selfCommit: true,
+      instructionFile: '.claude\\CLAUDE.md',
+    });
+
+    expect(snapshotSelfCommitSafetyMock).toHaveBeenCalledWith('/repo', ['.claude/CLAUDE.md']);
+    expect(selfCommitContextFilesMock).toHaveBeenCalledWith(
+      '/repo',
+      ['.claude/CLAUDE.md'],
+      expect.any(Map),
+    );
+  });
+
   it('calls selfCommitContextFiles on the primary (non-fast-path) analyze run', async () => {
     runFullAnalysisMock.mockResolvedValueOnce({
       repoName: 'repo',

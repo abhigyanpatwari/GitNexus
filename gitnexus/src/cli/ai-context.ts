@@ -14,7 +14,15 @@ import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { isEnoent } from './editor-targets.js';
-import { selectedInstructionFiles, type InstructionFile } from './analyze-options.js';
+import {
+  isDefaultInstructionFile,
+  selectedInstructionFiles,
+  type InstructionFile,
+} from './analyze-options.js';
+import {
+  assertInstructionFileTargetSafe,
+  resolveInstructionFileTarget,
+} from './instruction-file-target.js';
 import { logger } from '../core/logger.js';
 
 // ESM equivalent of __dirname
@@ -84,6 +92,24 @@ function findSectionMarkerIndex(content: string, marker: string, startFrom = 0):
     idx = content.indexOf(marker, idx + 1);
   }
   return -1;
+}
+
+/**
+ * Locate one selected instruction file. Root `AGENTS.md` / `CLAUDE.md` keep
+ * their existing behavior (including a user's own symlink between them). A
+ * custom target is re-validated here, at the write site, so a caller that
+ * bypasses the CLI still cannot escape the repository or follow a symlink.
+ */
+async function resolveSelectedInstructionFile(
+  repoPath: string,
+  selected: InstructionFile,
+): Promise<{ name: string; filePath: string; custom: boolean }> {
+  if (isDefaultInstructionFile(selected)) {
+    return { name: selected, filePath: path.join(repoPath, selected), custom: false };
+  }
+  const { relative, absolute } = resolveInstructionFileTarget(repoPath, selected);
+  await assertInstructionFileTargetSafe(repoPath, relative);
+  return { name: relative, filePath: absolute, custom: true };
 }
 
 export async function hasInstructionBlock(filePath: string): Promise<boolean> {
@@ -833,9 +859,11 @@ export async function generateAIContextFiles(
       createdFiles.push(`${name} (skipped via --skip-agents-md)`);
     }
   } else {
-    for (const name of instructionFiles) {
+    for (const selected of instructionFiles) {
+      const { name, filePath, custom } = await resolveSelectedInstructionFile(repoPath, selected);
+      if (custom) await fs.mkdir(path.dirname(filePath), { recursive: true });
       const result = await upsertGitNexusSection(
-        path.join(repoPath, name),
+        filePath,
         render,
         projectName,
         stats,
@@ -890,8 +918,9 @@ export async function generateAIContextFiles(
 }
 
 /**
- * Refresh the regression-review target inside the GitNexus block of an
- * already-generated AGENTS.md / CLAUDE.md, in place (#1996 P2, #3509).
+ * Refresh the regression-review target inside the GitNexus block of each
+ * already-generated selected instruction file (root AGENTS.md / CLAUDE.md, or
+ * a custom `instructionFile` target), in place (#1996 P2, #3509).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -913,8 +942,8 @@ export async function refreshBaseRefLine(
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const updated: string[] = [];
-  for (const name of selectedInstructionFiles(options?.instructionFile)) {
-    const filePath = path.join(repoPath, name);
+  for (const selected of selectedInstructionFiles(options?.instructionFile)) {
+    const { name, filePath } = await resolveSelectedInstructionFile(repoPath, selected);
     if (!(await fileExists(filePath))) continue;
     let content: string;
     try {
@@ -971,7 +1000,8 @@ export async function refreshBaseRefLine(
 }
 
 /**
- * Refresh the volatile counts inside an already-generated block, in place
+ * Refresh the volatile counts inside the already-generated block of each
+ * selected instruction file (root defaults or a custom target), in place
  * (#3618).
  *
  * The `alreadyUpToDate` analyze fast path returns before
@@ -1010,8 +1040,8 @@ export async function refreshStatsLine(
   if (!noStats && counts === undefined) return { files: [] };
   const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
   const updated: string[] = [];
-  for (const name of selectedInstructionFiles(options?.instructionFile)) {
-    const filePath = path.join(repoPath, name);
+  for (const selected of selectedInstructionFiles(options?.instructionFile)) {
+    const { name, filePath } = await resolveSelectedInstructionFile(repoPath, selected);
     if (!(await fileExists(filePath))) continue;
     let content: string;
     try {

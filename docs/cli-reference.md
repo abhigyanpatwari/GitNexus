@@ -62,6 +62,26 @@ embedding flags, `--skills`, `--instruction-file`, `--self-commit`, `--index-onl
 are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a
 warning rather than making an otherwise valid repository unwatchable.
 
+`--instruction-file <file>` writes the managed block to one file instead of both root
+`AGENTS.md` and `CLAUDE.md`. It accepts either of those names or a repository-relative
+path such as `.claude/CLAUDE.md`; the files not selected are left unchanged.
+Missing parent directories are created; paths outside the repository or through
+symlinked components are rejected. Existing prompt text outside the GitNexus block
+is preserved. Even when the index is already up to date, a newly selected missing
+file or prompt file without a block receives one; existing generated blocks keep
+their community-skill rows during the surgical default-branch refresh.
+
+Custom targets outside GitNexus-managed paths are not excluded from freshness
+checks. Writing one can trigger another analysis even when no source files
+changed. Use a managed target such as `.claude/CLAUDE.md` to avoid this with
+the default indexing configuration.
+
+`--skip-agents-md` suppresses custom-target updates too. `--index-only` suppresses
+all instruction-file and skill injection. `--no-stats` omits volatile counts when
+generating the selected target; `--self-commit` applies only to the selected target
+and does not include pre-existing user edits. Pinned non-primary branch indexes do
+not write instruction files.
+
 POSIX requests clone-first copy-and-swap publication when the live index has no
 orphan sidecars. Windows and sidecar fallback runs update in place: failures
 known to occur before writes are retried, while a failure that may have mutated
@@ -92,6 +112,7 @@ gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md   # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --instruction-file CLAUDE.md  # Write the managed block only to CLAUDE.md
+gitnexus analyze --instruction-file .claude/CLAUDE.md  # Use one repo-relative instruction file instead of both root files
 gitnexus analyze --skip-skills      # Skip installing standard skill files under .claude/skills/ and .agents/skills/
 gitnexus analyze --skip-git         # Index folders that are not Git repositories
 gitnexus analyze --default-branch develop  # Branch used in the generated regression-compare example (base_ref)
@@ -219,7 +240,7 @@ Notes:
 
 - The default branch is resolved as: `--default-branch` > `.gitnexusrc` `defaultBranch`/`branch` > auto-detected `origin/HEAD` > `main`.
 - `skipContextFiles` / `skipAiContext` are aliases for `skipAgentsMd` — they skip the `AGENTS.md` / `CLAUDE.md` block only. They do **not** imply `skipSkills`. `indexOnly` is the stronger option that skips all file injection.
-- `instructionFile` selects `AGENTS.md` or `CLAUDE.md` for the managed block. The default writes both. An explicit analyze refreshes displayed counts, including on an up-to-date index. Set `noStats` to omit them or use `skipAgentsMd` to skip instruction files entirely.
+- `instructionFile` selects `AGENTS.md`, `CLAUDE.md`, or one repository-relative path (for example `.claude/CLAUDE.md`) for the managed block. The default writes both root files. An explicit analyze refreshes displayed counts, including on an up-to-date index. Set `noStats` to omit them or use `skipAgentsMd` to skip instruction files entirely.
 - Supported keys: `defaultBranch` (`branch`), `instructionFile`, `skipAgentsMd` (`skipContextFiles`, `skipAiContext`), `skipSkills`, `indexOnly`, `stats`/`noStats`, `embeddings`, `dropEmbeddings`, `name`, `allowDuplicateName`, `maxFileSize`, `workerTimeout`, `walCheckpointThreshold`, `workers`, `maxProcesses`, `maxProcessBranching`, `maxProcessTraceDepth`, `maxEntryPointCandidates`, `springActuator`, `embeddingThreads`, `embeddingBatchSize`, `embeddingSubBatchSize`, `embeddingDevice`.
 - The file is JSON only. Unknown keys and wrong JSON types fail fast with an actionable error before analysis starts. Process-detection knobs (`maxProcesses`, `maxProcessBranching`, `maxProcessTraceDepth`, `maxEntryPointCandidates`) that are not a positive integer warn and fall through to env, then the built-in default.
 

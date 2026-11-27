@@ -50,7 +50,15 @@ import {
   validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
-import { selectedInstructionFiles, type AnalyzeOptions } from './analyze-options.js';
+import {
+  isDefaultInstructionFile,
+  selectedInstructionFiles,
+  type AnalyzeOptions,
+} from './analyze-options.js';
+import {
+  assertInstructionFileTargetSafe,
+  resolveInstructionFileTarget,
+} from './instruction-file-target.js';
 import {
   parseCliPreparedAnalysis,
   receiveCliAnalysisContinuation,
@@ -1228,6 +1236,21 @@ const analyzeCommandImpl = async (
     return;
   }
 
+  // A custom --instruction-file (or .gitnexusrc instructionFile) must be a
+  // repo-relative path with no symlinked component. Validate before any
+  // analysis work and thread the normalized form everywhere downstream.
+  if (options.instructionFile !== undefined && !isDefaultInstructionFile(options.instructionFile)) {
+    try {
+      const target = resolveInstructionFileTarget(repoPath, options.instructionFile);
+      await assertInstructionFileTargetSafe(repoPath, target.relative);
+      options = { ...options, instructionFile: target.relative };
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   if (options.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
@@ -1858,10 +1881,20 @@ const analyzeCommandImpl = async (
     // pre-existing unstaged user edit apart from this run's stats refresh
     // and refuse to sweep the former into the latter's commit.
     const contextFiles = selectedInstructionFiles(options.instructionFile);
+    const customInstructionFile =
+      options.instructionFile !== undefined && !isDefaultInstructionFile(options.instructionFile)
+        ? options.instructionFile
+        : undefined;
+    // A resumed run trusts the carried snapshot only for the target this
+    // process selected itself; any other carried path is ignored (unsafe).
+    const carriedCustom = continuation?.prepared.selfCommitSafety?.custom;
     const selfCommitSafety = continuation?.prepared.selfCommitSafety
       ? new Map([
           ['AGENTS.md', continuation.prepared.selfCommitSafety.agentsMd],
           ['CLAUDE.md', continuation.prepared.selfCommitSafety.claudeMd],
+          ...(carriedCustom && carriedCustom.file === customInstructionFile
+            ? [[carriedCustom.file, carriedCustom.safe] as [string, boolean]]
+            : []),
         ])
       : !continuation && options.selfCommit === true
         ? snapshotSelfCommitSafety(repoPath, contextFiles)
@@ -1895,7 +1928,13 @@ const analyzeCommandImpl = async (
         await import('./analyze-phase-ipc.js');
       requireCliAnalysisSupervisor();
       // Validate identity before skill/context writes use the registered name.
-      preparedMessage = projectCliPreparedAnalysis(result, repoPath, t0, selfCommitSafety);
+      preparedMessage = projectCliPreparedAnalysis(
+        result,
+        repoPath,
+        t0,
+        selfCommitSafety,
+        customInstructionFile,
+      );
     }
 
     if (result.alreadyUpToDate) {

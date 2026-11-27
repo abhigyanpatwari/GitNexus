@@ -267,15 +267,16 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
-  'help.option.analyze.instructionFile': '仅更新指定的说明文件（AGENTS.md 或 CLAUDE.md）',
+  'help.option.analyze.instructionFile':
+    '仅将 GitNexus 区块写入一个说明文件，而不是同时写入 AGENTS.md 和 CLAUDE.md：可以是这两者之一，也可以是仓库相对路径（例如 .claude/CLAUDE.md）。',
   'help.option.analyze.skipAgentsMd':
-    '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
-  'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',
+    '跳过更新选定说明文件中的 gitnexus 区块（包括 --instruction-file 指定的自定义文件）。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
+  'help.option.analyze.noStats': '从选定的说明文件中省略易变的文件/符号计数',
   'help.option.analyze.selfCommit':
-    '在 analyze 后自动提交 AGENTS.md/CLAUDE.md 的变更（默认关闭，需显式开启）。仅限这两个文件（绝不使用 `git add -A`）；若两者均不存在、均未变更，或仓库未配置 git 身份，则不执行任何操作。',
+    '在 analyze 后自动提交生成的说明文件变更（默认关闭，需显式开启）。仅限选定的说明文件（绝不使用 `git add -A`）；若没有说明文件存在、没有文件变更，或仓库未配置 git 身份，则不执行任何操作。',
   'help.option.analyze.skipSkills':
     '跳过直接安装在 .claude/skills/ 和 .agents/skills/ 下的标准 GitNexus skill 文件。不抑制 --skills 生成的社区 skill（位于 .claude/skills/gitnexus-area-*）。使用 --index-only 可跳过所有 AI 上下文文件注入。',
-  'help.option.analyze.indexOnly': '纯索引模式：跳过所有文件注入（AGENTS.md、CLAUDE.md、skills）',
+  'help.option.analyze.indexOnly': '纯索引模式：跳过所有文件注入（默认或自定义说明文件、skills）',
   'help.option.skipGit': '将提供的路径/cwd 视为索引根目录，并跳过向上查找 git 根目录',
   'help.option.analyze.name':
     '在 ~/.gitnexus/registry.json 中使用自定义名称注册该仓库（用于区分路径 basename 相同的仓库，例如两个不同的 .../app 目录）',

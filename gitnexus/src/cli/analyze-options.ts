@@ -16,11 +16,17 @@
  */
 import type { RouteFrameworkAlias } from '../core/ingestion/language-provider.js';
 
-const instructionFiles = ['AGENTS.md', 'CLAUDE.md'] as const;
-export type InstructionFile = (typeof instructionFiles)[number];
+const defaultInstructionFiles: readonly string[] = ['AGENTS.md', 'CLAUDE.md'];
+/** Root `AGENTS.md` / `CLAUDE.md`, or one repo-relative path chosen by the user. */
+export type InstructionFile = string;
 
+export function isDefaultInstructionFile(name: string): boolean {
+  return defaultInstructionFiles.includes(name);
+}
+
+/** The files that receive the managed block: one selected target, else both root defaults. */
 export function selectedInstructionFiles(selected?: InstructionFile): InstructionFile[] {
-  return instructionFiles.filter((name) => selected === undefined || name === selected);
+  return selected === undefined ? [...defaultInstructionFiles] : [selected];
 }
 
 export interface AnalyzeOptions {
@@ -51,6 +57,7 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Single target for the managed block: `AGENTS.md`, `CLAUDE.md`, or a repo-relative path. */
   instructionFile?: InstructionFile;
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by

@@ -544,7 +544,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
-  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
+  /** `AGENTS.md`, `CLAUDE.md`, or a validated repo-relative path for the managed block. */
+  instructionFile?: string;
   refreshCounts?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;

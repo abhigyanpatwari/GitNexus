@@ -6,6 +6,36 @@ import {
   type PreparedAnalysisHandoff,
 } from '../core/analysis-phase-supervisor.js';
 import { FTS_SKIP_REASONS } from '../core/search/fts-policy.js';
+import { isDefaultInstructionFile } from './analyze-options.js';
+import { resolveInstructionFileTarget } from './instruction-file-target.js';
+
+/** Pre-generation self-commit snapshot carried across the phase boundary. */
+export interface CliSelfCommitSafety {
+  agentsMd: boolean;
+  claudeMd: boolean;
+  /** Present only when a custom --instruction-file target was selected. */
+  custom?: { file: string; safe: boolean };
+}
+
+const MAX_INSTRUCTION_FILE_LENGTH = 4096;
+
+/** Accept only a normalized repo-relative custom target; never trust the IPC shape. */
+function assertCustomInstructionFile(repoPath: unknown, file: unknown): asserts file is string {
+  let normalized: string | undefined;
+  if (
+    typeof repoPath === 'string' &&
+    typeof file === 'string' &&
+    file.length <= MAX_INSTRUCTION_FILE_LENGTH
+  ) {
+    try {
+      normalized = resolveInstructionFileTarget(repoPath, file).relative;
+    } catch {
+      normalized = undefined;
+    }
+  }
+  if (normalized === undefined || normalized !== file || isDefaultInstructionFile(file))
+    throw new Error('Invalid CLI self-commit snapshot');
+}
 
 export interface CliPreparedAnalysisMessage {
   type: 'graph-prepared';
@@ -22,7 +52,7 @@ export interface CliPreparedAnalysisMessage {
   >;
   startedAt: number;
   /** Snapshot from BEFORE graph/context generation, never recomputed on resume. */
-  selfCommitSafety?: { agentsMd: boolean; claudeMd: boolean };
+  selfCommitSafety?: CliSelfCommitSafety;
 }
 
 export interface CliAnalysisContinuation {
@@ -39,6 +69,14 @@ export function parseCliPreparedAnalysis(value: unknown): CliPreparedAnalysisMes
   const safety = input.selfCommitSafety;
   if (safety && (typeof safety.agentsMd !== 'boolean' || typeof safety.claudeMd !== 'boolean'))
     throw new Error('Invalid CLI self-commit snapshot');
+  const custom = safety?.custom;
+  if (custom !== undefined) {
+    if (custom === null || typeof custom !== 'object' || typeof custom.safe !== 'boolean')
+      throw new Error('Invalid CLI self-commit snapshot');
+    // Validate here, not only downstream: a missing `file` would otherwise be
+    // dropped silently and lose the selected target's snapshot.
+    assertCustomInstructionFile(input.handoff?.repoPath, custom.file);
+  }
   return projectCliPreparedAnalysis(
     { ...input.result, preparedGraph: input.handoff, rebuildReasons: [] },
     input.handoff.repoPath,
@@ -47,8 +85,10 @@ export function parseCliPreparedAnalysis(value: unknown): CliPreparedAnalysisMes
       ? new Map([
           ['AGENTS.md', safety.agentsMd],
           ['CLAUDE.md', safety.claudeMd],
+          ...(custom ? [[custom.file, custom.safe] as [string, boolean]] : []),
         ])
       : undefined,
+    custom?.file,
   );
 }
 
@@ -113,6 +153,8 @@ export function projectCliPreparedAnalysis(
   repoPath: string,
   startedAt: number,
   selfCommitSafety?: ReadonlyMap<string, boolean>,
+  /** Selected custom --instruction-file target, if any; the only extra path ever carried. */
+  customInstructionFile?: string,
 ): CliPreparedAnalysisMessage {
   const handoff = projectPreparedAnalysisHandoff(result.preparedGraph);
   if (
@@ -127,6 +169,8 @@ export function projectCliPreparedAnalysis(
     throw new Error('Prepared CLI graph does not match the requested analysis');
   if (!Number.isSafeInteger(startedAt) || startedAt < 0)
     throw new Error('Invalid graph phase start time');
+  if (selfCommitSafety && customInstructionFile !== undefined)
+    assertCustomInstructionFile(handoff.repoPath, customInstructionFile);
 
   // Never spread stats or the result: either may gain corpus-sized fields.
   const stats: AnalyzeResult['stats'] = {};
@@ -167,6 +211,14 @@ export function projectCliPreparedAnalysis(
       ? {
           agentsMd: selfCommitSafety.get('AGENTS.md') === true,
           claudeMd: selfCommitSafety.get('CLAUDE.md') === true,
+          ...(customInstructionFile !== undefined
+            ? {
+                custom: {
+                  file: customInstructionFile,
+                  safe: selfCommitSafety.get(customInstructionFile) === true,
+                },
+              }
+            : {}),
         }
       : undefined,
   };

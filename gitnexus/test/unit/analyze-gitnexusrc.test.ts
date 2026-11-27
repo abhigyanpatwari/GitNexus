@@ -140,6 +140,24 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     expect(opts.skipSkills).toBe(true);
   });
 
+  it('indexOnly suppresses a selected custom context file', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { indexOnly: true, instructionFile: '.claude/CLAUDE.md' });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(runFullAnalysisMock.mock.calls[0][1]).toMatchObject({
+      instructionFile: '.claude/CLAUDE.md',
+      skipAgentsMd: true,
+      skipSkills: true,
+    });
+    expect(refreshBaseRefLineMock.mock.calls[0][2]).toMatchObject({ skipAgentsMd: true });
+    expect(generateAIContextFilesMock).not.toHaveBeenCalled();
+    await expect(fs.readFile(path.join(dir, '.claude/CLAUDE.md'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('uses .gitnexusrc defaultBranch for generated context', async () => {
     await writeRc({ defaultBranch: 'develop' });
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
@@ -202,12 +220,15 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     try {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-      await analyzeCommand(dir, { skills: true });
+      await analyzeCommand(dir, { skills: true, instructionFile: '.claude/CLAUDE.md' });
 
       expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
       expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
       const aiCtxOpts = generateAIContextFilesMock.mock.calls[0]![5];
-      expect(aiCtxOpts).toMatchObject({ defaultBranch: 'develop' });
+      expect(aiCtxOpts).toMatchObject({
+        defaultBranch: 'develop',
+        instructionFile: '.claude/CLAUDE.md',
+      });
     } finally {
       exitSpy.mockRestore();
     }
@@ -226,6 +247,25 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
       expect.stringMatching(/--default-branch/),
       expect.objectContaining({ recoveryHint: 'default-branch-invalid' }),
     );
+  });
+
+  it('passes --instruction-file to analysis and the up-to-date refresh', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(dir, { instructionFile: '.claude/CLAUDE.md' });
+
+    expect(runFullAnalysisMock.mock.calls[0][1].instructionFile).toBe('.claude/CLAUDE.md');
+    expect(refreshBaseRefLineMock.mock.calls[0][2]).toMatchObject({
+      instructionFile: '.claude/CLAUDE.md',
+    });
+  });
+
+  it('rejects an escaping --instruction-file before analysis', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(dir, { instructionFile: '../outside.md' });
+
+    expect(process.exitCode).toBe(1);
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    expect(cliErrorMock).toHaveBeenCalledWith(expect.stringMatching(/--instruction-file/));
   });
 
   it('does not auto-detect the branch when config skips context generation (#1996)', async () => {

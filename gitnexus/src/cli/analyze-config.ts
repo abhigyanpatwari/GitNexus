@@ -197,8 +197,11 @@ const normalizeValue = (
   }
   switch (spec.kind) {
     case 'instruction-file':
-      if (value === 'AGENTS.md' || value === 'CLAUDE.md') return value;
-      throw new GitNexusRcError(`${source} must be AGENTS.md or CLAUDE.md.`);
+      // Shape only: `analyze` validates the path against the repository root.
+      if (typeof value === 'string' && value.trim()) return value;
+      throw new GitNexusRcError(
+        `${source} must be AGENTS.md, CLAUDE.md, or a repo-relative file path.`,
+      );
     case 'boolean':
       if (typeof value !== 'boolean') {
         throw new GitNexusRcError(`${source} must be a boolean (true/false).`);

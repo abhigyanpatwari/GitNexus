@@ -269,6 +269,78 @@ describe('CLI graph phase handoff', () => {
     expect(mocks.commit).not.toHaveBeenCalled();
   });
 
+  it('carries only the selected custom target snapshot across the handoff', async () => {
+    const custom = '.claude/CLAUDE.md';
+    mocks.snapshot.mockReturnValueOnce(
+      new Map([
+        ['unrelated-file', true],
+        [custom, true],
+      ]),
+    );
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { selfCommit: true, instructionFile: custom });
+    expect(mocks.snapshot).toHaveBeenCalledWith('/repo', [custom]);
+    const message = send.mock.calls[0][0] as { selfCommitSafety?: unknown };
+    expect(message.selfCommitSafety).toEqual({
+      agentsMd: false,
+      claudeMd: false,
+      custom: { file: custom, safe: true },
+    });
+    expect(JSON.stringify(message)).not.toContain('unrelated-file');
+    const { parseCliPreparedAnalysis } = await import('../../src/cli/analyze-phase-ipc.js');
+    expect(parseCliPreparedAnalysis(JSON.parse(JSON.stringify(message))).selfCommitSafety).toEqual(
+      message.selfCommitSafety,
+    );
+  });
+
+  it.each([
+    ['an escaping path', { file: '../outside.md', safe: true }],
+    ['an absolute path', { file: '/etc/passwd', safe: true }],
+    ['a non-normalized path', { file: '.claude//CLAUDE.md', safe: true }],
+    ['a default file name', { file: 'AGENTS.md', safe: true }],
+    ['a non-boolean flag', { file: '.claude/CLAUDE.md', safe: 'yes' }],
+    ['a non-string path', { file: 7, safe: true }],
+    ['a missing path', { safe: true }],
+    ['a non-object snapshot', 'yes'],
+  ])('rejects a custom self-commit snapshot with %s', async (_name, custom) => {
+    const { parseCliPreparedAnalysis, projectCliPreparedAnalysis } =
+      await import('../../src/cli/analyze-phase-ipc.js');
+    const message = projectCliPreparedAnalysis(result, '/repo', Date.now());
+    expect(() =>
+      parseCliPreparedAnalysis({
+        ...message,
+        selfCommitSafety: { agentsMd: false, claudeMd: false, custom },
+      }),
+    ).toThrow('Invalid CLI self-commit snapshot');
+  });
+
+  it.each([
+    ['commits the selected custom target', '.claude/CLAUDE.md', true],
+    ['ignores a snapshot carried for another target', 'docs/OTHER.md', false],
+  ])('on continuation %s', async (_name, carried, trusted) => {
+    vi.stubEnv('GITNEXUS_ANALYSIS_CONTINUATION', '1');
+    const { projectCliPreparedAnalysis } = await import('../../src/cli/analyze-phase-ipc.js');
+    mocks.continuation.mockResolvedValueOnce({
+      type: 'continue-analysis',
+      writerPid: 1234,
+      prepared: projectCliPreparedAnalysis(
+        result,
+        '/repo',
+        Date.now(),
+        new Map([[carried, true]]),
+        carried,
+      ),
+    });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { selfCommit: true, instructionFile: '.claude/CLAUDE.md' });
+    expect(mocks.snapshot).not.toHaveBeenCalled();
+    expect(mocks.commit).toHaveBeenCalledTimes(1);
+    const [, files, safety] = mocks.commit.mock.calls[0];
+    expect(files).toEqual(['.claude/CLAUDE.md']);
+    expect(safety.get('.claude/CLAUDE.md') === true).toBe(trusted);
+    expect(safety.has('docs/OTHER.md')).toBe(false);
+  });
+
   it('waits for IPC delivery before the native-handle exit, including channel backpressure', async () => {
     let delivered!: SendCallback;
     let received!: () => void;

@@ -243,6 +243,17 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/both configure the same option/);
   });
 
+  it('accepts a default or repo-relative instructionFile and rejects other shapes', async () => {
+    for (const instructionFile of ['CLAUDE.md', '.claude/CLAUDE.md']) {
+      await writeRc(JSON.stringify({ instructionFile }));
+      expect(loadAnalyzeConfig(dir)).toEqual({ instructionFile });
+    }
+    for (const invalid of [true, 7, '', '   ']) {
+      await writeRc(JSON.stringify({ instructionFile: invalid }));
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/repo-relative file path/);
+    }
+  });
+
   it('requires booleans to be booleans', async () => {
     await writeRc(JSON.stringify({ skipSkills: 'yes' }));
     expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a boolean/);

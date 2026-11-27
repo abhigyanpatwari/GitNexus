@@ -3,7 +3,7 @@
 // Heap re-spawn removed — only analyze.ts needs the 8GB heap (via its own ensureHeap()).
 // Removing it from here improves MCP server startup time significantly.
 
-import { Command, Option } from 'commander';
+import { Command } from 'commander';
 import { packageVersion } from '../core/package-version.js';
 import {
   createAnalyzerLbugLazyAction,
@@ -99,11 +99,10 @@ program
     'Generate repo-specific skill files from detected communities ' +
       '(no-op when --index-only is also set).',
   )
-  .addOption(
-    new Option('--instruction-file <file>', 'Update only the selected instruction file').choices([
-      'AGENTS.md',
-      'CLAUDE.md',
-    ]),
+  .option(
+    '--instruction-file <file>',
+    'Write the GitNexus block to one instruction file instead of both AGENTS.md and CLAUDE.md: ' +
+      'either of those, or a repo-relative path such as .claude/CLAUDE.md.',
   )
   .option(
     '--skip-agents-md',
@@ -128,9 +127,9 @@ program
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--self-commit',
-    'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). ' +
-      'Scoped to only those two files (never `git add -A`); no-ops if neither exists, ' +
-      'neither changed, or the repo has no git identity configured.',
+    'Auto-commit generated instruction file changes after analyze (opt-in, off by default). ' +
+      'Scoped to the selected instruction file(s) (never `git add -A`); no-ops if none exist, ' +
+      'none changed, or the repo has no git identity configured.',
   )
   .option(
     '--skip-skills',
