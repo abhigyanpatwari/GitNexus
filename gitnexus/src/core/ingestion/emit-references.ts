@@ -177,11 +177,14 @@ export function emitScopeGraph(input: {
 
   for (const scopeId of scopes.imports.scopes()) {
     scopes.imports.forEachTarget(scopeId, (targetFile, edge) => {
-      // A group's metadata describes the statement; resolve each target's
-      // module through the shared index without retaining per-file edges.
+      // A group's metadata describes the statement (a nameless wildcard, or a
+      // module import's statement edge with `targetFile: null`); resolve each
+      // target's module through the shared index without retaining per-file
+      // edges.
       const targetModuleScope =
         edge.targetModuleScope ??
-        (!isSelectableImport(edge) && edge.linkStatus !== 'unresolved'
+        ((!isSelectableImport(edge) || edge.groupsFiles === true) &&
+        edge.linkStatus !== 'unresolved'
           ? scopes.moduleScopes.get(targetFile)
           : undefined);
       if (targetModuleScope === undefined) return;

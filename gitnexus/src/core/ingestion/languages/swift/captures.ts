@@ -29,7 +29,10 @@
  * hoist onto `Foo`'s scope (`populateClassOwnedMembers` completes the
  * ownership stamp) — the same mechanism C# uses for `partial class`.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Pure given the input source text: no I/O, no globals consulted. The one
+ * side effect is the latest-file slot of the file's name facts
+ * (`name-facts.ts`), which the provider reads back as the capture side
+ * channel; the returned captures do not depend on it.
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
@@ -56,6 +59,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { recordSwiftNameFacts } from './name-facts.js';
 
 /**
  * Name of the type that lexically owns `node` — the nearest enclosing
@@ -139,7 +143,7 @@ const RECEIVER_NODE_TYPES = [
 
 export function emitSwiftScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
@@ -472,6 +476,10 @@ export function emitSwiftScopeCaptures(
   // drops for registry-primary languages (issue #1951).
   out.push(...synthesizeSwiftInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, SWIFT_CALLABLE_CAPTURE_OPTIONS));
+  // What this file declares and uses, for narrowing persisted `import` edges.
+  // A side effect read back by `collectSwiftCaptureSideChannel`; captures
+  // unchanged.
+  recordSwiftNameFacts(filePath, tree.rootNode);
 
   return out;
 }

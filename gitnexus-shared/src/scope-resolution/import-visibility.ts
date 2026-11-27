@@ -5,7 +5,10 @@
  * interface, so a reader can never hold a collection that omits part of what a
  * scope reaches. Each operation names the question a consumer has:
  *
- *   - `edgesAt`          — which import edges are bound here (name, kind, def)?
+ *   - `edgesAt`          — which per-file import edges are bound here?
+ *   - `statementsAt`     — every import statement bound here (name, kind, def),
+ *                          a grouped module import as one edge
+ *   - `groupTargets`     — the files behind such a grouped statement edge
  *   - `reaches`          — does this scope import that file? (one question)
  *   - `reachesDirectory` — does it import any file of that directory?
  *   - `membership`       — the same question asked many times at one scope
@@ -13,21 +16,63 @@
  *
  * ## What `edgesAt` is complete for
  *
- * `edgesAt` returns every import of the scope that can be SELECTED: by a
- * non-empty local name, by a non-empty exported name, by the definition it
- * links to, or by any kind other than a nameless wildcard. For those
- * selections it is the whole answer, in statement order, whatever the storage.
+ * `edgesAt` returns every per-file import of the scope that can be SELECTED:
+ * by a non-empty local name, by a non-empty exported name, by the definition
+ * it links to, or by any kind other than a nameless wildcard. Unless a module
+ * import is grouped (below), that is the whole answer for those selections,
+ * in statement order. A reader that selects imports must read `statementsAt`,
+ * which is the whole answer in either storage form.
  *
- * The one thing it may leave out is a nameless wildcard target: an import
- * that binds no name, links no definition and only says "this file is
- * reachable" (`isSelectableImport` is false). An implementation may store
- * those once per statement instead of once per file. They still answer
- * `reaches`, `reachesDirectory`, `membership` and `forEachTarget`, so a
- * consumer that needs "everything this scope can reach" uses those, never a
- * scan of `edgesAt`.
+ * It may leave out a nameless wildcard target: an import that binds no
+ * name, links no definition and only says "this file is reachable"
+ * (`isSelectableImport` is false). An implementation may store those once per
+ * statement instead of once per file. They still answer `reaches`,
+ * `reachesDirectory`, `membership` and `forEachTarget`, so a consumer that
+ * needs "everything this scope can reach" uses those, never a scan of
+ * `edgesAt`.
+ *
+ * ## Grouped module imports
+ *
+ * The files of a namespace import of a multi-file module through which the
+ * statement binds nothing (none links a definition under the imported name)
+ * may also be stored once, as a group. A file that does link the definition
+ * stays an ordinary per-file edge, so one statement can be a mix of groups
+ * and edges, in the order of the statement's files. A group is selectable by
+ * its local name but names no single file, so it is left out of `edgesAt`
+ * (which lists per-file edges only) and listed by `statementsAt`: once, as a
+ * statement edge (`groupsFiles: true`, `targetFile: null`, no
+ * `targetModuleScope`), in statement order among the scope's other edges.
+ * `groupTargets` returns that edge's files. Written out
+ * one edge per file (each with its file's module scope, without
+ * `groupsFiles`), `statementsAt` is exactly the edges `edgesAt` would list had
+ * nothing been grouped.
+ *
+ * A reader that selects imports by name or kind reads `statementsAt` and asks
+ * `importEdgeNamesFiles` / `importEdgeFiles` instead of `targetFile`. Without
+ * such a group, `statementsAt` returns the `edgesAt` array itself and
+ * `groupTargets` is always undefined. Pipeline output alone cannot show that a
+ * reader got this wrong (a claim's status, for example, is not in the graph);
+ * the reader-parity harness compares every reader over both forms.
  */
 
 import type { ImportEdge, ScopeId } from './types.js';
+
+const NO_FILES: readonly string[] = Object.freeze([]);
+
+/** Does `edge` name at least one file: a per-file edge with a target, or a
+ *  grouped statement edge (`groupsFiles`)? */
+export function importEdgeNamesFiles(edge: ImportEdge): boolean {
+  return edge.targetFile !== null || edge.groupsFiles === true;
+}
+
+/** The files `edge` names, in statement order; empty when it names none. */
+export function importEdgeFiles(
+  edge: ImportEdge,
+  visibility: Pick<ImportVisibility, 'groupTargets'> | undefined,
+): readonly string[] {
+  if (edge.targetFile !== null) return [edge.targetFile];
+  return edge.groupsFiles === true ? (visibility?.groupTargets(edge) ?? NO_FILES) : NO_FILES;
+}
 
 /** Can a reader pick this import out by name, definition or kind? False only
  *  for a nameless wildcard target, which carries nothing but a file. */
@@ -49,12 +94,23 @@ export interface ImportMembership {
 }
 
 export interface ImportVisibility {
-  /** The scope's selectable imports (see the file header), in statement
-   *  order; an implementation may also include nameless wildcard targets.
+  /** The scope's selectable per-file imports (see the file header), in
+   *  statement order, without grouped module imports (read `statementsAt` to
+   *  select by name, kind or definition); an implementation may also include
+   *  nameless wildcard targets.
    *  `undefined` when finalize recorded nothing for the scope, which is
    *  different from an empty list: callers fall back to the scope's own
    *  pre-finalize imports only in the first case. */
   edgesAt(scope: ScopeId): readonly ImportEdge[] | undefined;
+
+  /** `edgesAt`, plus one statement edge (`groupsFiles`) per module import
+   *  group of the scope, in statement order (see the file header). The same
+   *  array as `edgesAt` when the scope has no such group. */
+  statementsAt(scope: ScopeId): readonly ImportEdge[] | undefined;
+
+  /** The files of a grouped statement edge returned by `statementsAt`, in
+   *  the order the statement resolved them; undefined for any other edge. */
+  groupTargets(edge: ImportEdge): readonly string[] | undefined;
 
   /** Every scope finalize recorded imports for, in finalize order. */
   scopes(): IterableIterator<ScopeId>;
@@ -102,6 +158,8 @@ export function createEagerImportVisibility(
   const memberships = new Map<ScopeId, ImportMembership>();
   return {
     edgesAt: (scope) => edgesByScope.get(scope),
+    statementsAt: (scope) => edgesByScope.get(scope),
+    groupTargets: () => undefined,
     scopes: () => edgesByScope.keys(),
     reaches(scope, targetFile) {
       const edges = edgesByScope.get(scope);

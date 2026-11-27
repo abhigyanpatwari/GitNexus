@@ -27,6 +27,7 @@ import v8 from 'node:v8';
 import type {
   CallResultAssignmentSite,
   ParsedFile,
+  ParsedImport,
   ReferenceSite,
   RegistryProviders,
   Scope,
@@ -1109,6 +1110,10 @@ export function runScopeResolution(
     }
   }
   const filterWildcardNames = provider.filterWildcardNames;
+  const groupedImportKinds = new Set<ParsedImport['kind']>([
+    ...(provider.groupsWildcardImportTargets === true ? (['wildcard'] as const) : []),
+    ...(provider.groupsImportTargetKinds ?? []),
+  ]);
   const diskScopeSetting = process.env.GITNEXUS_DISK_SCOPE_INDEX?.trim() || undefined;
   const scopeStorePath = input.scopeIndexStorePath?.trim() ? input.scopeIndexStorePath : undefined;
   const forceScopeSpill = parseTruthyEnv(diskScopeSetting);
@@ -1128,8 +1133,8 @@ export function runScopeResolution(
       // `GITNEXUS_DISABLE_IMPORT_GROUPS=1` restores one edge per imported file,
       // for comparing the two storage forms on the same build.
       groupsWildcardTargets:
-        provider.groupsWildcardImportTargets === true &&
-        !parseTruthyEnv(process.env.GITNEXUS_DISABLE_IMPORT_GROUPS),
+        groupedImportKinds.size > 0 && !parseTruthyEnv(process.env.GITNEXUS_DISABLE_IMPORT_GROUPS),
+      groupedImportKinds,
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
           parsedFiles,
@@ -1968,8 +1973,13 @@ export function runScopeResolution(
           ? undefined
           : (sourceFile) => {
               const parsed = importSources?.get(sourceFile);
-              return parsed === undefined ? undefined : onDemandImportTargets(parsed, indexes);
+              return parsed === undefined
+                ? undefined
+                : onDemandImportTargets(parsed, indexes, (file) => importSources?.get(file));
             },
+        provider.onDemandImportEdgeKinds === undefined
+          ? undefined
+          : new Set(provider.onDemandImportEdgeKinds),
       );
   probeEmit('imports-end', `emitted=${importsEmitted}`);
 

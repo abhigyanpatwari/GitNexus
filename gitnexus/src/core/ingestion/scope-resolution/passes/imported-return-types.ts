@@ -48,6 +48,7 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
+import { importEdgeFiles } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
@@ -199,28 +200,51 @@ const namespaceLocalNamesByIndexes = new WeakMap<ScopeResolutionIndexes, Readonl
  * An unaliased path import (`import pkg.sub`) binds the root `pkg` while its
  * target is the leaf `pkg/sub`, so the target's members are not `pkg`'s.
  */
-function bindsTargetModule(edge: ImportEdge): boolean {
+function bindsTargetModule(
+  edge: ImportEdge,
+  targetFile = edge.targetFile,
+  targetModuleScope = edge.targetModuleScope,
+): boolean {
   if (
     edge.kind !== 'namespace' ||
     edge.linkStatus === 'unresolved' ||
-    edge.targetModuleScope === undefined
+    targetModuleScope === undefined
   ) {
     return false;
   }
   if (edge.explicitAlias === true || !edge.targetExportedName.startsWith(`${edge.localName}.`)) {
     return true;
   }
-  const file = edge.targetFile?.split(/[\\/]/).pop() ?? '';
+  const file = targetFile?.split(/[\\/]/).pop() ?? '';
   const dot = file.indexOf('.');
   return (dot === -1 ? file : file.slice(0, dot)) === edge.localName;
 }
+
+/** The target modules `edge` binds its local name to. A grouped module import
+ * (`ImportVisibility.statementsAt`) is asked once per file, as its per-file
+ * edges would be, with each file's module scope. */
+function boundTargetModules(edge: ImportEdge, scopes: ScopeResolutionIndexes): ScopeId[] {
+  const grouped = edge.groupsFiles === true ? importEdgeFiles(edge, scopes.imports) : undefined;
+  if (grouped === undefined)
+    return bindsTargetModule(edge) && edge.targetModuleScope !== undefined
+      ? [edge.targetModuleScope]
+      : [];
+  const modules: ScopeId[] = [];
+  for (const targetFile of grouped) {
+    const moduleScope = scopes.moduleScopes.get(targetFile);
+    if (moduleScope !== undefined && bindsTargetModule(edge, targetFile, moduleScope))
+      modules.push(moduleScope);
+  }
+  return modules;
+}
+
 function namespaceLocalNames(scopes: ScopeResolutionIndexes): ReadonlySet<string> {
   let names = namespaceLocalNamesByIndexes.get(scopes);
   if (names === undefined) {
     const collected = new Set<string>();
     for (const scope of scopes.imports.scopes()) {
-      for (const edge of scopes.imports.edgesAt(scope) ?? []) {
-        if (bindsTargetModule(edge)) collected.add(edge.localName);
+      for (const edge of scopes.imports.statementsAt(scope) ?? []) {
+        if (boundTargetModules(edge, scopes).length > 0) collected.add(edge.localName);
       }
     }
     names = collected;
@@ -268,9 +292,7 @@ export function namespaceCallReturnType(
   if (!namespaceImportAllowsMember(inScope, head, member, scopes, position)) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
-    if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
-      targets.add(edge.targetModuleScope);
-    }
+    for (const target of boundTargetModules(edge, scopes)) targets.add(target);
   }
   const [target] = targets;
   if (targets.size !== 1 || target === undefined) return undefined;
@@ -314,9 +336,7 @@ export function qualifiedYieldAt(
   if (!namespaceImportAllowsMember(producerScope, head, member, scopes)) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
-    if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
-      targets.add(edge.targetModuleScope);
-    }
+    for (const target of boundTargetModules(edge, scopes)) targets.add(target);
   }
   const candidates = new Map<string, QualifiedYield>();
   for (const target of targets) {

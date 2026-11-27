@@ -117,6 +117,20 @@ describe('resolveSwiftImportTarget — declared Package.swift (R3, R4)', () => {
     ).toEqual(['Lib.swift', 'Sources/Other/X.swift']);
   });
 
+  it('treats a declared target with no Swift file as external', () => {
+    // A C-only target: the declared bucket is empty, so `import CSupport` is
+    // unresolved (one unresolved edge), not an empty list (no edge at all).
+    expect(
+      resolve('CSupport', AE1_FILES, 'Sources/App/main.swift', {
+        origin: 'package.swift',
+        targets: new Map([
+          ['CSupport', 'Sources/CSupport'],
+          ['App', 'Sources/App'],
+        ]),
+      }),
+    ).toBeNull();
+  });
+
   it('excludes the importer from its own module file list', () => {
     const files = ['Sources/Models/User.swift', 'Sources/Models/Other.swift'];
     expect(

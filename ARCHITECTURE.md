@@ -69,7 +69,7 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | Embeddings                                              | `src/core/embeddings/` + `src/core/run-analyze.ts`                                                     |
 | Wiki generation                                         | `src/core/wiki/`                                                                                       |
 | Language support                                        | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts`        |
-| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks (which files an import can reach) and optional `ScopeResolver.onDemandImportTargets` (which wildcard targets become persisted `IMPORTS` edges) |
+| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks (which files an import can reach) and optional `ScopeResolver.onDemandImportTargets` / `onDemandImportEdgeKinds` (which targets of wildcard or module imports become persisted `IMPORTS` edges) |
 | Call resolution/inheritance/MRO                         | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge)                                |
 | Type extraction                                         | `src/core/ingestion/type-extractors/`                                                                  |
 | Worker pool                                             | `src/core/ingestion/workers/`                                                                          |
@@ -342,9 +342,14 @@ The bundle's `imports` field is an `ImportVisibility` (`gitnexus-shared`,
 `scope-resolution/import-visibility.ts`), the only way to ask what a scope
 imports. A reader that needs every file a scope reaches asks `reaches`,
 `membership` or `forEachTarget`; a reader that picks an import by name,
-definition or kind uses `edgesAt`. How finalize stores imports is not visible to
-either, so no reader can hold a collection that omits part of what a scope
-reaches.
+definition or kind uses `statementsAt`, which lists each group of a module
+import as one statement edge, with its files from `importEdgeFiles` (`edgesAt`
+leaves groups out), and asks `importEdgeNamesFiles` rather than `targetFile`.
+A reader that follows these rules answers the same for both storage forms; the
+reader-parity harness (`test/integration/resolvers/import-reader-parity.test.ts`)
+checks the scope-resolution readers over both, and
+`test/unit/rename-swift-module-import.test.ts` checks semantic rename, because
+a wrong answer need not show in the graph.
 
 This read-only model handle restricts registry writes. It does not freeze every
 scope map: imported-return propagation and precise call-result binding deliberately
@@ -554,8 +559,10 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `resolveQualifiedCallee?`                               | `(calleeText, inScope, …) → callable \| undefined` — resolve a qualified callee only the language can read (Rust `rp::make` in `x = rp::make()` / `rp::make().m()`, Kotlin package path `com.acme.mod.make`) so chain-follow types the call from its return annotation; default off |
 | `resolveQualifiedTypeSpellings?`                        | A receiver's declared or return type written QUALIFIED (`rp::C x`, `f(a::Config c)`) that binds nothing through the scope chain resolves through `resolveQualifiedInheritanceBase` — qualifier matched against the candidate's namespace, refuse on a tie — instead of by its tail, which binds the nearer same-named class. Runs after every existing lookup and after the template-argument match; default off, C++ opts in |
 | `splitQualifiedCallee?`                                 | `(callee, callerScope?, scopes?, position?) → { receiver, member } \| undefined` — map a qualified callee spelling (`rp::make`) onto a receiver/member pair that retains the full written namespace qualifier, so a factory result (`auto x = rp::make(); x.m()`, `rp::make().m()`) is typed from the definition `resolveQualifiedReceiverMember` returns and that definition's own declared return type. Caller scope, indexes and source position let a provider reject shadowed or aliased namespace qualifiers only when visible at the factory expression. Shared code never splits on a separator; default off, C++ implements it |
-| `onDemandImportTargets?(parsed, indexes)`               | Files supplying what a source file takes through on-demand (wildcard) imports; narrows persisted File→File `IMPORTS` edges only — `undefined` keeps every edge. Default: no narrowing                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `onDemandImportTargets?(parsed, indexes, parsedFileOf)` | Files a source file reaches through its on-demand imports (wildcards, or module imports such as Swift `import X`); narrows persisted File→File `IMPORTS` edges of the kinds in `onDemandImportEdgeKinds` only — `undefined` keeps every edge, and a target whose evidence is missing or incomplete must be kept. `parsedFileOf` reads a target's own capture facts; `graph-bridge/on-demand-targets.ts` selects targets by a provider predicate, with an optional one-hop `follow` among the candidates of the same import statement. Swift matches names a target declares against names the importer writes, by how each is reached, follows one hop from a top-level `typealias` to the file of the same import statement declaring the aliased type at top level, and drops the edge for uses it cannot tie to a file, alias shapes the hop does not follow included (the known drops are listed in `languages/swift/on-demand-imports.ts`). Default: no narrowing |
+| `onDemandImportEdgeKinds?` | Finalized import-edge kinds `onDemandImportTargets` governs. Default `['wildcard-expanded']`; Swift lists `['namespace']` |
 | `groupsWildcardImportTargets?`                          | Store a wildcard import that resolves to a list of files as one group over that list instead of one import edge per file. Applies when finalize creates no per-name wildcard bindings; later name resolution uses `ImportVisibility`. Default: one edge per file |
+| `groupsImportTargetKinds?` | `ParsedImport` kinds besides `wildcard` finalize may store as groups under the same rules; a file through which a `namespace` statement binds a definition keeps its own edge, the files between such files are grouped. Readers select a grouped module import through `ImportVisibility.statementsAt` and `importEdgeFiles`; check a new opt-in with the reader-parity harness and the rename parity test, not only through the pipeline. Default: none; Swift lists `['namespace']` |
 
 ### Per-language registration
 

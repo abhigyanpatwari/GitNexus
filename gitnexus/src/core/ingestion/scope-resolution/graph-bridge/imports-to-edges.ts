@@ -103,20 +103,25 @@
  * `Y` carries the pair. A statement is type-only exactly when every specifier
  * it decomposes to is.
  *
- * ## On-demand wildcard imports name no file (#3695)
+ * ## On-demand imports name no file (#3695)
  *
- * `import pkg.*;` resolves to EVERY file declaring `pkg`, because any of them
- * may supply a name. Emitting a pair for each of them is importers × package
- * size: 1,000 files importing a 1,000-file package is a million edges, of which
- * each importer uses a handful. One reported 24,736-file repository produced
- * 3,742,494 IMPORTS edges this way — 81% of its graph — and ran out of heap
- * writing them.
+ * A wildcard, module or package import names no file. `import pkg.*;` resolves
+ * to EVERY file declaring `pkg`, and an import of a multi-file module resolves
+ * to every file of the module, because any of them may supply a name. Emitting
+ * a pair for each of them is importers × package size: 1,000 files importing a
+ * 1,000-file package is a million edges, of which each importer uses a handful.
+ * One reported 24,736-file repository produced 3,742,494 IMPORTS edges this way
+ * — 81% of its graph — and ran out of heap writing them.
  *
- * A provider can resolve AST reference sites against finalized scope bindings
- * and supply the target files used through on-demand imports. This bridge tests
- * target-file membership; it neither scans source text nor guesses by spelling.
- * Type-only uses must be included. Missing capture/binding evidence returns
- * undefined and keeps every wildcard edge. Explicit imports are always kept.
+ * A provider can resolve AST reference sites against finalized scope bindings,
+ * or match the names a file spells against the names each target declares,
+ * and supply the target files used through on-demand imports. The provider
+ * lists which finalized edge kinds are on-demand (`onDemandKinds`; by default
+ * only `wildcard-expanded`). This bridge tests target-file membership; it never
+ * scans source text itself. Type-only uses must be included. Missing
+ * capture/binding evidence returns undefined and keeps every on-demand edge.
+ * Edges of any other kind are always kept, and they keep their pair even when
+ * an on-demand edge to the same file is dropped.
  *
  * Finalized imports remain complete for name resolution. These persisted edges
  * describe direct import dependencies, not every inherited or chained type
@@ -177,12 +182,16 @@ const REASON_SUFFIX_BY_PRESENCE: Readonly<Record<ImportPresence, string>> = {
 /** Resolved on-demand target files. Undefined means incomplete evidence. */
 export type OnDemandImportTargetsOf = (sourceFile: string) => ReadonlySet<string> | undefined;
 
+/** Edge kinds `onDemandTargetsOf` governs when the provider lists none. */
+const WILDCARD_ONLY: ReadonlySet<ImportEdge['kind']> = new Set(['wildcard-expanded']);
+
 export function emitImportEdges(
   graph: KnowledgeGraph,
   imports: ImportVisibility,
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
   onDemandTargetsOf?: OnDemandImportTargetsOf,
+  onDemandKinds: ReadonlySet<ImportEdge['kind']> = WILDCARD_ONLY,
 ): number {
   const debug = isDebugHeapEnabled();
   const started = debug ? Date.now() : 0;
@@ -201,8 +210,8 @@ export function emitImportEdges(
   // Resolve once per source, including interleaved buckets. A missing entry is
   // different from a cached undefined (incomplete AST/binding evidence).
   const targetsBySource = new Map<string, ReadonlySet<string> | undefined>();
-  const isUnusedWildcard = (sourceFile: string, targetFile: string, edge: ImportEdge): boolean => {
-    if (onDemandTargetsOf === undefined || edge.kind !== 'wildcard-expanded') return false;
+  const isUnusedOnDemand = (sourceFile: string, targetFile: string, edge: ImportEdge): boolean => {
+    if (onDemandTargetsOf === undefined || !onDemandKinds.has(edge.kind)) return false;
     if (!targetsBySource.has(sourceFile))
       targetsBySource.set(sourceFile, onDemandTargetsOf(sourceFile));
     const targets = targetsBySource.get(sourceFile);
@@ -272,7 +281,7 @@ export function emitImportEdges(
       imports.forEachTarget(scopeId, (targetFile, edge) => {
         if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
         if (targetFile === nextFile) return;
-        if (isUnusedWildcard(nextFile, targetFile, edge)) return;
+        if (isUnusedOnDemand(nextFile, targetFile, edge)) return;
         const presence = importPresence(edge);
         const existing = pairs.get(targetFile);
         if (existing === undefined || presence < existing) pairs.set(targetFile, presence);
@@ -297,7 +306,7 @@ export function emitImportEdges(
     imports.forEachTarget(scopeId, (targetFile, edge) => {
       if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
       if (targetFile === sourceFile) return;
-      if (isUnusedWildcard(sourceFile, targetFile, edge)) return;
+      if (isUnusedOnDemand(sourceFile, targetFile, edge)) return;
 
       const presence = importPresence(edge);
       const dedupKey = `${sourceFile}->${targetFile}`;

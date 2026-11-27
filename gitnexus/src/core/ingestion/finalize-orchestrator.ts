@@ -243,6 +243,7 @@ function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
     ownedMembersBindAtModuleScope: partial.ownedMembersBindAtModuleScope,
     importsBindAtLexicalScope: partial.importsBindAtLexicalScope === true,
     groupsWildcardTargets: partial.groupsWildcardTargets === true,
+    groupedImportKinds: partial.groupedImportKinds,
     resolveImportTarget: partial.resolveImportTarget ?? (() => null),
     isNamespaceImport: partial.isNamespaceImport,
     wildcardCollisionIsAmbiguous: partial.wildcardCollisionIsAmbiguous === true,

@@ -37,6 +37,8 @@ import {
   swiftArityCompatibility,
 } from './swift/index.js';
 import { preprocessSwiftConditionalDirectives } from './swift/conditional-directive-preprocess.js';
+import { collectSwiftCaptureSideChannel } from './swift/name-facts.js';
+import { assertCloneable } from '../workers/clone-safety.js';
 
 /** Swift init/deinit declarations have special names and Constructor label. */
 const swiftExtractFunctionName = (
@@ -252,6 +254,9 @@ export const swiftProvider = defineLanguage({
   // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #937). See
   //    languages/swift/ for the implementations. ──────────────────────
   emitScopeCaptures: emitSwiftScopeCaptures,
+  // What each file declares and uses, for narrowing persisted `import X` edges.
+  collectCaptureSideChannel: (filePath) =>
+    assertCloneable(collectSwiftCaptureSideChannel(filePath)),
   cfgVisitor: createSwiftCfgVisitor(),
   interpretImport: interpretSwiftImport,
   interpretTypeBinding: interpretSwiftTypeBinding,

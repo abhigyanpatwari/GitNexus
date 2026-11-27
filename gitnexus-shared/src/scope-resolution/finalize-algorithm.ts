@@ -103,23 +103,34 @@ export interface FinalizeInput {
  * expects pure answers.
  */
 export interface FinalizeHooks {
-  /** Store a wildcard import that resolves to a LIST of files as one group
-   * over that list, instead of one edge per file.
+  /** Store an import of a kind in `groupedImportKinds` (by default a
+   * wildcard) that resolves to a LIST of files as one group over that list,
+   * instead of one edge per file.
    *
-   * A statement is grouped only when nothing can tell the two forms apart:
-   * every file of the list is one whose wildcard binds no name
-   * (`expandsWildcardTo` is empty for it) and that `isNamespaceImport` does not
-   * reclassify. The list must be non-empty, and the hook is ignored for a
-   * provider that sets `filterWildcardNames` or `wildcardCollisionIsAmbiguous`,
-   * whose wildcards take part in name rules. Any other statement keeps one
-   * edge per file.
+   * Only files through which the statement binds no name are grouped, so
+   * nothing can tell the two forms apart. A wildcard is grouped only when no
+   * file binds a name through it (`expandsWildcardTo` is empty for each). A
+   * namespace import binds only through a file that exports a definition
+   * under the imported name: such a file keeps its own per-file edge, and the
+   * runs of files between those files are grouped, in the list's order. No
+   * file of the list may be reclassified by `isNamespaceImport`. The list must
+   * be non-empty, and the hook is ignored for a provider that sets
+   * `filterWildcardNames` or `wildcardCollisionIsAmbiguous`, whose wildcards
+   * take part in name rules. Any other statement keeps one edge per file.
    *
-   * The group holds the very array `resolveImportTarget` returned, so a
-   * resolver that answers every importer of a package with the same array
-   * stores that package once. `expandsWildcardTo` is consulted earlier than
-   * usual for these statements and must not depend on finalize progress.
-   * Opt-in; off, finalize runs exactly as before. */
+   * A group that covers the whole list holds the very array
+   * `resolveImportTarget` returned, and the runs of a split list are computed
+   * once per (list, imported name), so a resolver that answers every importer
+   * of a package with the same array stores that package once.
+   * `expandsWildcardTo` is consulted earlier than usual for these statements
+   * and must not depend on finalize progress. Opt-in; off, finalize runs
+   * exactly as before. */
   readonly groupsWildcardTargets?: boolean;
+  /** `ParsedImport` kinds `groupsWildcardTargets` may store as groups.
+   * Default `{'wildcard'}`. A `namespace` group is a statement a reader can
+   * select by its local name; `ImportVisibility.statementsAt` lists it, next to
+   * the per-file edges of the files its name links a definition in. */
+  readonly groupedImportKinds?: ReadonlySet<ParsedImport['kind']>;
   /** Retain the legacy module lookup surface for class-owned definitions.
    * Providers with strictly lexical bare-name lookup disable this, independently
    * of the source container or file extension. Defaults to true. */
@@ -309,27 +320,28 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   const edgeIndex = new Map<string, ImportEdgeDraft[]>(); // filePath → drafts
   let totalEdges = 0;
 
-  // Wildcard statements stored as one group (`groupsWildcardTargets`), per
+  // Statements stored as one group (`groupsWildcardTargets`), per
   // file, only for files that have one. Empty unless a provider opts in.
   const groupIndex = new Map<string, ImportGroupDraft[]>();
-  const groupable = wildcardGrouping(hooks, byFilePath, input.workspaceIndex);
+  const groupable = importGrouping(hooks, byFilePath, input.workspaceIndex);
 
   for (const file of input.files) {
     const drafts: ImportEdgeDraft[] = [];
     for (const parsed of file.parsedImports) {
-      const draftArray = makeEdgeDrafts(parsed, file, hooks, input.workspaceIndex, groupable);
-      if (!Array.isArray(draftArray)) {
-        // One statement, one group. It stands where its per-file drafts would
-        // have stood: after the `drafts.length` drafts written before it.
-        const group: ImportGroupDraft = { ...draftArray, position: drafts.length };
+      for (const entry of makeEdgeDrafts(parsed, file, hooks, input.workspaceIndex, groupable)) {
+        if (!isGroupSeed(entry)) {
+          drafts.push(entry);
+          totalEdges++;
+          continue;
+        }
+        // A group stands where its per-file drafts would have stood: after the
+        // `drafts.length` drafts written before it.
+        const group: ImportGroupDraft = { ...entry, position: drafts.length };
         const groups = groupIndex.get(file.filePath);
         if (groups === undefined) groupIndex.set(file.filePath, [group]);
         else groups.push(group);
         totalEdges += group.targetFiles.length;
-        continue;
       }
-      drafts.push(...draftArray);
-      totalEdges += draftArray.length;
     }
     edgeIndex.set(file.filePath, drafts);
   }
@@ -655,11 +667,12 @@ interface ImportEdgeDraft {
   finalized: ImportEdge | null;
 }
 
-/** A wildcard statement stored once for its whole list of files. */
+/** A statement, or a run of its files, stored once for a list of files. */
 interface ImportGroupSeed {
   readonly source: ParsedImport;
   readonly fromScope: ScopeId;
-  /** The array `resolveImportTarget` returned, by reference. */
+  /** The array `resolveImportTarget` returned, or a run of it shared by every
+   *  importer of that array; by reference. */
   readonly targetFiles: readonly string[];
   /** The statement as an edge that names no single file. */
   readonly via: ImportEdge;
@@ -670,50 +683,106 @@ interface ImportGroupDraft extends ImportGroupSeed {
   readonly position: number;
 }
 
-/** May this wildcard statement, resolved to `targetFiles`, be one group? */
-type GroupableWildcard = (
+const isGroupSeed = (entry: ImportEdgeDraft | ImportGroupSeed): entry is ImportGroupSeed =>
+  'targetFiles' in entry;
+
+/**
+ * How to store this statement, resolved to `targetFiles`: `undefined` keeps one
+ * edge per file; otherwise the statement's files in order, as runs stored as
+ * one group each (an array, shared by every importer of the same list) and
+ * single files kept as ordinary per-file edges (a string).
+ */
+type GroupableImport = (
   parsed: ParsedImport,
   targetFiles: readonly string[],
   fromFile: string,
-) => boolean;
+) => readonly (readonly string[] | string)[] | undefined;
+
+const WILDCARD_GROUPS: ReadonlySet<ParsedImport['kind']> = new Set(['wildcard']);
 
 /**
  * The grouping rule of `FinalizeHooks.groupsWildcardTargets`, or `undefined`
  * when the provider did not opt in or its wildcards take part in name rules.
  */
-function wildcardGrouping(
+function importGrouping(
   hooks: FinalizeHooks,
   byFilePath: ReadonlyMap<string, FinalizeFile>,
   workspace: WorkspaceIndex,
-): GroupableWildcard | undefined {
+): GroupableImport | undefined {
   if (
     hooks.groupsWildcardTargets !== true ||
     hooks.filterWildcardNames !== undefined ||
     hooks.wildcardCollisionIsAmbiguous === true
   )
     return undefined;
-  // Whether a list binds no name is a property of the list, and a resolver
-  // hands the same list to every importer of a package: decide it once.
-  const bindsNoName = new WeakMap<readonly string[], boolean>();
-  return (parsed, targetFiles, fromFile) => {
-    if (targetFiles.length === 0) return false;
-    let nameless = bindsNoName.get(targetFiles);
-    if (nameless === undefined) {
-      nameless = targetFiles.every((targetFile) => {
+  const kinds = hooks.groupedImportKinds ?? WILDCARD_GROUPS;
+  const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
+  // Both answers are properties of the list (and, for a namespace import, of
+  // the name), and a resolver hands the same list to every importer of a
+  // package: decide each once, and share the runs it produces.
+  const wholeList = new WeakMap<readonly string[], readonly (readonly string[])[] | undefined>();
+  const splitByName = new WeakMap<
+    readonly string[],
+    Map<string, readonly (readonly string[] | string)[]>
+  >();
+  // A wildcard groups only when no file of the list binds a name through it.
+  const wildcardPlan = (targetFiles: readonly string[]) => {
+    if (wholeList.has(targetFiles)) return wholeList.get(targetFiles);
+    const nameless = targetFiles.every((targetFile) => {
+      const target = byFilePath.get(targetFile);
+      return (
+        target === undefined || hooks.expandsWildcardTo(target.moduleScope, workspace).length === 0
+      );
+    });
+    const plan = nameless ? [targetFiles] : undefined;
+    wholeList.set(targetFiles, plan);
+    return plan;
+  };
+  // A namespace edge binds only through a file that exports a definition under
+  // the imported name (see `tryFinalize`). Those files keep their per-file edge;
+  // the runs of files between them bind nothing and are grouped.
+  const namespacePlan = (targetFiles: readonly string[], importedName: string) => {
+    let byName = splitByName.get(targetFiles);
+    if (byName === undefined) splitByName.set(targetFiles, (byName = new Map()));
+    let plan = byName.get(importedName);
+    if (plan === undefined) {
+      const segments: (readonly string[] | string)[] = [];
+      let run: string[] = [];
+      let binds = false;
+      for (const targetFile of targetFiles) {
         const target = byFilePath.get(targetFile);
-        return (
-          target === undefined ||
-          hooks.expandsWildcardTo(target.moduleScope, workspace).length === 0
-        );
-      });
-      bindsNoName.set(targetFiles, nameless);
+        if (target !== undefined && findExportByName(target, importedName, topLevelOnly)) {
+          binds = true;
+          if (run.length > 0) segments.push(run);
+          run = [];
+          segments.push(targetFile);
+        } else {
+          run.push(targetFile);
+        }
+      }
+      if (run.length > 0) segments.push(run);
+      // Nothing binds: the list itself is the one group, shared by reference.
+      plan = binds ? segments : [targetFiles];
+      byName.set(importedName, plan);
     }
-    return (
-      nameless &&
-      !targetFiles.some(
+    return plan;
+  };
+  return (parsed, targetFiles, fromFile) => {
+    if (targetFiles.length === 0 || !kinds.has(parsed.kind)) return undefined;
+    const plan =
+      parsed.kind === 'namespace'
+        ? namespacePlan(targetFiles, parsed.importedName)
+        : parsed.kind === 'wildcard'
+          ? wildcardPlan(targetFiles)
+          : undefined;
+    if (
+      plan === undefined ||
+      targetFiles.some(
         (targetFile) => hooks.isNamespaceImport?.(parsed, targetFile, fromFile) === true,
       )
-    );
+    )
+      return undefined;
+    return plan;
   };
 }
 
@@ -786,9 +855,11 @@ function withGroupDrafts(
       for (let placed = 0; placed <= drafts.length; placed++) {
         while (groups[nextGroup]?.position === placed) {
           const group = groups[nextGroup++]!;
+          // A namespace import republishes nothing (`contributesReexportEdge`).
           if (
             group.fromScope !== moduleScope ||
-            (group.source.kind === 'wildcard' && group.source.reexportsName === false)
+            group.source.kind !== 'wildcard' ||
+            group.source.reexportsName === false
           )
             continue;
           for (const targetFile of group.targetFiles) {
@@ -816,8 +887,8 @@ function makeEdgeDrafts(
   file: FinalizeFile,
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
-  groupable?: GroupableWildcard,
-): ImportEdgeDraft[] | ImportGroupSeed {
+  groupable?: GroupableImport,
+): (ImportEdgeDraft | ImportGroupSeed)[] {
   const fromScope =
     (parsed.bindsAtLexicalScope ?? hooks.importsBindAtLexicalScope) === true
       ? (parsed.declaredAtScope ?? file.moduleScope)
@@ -890,29 +961,8 @@ function makeEdgeDrafts(
   // which would reorder that resolver's index for the rest of the run — a
   // compile error rather than a runtime TypeError.
   const targetFiles: readonly string[] = Array.isArray(targetFile) ? targetFile : [targetFile];
-  if (
-    groupable !== undefined &&
-    parsed.kind === 'wildcard' &&
-    typeof targetFile !== 'string' &&
-    groupable(parsed, targetFile, file.filePath)
-  ) {
-    return {
-      source: parsed,
-      fromScope,
-      targetFiles: targetFile,
-      via: {
-        localName: extractLocalName(parsed),
-        ...(parsed.atRange !== undefined ? { atRange: parsed.atRange } : {}),
-        targetFile: null,
-        targetExportedName: extractExportedName(parsed),
-        kind: edgeKindFor(parsed),
-        ...typeOnlyFor(parsed),
-        ...runsOnlyWhenCalledFor(parsed),
-      },
-    };
-  }
   const isFileLevelTerminal = parsed.kind === 'side-effect' || parsed.kind === 'dynamic-resolved';
-  return targetFiles.map((tf) => {
+  const draftFor = (tf: string): ImportEdgeDraft => {
     const base: ImportEdge = {
       localName: extractLocalName(parsed),
       ...(parsed.atRange !== undefined ? { atRange: parsed.atRange } : {}),
@@ -937,7 +987,38 @@ function makeEdgeDrafts(
       base,
       finalized: isFileLevelTerminal ? base : null,
     };
-  });
+  };
+  const plan =
+    groupable !== undefined && typeof targetFile !== 'string'
+      ? groupable(parsed, targetFile, file.filePath)
+      : undefined;
+  if (plan === undefined) return targetFiles.map(draftFor);
+  // The statement as an edge that names no single file. A namespace statement
+  // keeps what its per-file edges would carry.
+  const via: ImportEdge = {
+    localName: extractLocalName(parsed),
+    ...(parsed.atRange !== undefined ? { atRange: parsed.atRange } : {}),
+    targetFile: null,
+    ...(parsed.kind === 'namespace' && parsed.nameFilters !== undefined
+      ? { nameFilters: parsed.nameFilters }
+      : {}),
+    targetExportedName: extractExportedName(parsed),
+    kind: edgeKindFor(parsed),
+    ...(parsed.kind === 'namespace' && parsed.explicitAlias === true
+      ? { explicitAlias: true }
+      : {}),
+    ...typeOnlyFor(parsed),
+    ...runsOnlyWhenCalledFor(parsed),
+    // Only a module import's statement edge is listed by `statementsAt`; a
+    // wildcard group stays invisible to readers that select imports.
+    ...(parsed.kind === 'namespace' ? { groupsFiles: true as const } : {}),
+  };
+  // One `via` object per group: `ImportVisibility.groupTargets` answers by it.
+  return plan.map((segment) =>
+    typeof segment === 'string'
+      ? draftFor(segment)
+      : { source: parsed, fromScope, targetFiles: segment, via: { ...via } },
+  );
 }
 
 function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {

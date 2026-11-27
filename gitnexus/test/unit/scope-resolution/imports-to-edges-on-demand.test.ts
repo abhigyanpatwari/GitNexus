@@ -35,7 +35,11 @@ const wildcard = (targetFile: string): ImportEdge => ({
 const imports = new Map<ScopeId, readonly ImportEdge[]>([
   ['Main.java', [wildcard('User.java'), wildcard('Order.java')]],
 ]);
-function emit(selected?: OnDemandImportTargetsOf, buckets = imports) {
+function emit(
+  selected?: OnDemandImportTargetsOf,
+  buckets = imports,
+  kinds?: ReadonlySet<ImportEdge['kind']>,
+) {
   const edges: GraphRelationship[] = [];
   emitImportEdges(
     { addRelationship: (edge: GraphRelationship) => edges.push(edge) } as unknown as KnowledgeGraph,
@@ -43,9 +47,18 @@ function emit(selected?: OnDemandImportTargetsOf, buckets = imports) {
     buildScopeTree([scope('Main.java'), scope('Other.java'), scope('Main.java', 'late')]),
     'test',
     selected,
+    kinds,
   );
   return edges;
 }
+const namespace = (targetFile: string): ImportEdge => ({
+  kind: 'namespace',
+  localName: 'Mod',
+  targetExportedName: 'Mod',
+  targetFile,
+});
+const NAMESPACE = new Set<ImportEdge['kind']>(['namespace']);
+const targetsOf = (edges: readonly GraphRelationship[]) => edges.map((edge) => edge.targetId);
 
 describe('emitImportEdges on-demand targets', () => {
   it('emits only selected target files', () => {
@@ -116,5 +129,67 @@ describe('emitImportEdges on-demand targets', () => {
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('emitImportEdges provider-declared on-demand kinds', () => {
+  const moduleImport = new Map<ScopeId, readonly ImportEdge[]>([
+    ['Main.java', [namespace('User.java'), namespace('Order.java')]],
+  ]);
+  it('does not narrow namespace edges under the default kinds', () => {
+    const select = vi.fn(() => new Set<string>());
+    expect(targetsOf(emit(select, moduleImport))).toEqual(['File:User.java', 'File:Order.java']);
+    expect(select).not.toHaveBeenCalled();
+  });
+  it('narrows namespace edges when the provider declares the kind', () => {
+    expect(targetsOf(emit(() => new Set(['Order.java']), moduleImport, NAMESPACE))).toEqual([
+      'File:Order.java',
+    ]);
+    expect(emit(() => new Set(), moduleImport, NAMESPACE)).toEqual([]);
+  });
+  it('stops narrowing wildcard edges once the provider lists other kinds', () => {
+    expect(targetsOf(emit(() => new Set(), imports, NAMESPACE))).toEqual([
+      'File:User.java',
+      'File:Order.java',
+    ]);
+  });
+  it('always keeps named and re-export edges', () => {
+    const buckets = new Map<ScopeId, readonly ImportEdge[]>([
+      [
+        'Main.java',
+        [
+          { ...namespace('User.java'), kind: 'named', localName: 'User' },
+          { ...namespace('Order.java'), kind: 'reexport', localName: 'Order' },
+        ],
+      ],
+    ]);
+    expect(targetsOf(emit(() => new Set(), buckets, NAMESPACE))).toEqual([
+      'File:User.java',
+      'File:Order.java',
+    ]);
+  });
+  it('keeps the strongest presence of a pair an explicit import still reaches', () => {
+    const buckets = new Map<ScopeId, readonly ImportEdge[]>([
+      [
+        'Main.java',
+        [
+          { ...namespace('User.java'), runsOnlyWhenCalled: true },
+          { ...namespace('Order.java'), localName: 'Order', kind: 'named' },
+          namespace('Order.java'),
+        ],
+      ],
+    ]);
+    expect(
+      emit(() => new Set(['User.java']), buckets, NAMESPACE).map((edge) => [
+        edge.targetId,
+        edge.reason,
+      ]),
+    ).toEqual([
+      ['File:User.java', 'test (deferred)'],
+      ['File:Order.java', 'test'],
+    ]);
+  });
+  it('keeps every namespace edge when the selection is undefined', () => {
+    expect(emit(() => undefined, moduleImport, NAMESPACE)).toHaveLength(2);
   });
 });

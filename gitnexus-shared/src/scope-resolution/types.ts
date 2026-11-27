@@ -539,7 +539,14 @@ export interface ImportEdge {
   readonly localName: string;
   /** Namespace-import alias syntax, retained for providers whose unaliased imports bind a path prefix. */
   readonly explicitAlias?: boolean;
-  /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
+  /**
+   * Exporting file; `null` when the edge names no single file: a
+   * `dynamic-unresolved` import, an import whose target file could not be
+   * found (`resolveImportTarget` returned `null`; the edge is also
+   * `linkStatus: 'unresolved'`), or a grouped statement edge
+   * (`groupsFiles`, files from `ImportVisibility.groupTargets`). An edge
+   * whose file was found but whose name did not link keeps its file.
+   */
   readonly targetFile: string | null;
   /** The module object a forwarded namespace denotes. The dependency still names targetFile. */
   readonly namespaceTargetFile?: string;
@@ -593,6 +600,14 @@ export interface ImportEdge {
   readonly runsOnlyWhenCalled?: boolean;
   /** Set to `'unresolved'` when the SCC fixpoint could not link this edge. */
   readonly linkStatus?: 'unresolved';
+  /**
+   * The edge is a module import statement stored once for a list of files
+   * (an import group, see `import-groups.ts`). It names no single file:
+   * `targetFile` is null and `ImportVisibility.groupTargets` returns the
+   * files. Ask `importEdgeNamesFiles` / `importEdgeFiles` rather than testing
+   * `targetFile` directly.
+   */
+  readonly groupsFiles?: true;
 }
 
 // ─── §2.3 BindingRef ────────────────────────────────────────────────────────

@@ -123,7 +123,7 @@ export function cachedNameLookupStart(
       scope.ownsReceivers?.has(name) ||
       nameClaimsFor(scope, name).length > 0 ||
       scopeImportsForName(scope.imports, name).length > 0 ||
-      scopeImportsForName(scopes.imports.edgesAt(id) ?? scope.imports, name).length > 0 ||
+      scopeImportsForName(scopes.imports.statementsAt(id) ?? scope.imports, name).length > 0 ||
       scopes.bindings.get(id)?.has(name) ||
       scopes.bindingAugmentations.get(id)?.has(name) ||
       scopes.accessibleNamespacesByScope?.has(id) ||

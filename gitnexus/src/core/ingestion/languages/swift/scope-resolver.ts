@@ -76,6 +76,7 @@ import { stripSwiftTypePreservingDecoration } from './interpret.js';
 import { groupSwiftFilesByModule } from './target-grouping.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
+import { SWIFT_ON_DEMAND_IMPORT_KINDS, swiftOnDemandImportTargets } from './on-demand-imports.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
@@ -86,6 +87,19 @@ const swiftScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Swift,
   languageProvider: swiftProvider,
   importEdgeReason: 'swift-scope: import',
+
+  // `import X` binds no name per file: it makes every file of module X
+  // visible. Persist the edge only to the files of X that declare something
+  // the importer reaches (`on-demand-imports.ts`); resolution still sees the
+  // whole module.
+  onDemandImportTargets: swiftOnDemandImportTargets,
+  onDemandImportEdgeKinds: SWIFT_ON_DEMAND_IMPORT_KINDS,
+  // ...and store such an import as groups over the module's shared file list
+  // (`resolveSwiftImportTarget` answers every importer outside the module with
+  // the same array; an importer inside the module gets its own list without
+  // itself); only a file that declares a definition named after the module
+  // keeps a finalized edge of its own.
+  groupsImportTargetKinds: ['namespace'],
 
   // Load the workspace's Swift modules (root and nested SwiftPM targets,
   // Xcode targets) once per workspace pass. Threaded through the
