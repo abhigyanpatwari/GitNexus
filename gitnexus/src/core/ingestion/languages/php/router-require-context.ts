@@ -1,5 +1,6 @@
 import type { ExtractedRoute } from '../../route-extractors/laravel.js';
 import type { ExtractedRouteRequireBinding } from '../../language-provider.js';
+import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import {
   extendRouteGroupContext,
   isPhpRouteFile,
@@ -185,7 +186,18 @@ function applyContext(route: ExtractedRoute, ctx: PhpRouteRequireContext): Extra
     ? mergeLumenRouteName(ctx.namePrefix, route.routeName)
     : ctx.namePrefix;
 
+  let controllerName = route.controllerName ?? null;
   let controllerQualifiedName = route.controllerQualifiedName ?? null;
+  if (!controllerName && ctx.controller) {
+    const parts = ctx.controller
+      .replace(/^\\+/, '')
+      .split('\\')
+      .filter((part) => part.length > 0);
+    controllerName = parts[parts.length - 1] ?? ctx.controller;
+    if (ctx.controller.includes('\\')) {
+      controllerQualifiedName = normalizeQualifiedName(ctx.controller.replace(/^\\+/, ''));
+    }
+  }
   if (route.stringAction && route.controllerName) {
     const composedNs = route.stringActionGroupNamespaceResets
       ? (route.stringActionGroupNamespace ?? null)
@@ -207,7 +219,7 @@ function applyContext(route: ExtractedRoute, ctx: PhpRouteRequireContext): Extra
     prefix,
     middleware,
     routeName: mergedName,
-    controllerName: route.controllerName ?? ctx.controller,
+    controllerName,
     controllerQualifiedName,
   };
 }

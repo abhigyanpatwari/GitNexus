@@ -764,8 +764,8 @@ $app->router->group(['prefix' => 'api'], function ($router) {
 });
 `;
     const bindings = extractBindings(source, 'bootstrap/app.php');
-    expect(bindings.find((b) => b.lineNumber === 3)?.unguarded).toBe(false);
-    expect(webContexts(source)).toEqual([null, 'api']);
+    expect(bindings.find((b) => b.lineNumber === 3)).toBeUndefined();
+    expect(webContexts(source)).toEqual(['api']);
   });
 
   it('cross-host require_once skips after an unguarded load in another host', () => {

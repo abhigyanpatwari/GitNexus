@@ -251,6 +251,23 @@ function collectMayExit(root: SyntaxNode): Set<number> {
   return mayExit;
 }
 
+/** A statement that always leaves the block, so later siblings never run. */
+const UNCONDITIONAL_EXIT_TYPES = new Set([
+  'break_statement',
+  'continue_statement',
+  'return_statement',
+  'throw_expression',
+  'exit_statement',
+  'goto_statement',
+]);
+
+function statementExitsUnconditionally(node: SyntaxNode): boolean {
+  if (UNCONDITIONAL_EXIT_TYPES.has(node.type)) return true;
+  if (node.type !== 'expression_statement') return false;
+  const inner = (node.children ?? []).find((child) => child.type !== ';');
+  return inner?.type === 'throw_expression';
+}
+
 interface WalkFrame {
   node: SyntaxNode;
   /** Composed router-group context, or null outside any group. */
@@ -284,6 +301,7 @@ export function extractPhpRouterRequireBindings(
             ? false
             : childMustRun;
       ordered.push({ node: child, group, mustRun: runs });
+      if (statementExitsUnconditionally(child)) break;
       if (!isTry || child.type !== 'finally_clause') {
         if (mayExit.has(child.id)) childMustRun = false;
       }

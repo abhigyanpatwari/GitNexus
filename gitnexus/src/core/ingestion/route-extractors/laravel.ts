@@ -669,7 +669,8 @@ export function parseRouteGroupArrayArgs(
           ctx.namePrefix = readPhpString(val) ?? null;
         } else if (key === 'controller') {
           if (val?.type === 'class_constant_access_expression') {
-            ctx.controller = val.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+            const raw = val.text.replace(/\s+/g, '').replace(/::class$/i, '');
+            ctx.controller = raw || null;
           }
         } else if (key === 'namespace') {
           const ns = readPhpString(val);
