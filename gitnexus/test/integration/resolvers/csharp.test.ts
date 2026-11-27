@@ -102,13 +102,17 @@ describe('C# heritage resolution', () => {
 
 describe('C# global-qualified inherited signatures', () => {
   const result = useFixture('csharp-global-qualified-heritage', {
-    'Base.cs': `using Pack = Real;
+    'Base.cs': `#nullable enable
+using Pack = Real;
 using Item = Real.T;
 class Wrapper<X> {}
-namespace Real { public class Wrapper<X> {} public class T {} }
+namespace Real { public class Wrapper<X> {} public struct Packet<X> {} public class T {} }
 namespace Other { public class Wrapper<X> {} public class T {} }
 class Base<T> {
   public virtual void Root(global::Wrapper<T> value) {}
+  public virtual void Ref(global::Real.Wrapper<T>? value) {}
+  public virtual void Value(global::Real.Packet<T>? value) {}
+  public virtual void Nested(global::Real.Wrapper<global::Real.Packet<T>?>? value) {}
   public virtual void Pair((global::Real.T, T) value) {}
   public virtual void Alias(Pack::Wrapper<T> value) {}
   public virtual void Fixed((global::Wrapper<T>, Item) value) {}
@@ -117,12 +121,19 @@ class StoredShort : Base<Item> {}
 class StoredAlias : Base<Pack::T> {}
 class Child : Base<int> {
   public override void Root(global::Wrapper<int> value) {}
+  public override void Ref(global::Real.Wrapper<int>? value) {}
+  public override void Value(global::Real.Packet<int>? value) {}
+  public override void Nested(global::Real.Wrapper<global::Real.Packet<int>?>? value) {}
   public override void Pair((global::Real.T, int) value) {}
 }`,
-    'Decoy.cs': `using Pack = Other;
+    'Decoy.cs': `#nullable enable
+using Pack = Other;
 using Item = Other.T;
 class Decoy : Base<int> {
   public void Root(global::Wrapper<string> value) {}
+  public void Ref(global::Real.Wrapper<string>? value) {}
+  public void Value(global::Real.Packet<int> value) {}
+  public void Nested(global::Real.Wrapper<global::Real.Packet<int>>? value) {}
   public void Pair((global::Other.T, int) value) {}
   public void Alias(Pack::Wrapper<int> value) {}
   public void Fixed((global::Wrapper<int>, Item) value) {}
@@ -138,8 +149,11 @@ class Rebound : StoredAlias {
   it('substitutes free arguments and preserves the namespace and its qualified type names', () => {
     const overrides = [...result().graph.iterRelationshipsByType('METHOD_OVERRIDES')];
     expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual([
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Nested#1'],
       ['Class:Base.cs:Child', 'Method:Base.cs:Base.Pair#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Ref#1'],
       ['Class:Base.cs:Child', 'Method:Base.cs:Base.Root#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Value#1'],
     ]);
   });
 });

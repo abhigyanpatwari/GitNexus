@@ -466,18 +466,24 @@ export function emitTsScopeCaptures(
       ? '@declaration.name'
       : grouped['@reference.call.member']
         ? '@reference.name'
-        : undefined;
+        : grouped['@type-binding.return']
+          ? '@type-binding.name'
+          : undefined;
     const nameNode = methodKey && groupedNodes[methodKey];
     if (
       methodKey &&
       nameNode &&
+      nameNode.type !== 'identifier' &&
       nameNode.type !== 'property_identifier' &&
       nameNode.type !== 'private_property_identifier'
     ) {
       const key = literalMethodName(nameNode);
       if (key === undefined) continue;
       grouped[methodKey] = { ...grouped[methodKey], text: key };
-      if (methodKey === '@reference.name') {
+      if (methodKey === '@type-binding.name') {
+        // Same-named methods on different owners may return different types.
+        grouped['@type.member-return'] = syntheticCapture('@type.member-return', nameNode, key);
+      } else if (methodKey === '@reference.name') {
         bracketReceivers ??= new Map();
         bracketReceivers.set(
           callRangeKey(grouped['@reference.call.member'].range),
@@ -881,7 +887,7 @@ export function emitTsScopeCaptures(
       );
     }
 
-    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver'], literalMethodName);
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on every function-like

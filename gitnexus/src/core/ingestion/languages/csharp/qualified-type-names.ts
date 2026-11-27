@@ -83,8 +83,8 @@ function stableType(
   bindings?: ReadonlyMap<string, string | null>,
   shadowed?: ReadonlySet<string>,
 ): boolean {
-  // Only a postfix on a named operand is part of this substitution grammar.
-  const grammar = type.replace(globalQualifier, '.').replace(/(?<=[\p{ID_Continue}])\s*\?/gu, '');
+  // A nullable suffix can follow a name or its completed type-argument list.
+  const grammar = type.replace(globalQualifier, '.').replace(/(?<=[\p{ID_Continue}>])\s*\?/gu, '');
   if (!namedComposite.test(grammar)) return false;
   for (const [name] of type.matchAll(qualifiedNames)) {
     if (isStableCsharpTypeName(name)) continue;

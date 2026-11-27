@@ -56,7 +56,9 @@ export function bindModuleFormatExports(
     const usesPackageFormat = !mode || nodeMode || esmEmit || mode === 'preserve';
     const packageEsm = usesPackageFormat && nodePackageIsEsm(file.filePath, packages);
     if (packageEsm || ((isJs || esmEmit) && esm?.hasModuleSyntax)) {
-      formatExports.set(file, { format: 'esm', definitions: explicitEsmDefinitions(file, esm) });
+      // A CommonJS wrapper alone supplies no exports in a native ES module.
+      const definitions = !esm && possibleWrapper ? [] : explicitEsmDefinitions(file, esm);
+      formatExports.set(file, { format: 'esm', definitions });
       continue;
     }
     if (!(mode === 'commonjs' || nodeMode)) continue;

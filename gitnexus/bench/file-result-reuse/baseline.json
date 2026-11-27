@@ -11,6 +11,9 @@
         "84a88b877770161dec71a0bf2daf482fd7bf0f8f",
         "33c1cf5f84853cda8908c56b68d7aafa97bc002d"
       ],
+      "equivalentCandidateSourceTrees": [
+        ["3e560a02500b9597910b5b8ccd1b4feee4511944", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"]
+      ],
       "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
       "sourceFiles": 1205,
       "baseline": {
@@ -53,6 +56,9 @@
       "candidateSourceTrees": [
         "84a88b877770161dec71a0bf2daf482fd7bf0f8f",
         "33c1cf5f84853cda8908c56b68d7aafa97bc002d"
+      ],
+      "equivalentCandidateSourceTrees": [
+        ["3e560a02500b9597910b5b8ccd1b4feee4511944", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"]
       ],
       "sourceDigest": "f4c1b2e125f6ec2768dbd9b6ca44843e68d1caa4d09a141cc5c2abbd0e240f11",
       "sourceFiles": 1204,
