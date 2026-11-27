@@ -71,6 +71,21 @@ ${unboundCallableQuery('definition.function')}
     (property_signature
       name: (property_identifier) @name) @definition.property))
 
+; Enums and their members. Plain, \`export\`, \`const\` and \`declare\` enums
+; share one node type; members become Property nodes owned by the enum, as
+; interface members do. String-named (\`'a-b' = 1\`) and computed members are
+; skipped: a quoted name is usually one dot access cannot reach, and dot access
+; is the reference these nodes exist to link.
+(enum_declaration
+  name: (identifier) @name) @definition.enum
+
+(enum_body
+  (property_identifier) @name @definition.property)
+
+(enum_body
+  (enum_assignment
+    name: (property_identifier) @name) @definition.property)
+
 (function_declaration
   name: (identifier) @name) @definition.function
 
