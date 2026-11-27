@@ -262,6 +262,171 @@ describe('setupClaudeCode', () => {
     expect(raw).toBe(corrupt);
   });
 
+  it.each([false, true])(
+    'skips a Windows-native npm launcher under WSL (only Windows: %s)',
+    async (onlyWindows) => {
+      setPlatform('linux');
+      vi.stubEnv('WSL_DISTRO_NAME', 'Ubuntu');
+      vi.stubEnv('WSL_INTEROP', undefined);
+
+      try {
+        const createInstallation = async (name: string, binary: Buffer) => {
+          const prefix = path.join(tempHome, name);
+          const launcher = path.join(prefix, 'gitnexus');
+
+          const cliDir = path.join(prefix, 'node_modules', 'gitnexus', 'dist', 'cli');
+
+          const nativeDir = path.join(
+            prefix,
+            'node_modules',
+            'gitnexus',
+            'node_modules',
+            '@ladybugdb',
+            'core',
+          );
+
+          await fs.mkdir(cliDir, { recursive: true });
+          await fs.mkdir(nativeDir, { recursive: true });
+
+          await fs.writeFile(
+            launcher,
+            '#!/bin/sh\nbasedir=$(dirname "$0")\n' +
+              'exec node "$basedir/node_modules/gitnexus/dist/cli/index.js" "$@"\n',
+            { mode: 0o755 },
+          );
+
+          await fs.writeFile(path.join(cliDir, 'index.js'), '');
+
+          await fs.writeFile(
+            path.join(nativeDir, 'package.json'),
+            JSON.stringify({
+              name: '@ladybugdb/core',
+              main: 'index.js',
+            }),
+          );
+
+          await fs.writeFile(path.join(nativeDir, 'index.js'), '');
+          await fs.writeFile(path.join(nativeDir, 'lbugjs.node'), binary);
+
+          return launcher;
+        };
+
+        const peBinary = Buffer.alloc(128);
+        peBinary.write('MZ', 0, 'ascii');
+        peBinary.writeUInt32LE(64, 60);
+        peBinary.write('PE\0\0', 64, 'ascii');
+
+        const elfBinary = Buffer.from([0x7f, 0x45, 0x4c, 0x46]);
+
+        const windowsBin = await createInstallation('windows-npm', peBinary);
+
+        const linuxBin = await createInstallation('linux-npm', elfBinary);
+
+        execFileSyncMock.mockReturnValueOnce(
+          onlyWindows ? `${windowsBin}\n` : `${windowsBin}\n${linuxBin}\n`,
+        );
+
+        const { setupCommand } = await import('../../src/cli/setup.js');
+
+        const configPath = path.join(tempHome, '.claude.json');
+
+        const originalConfig = JSON.stringify({
+          mcpServers: {
+            existing: {
+              command: 'existing-command',
+              args: [],
+            },
+          },
+        });
+
+        if (onlyWindows) {
+          await fs.writeFile(configPath, originalConfig);
+        }
+
+        await setupCommand({ codingAgent: 'claude' });
+
+        if (onlyWindows) {
+          expect(console.log).toHaveBeenCalledWith(
+            expect.stringContaining('Claude Code: Only Windows-native GitNexus installations'),
+          );
+
+          expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('MCP is ready!'));
+        }
+
+        expect(execFileSyncMock).toHaveBeenCalledWith(
+          'which',
+          ['-a', 'gitnexus'],
+          expect.any(Object),
+        );
+
+        const raw = await fs.readFile(configPath, 'utf-8');
+
+        if (onlyWindows) {
+          expect(raw).toBe(originalConfig);
+        } else {
+          const config = JSON.parse(raw);
+
+          expect(config.mcpServers.gitnexus).toEqual({
+            command: linuxBin,
+            args: ['mcp'],
+          });
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it('preserves HTTP MCP entries without local executable discovery under WSL', async () => {
+    setPlatform('linux');
+    vi.stubEnv('WSL_DISTRO_NAME', 'Ubuntu');
+    vi.stubEnv('WSL_INTEROP', undefined);
+
+    try {
+      const claudePath = path.join(tempHome, '.claude.json');
+      const cursorDir = path.join(tempHome, '.cursor');
+      const cursorPath = path.join(cursorDir, 'mcp.json');
+
+      const originalConfig = JSON.stringify({
+        mcpServers: {
+          gitnexus: {
+            type: 'http',
+            url: 'http://localhost:4747/mcp',
+          },
+        },
+      });
+
+      await fs.mkdir(cursorDir, { recursive: true });
+      await fs.writeFile(claudePath, originalConfig);
+      await fs.writeFile(cursorPath, originalConfig);
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+
+      await setupCommand({
+        codingAgent: ['claude', 'cursor'],
+      });
+
+      expect(await fs.readFile(claudePath, 'utf-8')).toBe(originalConfig);
+      expect(await fs.readFile(cursorPath, 'utf-8')).toBe(originalConfig);
+
+      expect(execFileSyncMock).not.toHaveBeenCalledWith(
+        'which',
+        ['-a', 'gitnexus'],
+        expect.any(Object),
+      );
+
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Claude Code (existing HTTP MCP entry kept)'),
+      );
+
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('Cursor (existing HTTP MCP entry kept)'),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('uses global binary path when gitnexus is on PATH', async () => {
     setPlatform('darwin');
     execFileSyncMock.mockReturnValueOnce('/usr/local/bin/gitnexus\n');

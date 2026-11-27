@@ -7,6 +7,8 @@
  */
 
 import fs from 'fs/promises';
+import * as fsSync from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'path';
 import os from 'os';
 import { execFile, execFileSync } from 'child_process';
@@ -142,38 +144,143 @@ function selectedCodingAgents(values: string[] | string | undefined): Set<Editor
 }
 
 /**
+ * Detect a known Windows-native LadybugDB installation behind a
+ * GitNexus launcher without executing the launcher or loading its addon.
+ *
+ * Unknown launcher layouts retain the existing resolution behavior.
+ */
+function hasWindowsNativeAddon(launcher: string): boolean {
+  try {
+    const resolved = fsSync.realpathSync(launcher);
+    let cliEntry = resolved;
+
+    if (!resolved.endsWith(path.sep + path.join('dist', 'cli', 'index.js'))) {
+      // Windows npm can expose a POSIX shell shim to WSL.
+      // Inspect its target rather than rejecting mounted paths.
+      if (!fsSync.statSync(resolved).isFile()) return false;
+
+      const fd = fsSync.openSync(resolved, 'r');
+      let script: string;
+
+      try {
+        const buffer = Buffer.alloc(8192);
+        const length = fsSync.readSync(fd, buffer, 0, buffer.length, 0);
+        script = buffer.subarray(0, length).toString('utf8');
+      } finally {
+        fsSync.closeSync(fd);
+      }
+
+      if (
+        !script.startsWith('#!') ||
+        !(
+          script.includes('$basedir/node_modules/gitnexus/dist/cli/index.js') ||
+          script.includes('${basedir}/node_modules/gitnexus/dist/cli/index.js')
+        )
+      ) {
+        return false;
+      }
+
+      cliEntry = fsSync.realpathSync(
+        path.join(path.dirname(resolved), 'node_modules', 'gitnexus', 'dist', 'cli', 'index.js'),
+      );
+    }
+
+    // Resolve dependencies relative to this candidate installation,
+    // not relative to the currently running GitNexus installation.
+    const coreEntry = createRequire(cliEntry).resolve('@ladybugdb/core');
+    const binaryPath = path.join(path.dirname(coreEntry), 'lbugjs.node');
+
+    if (!fsSync.statSync(binaryPath).isFile()) return false;
+
+    const fd = fsSync.openSync(binaryPath, 'r');
+
+    try {
+      const header = Buffer.alloc(64);
+
+      if (fsSync.readSync(fd, header, 0, header.length, 0) !== header.length) {
+        return false;
+      }
+
+      if (header[0] !== 0x4d || header[1] !== 0x5a) {
+        return false;
+      }
+
+      const peOffset = header.readUInt32LE(60);
+      if (peOffset < header.length) return false;
+
+      const signature = Buffer.alloc(4);
+
+      return (
+        fsSync.readSync(fd, signature, 0, signature.length, peOffset) === signature.length &&
+        signature.equals(Buffer.from([0x50, 0x45, 0, 0]))
+      );
+    } finally {
+      fsSync.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve the absolute path to the `gitnexus` binary if it's installed
  * globally (or via npm -g / yarn global). Returns null when not found.
  */
 function resolveGitnexusBin(): string | null {
+  const isWin = process.platform === 'win32';
+  const isWsl =
+    process.platform === 'linux' && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+
+  let lines: string[];
+
   try {
-    const isWin = process.platform === 'win32';
     const cmd = isWin ? 'where' : 'which';
-    const output = execFileSync(cmd, ['gitnexus'], {
+
+    // Under WSL, inspect every candidate instead of stopping
+    // at the first potentially incompatible installation.
+    const args = isWsl ? ['-a', 'gitnexus'] : ['gitnexus'];
+
+    const output = execFileSync(cmd, args, {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    const lines = output
+
+    lines = output
       .split('\n')
-      .map((l) => l.trim())
+      .map((line) => line.trim())
       .filter(Boolean);
-
-    if (isWin) {
-      // On Windows, npm global installs can surface multiple launchers for the
-      // same package (e.g. a POSIX shell shim plus .cmd/.bat wrappers). Claude
-      // and the other MCP hosts need a directly spawnable command path, so only
-      // accept the Windows wrapper. If it is missing, fall back to the slower
-      // npx entry instead of persisting a non-spawnable shim path.
-      const cmdLine = lines.find((l) => /\.(cmd|bat)$/i.test(l));
-      return cmdLine || null;
-    }
-
-    return lines[0] || null;
   } catch {
     return null;
   }
+
+  if (isWin) {
+    const cmdLine = lines.find((line) => /\.(cmd|bat)$/i.test(line));
+    return cmdLine || null;
+  }
+
+  if (!isWsl) {
+    return lines[0] || null;
+  }
+
+  for (const candidate of lines) {
+    if (!hasWindowsNativeAddon(candidate)) {
+      return candidate;
+    }
+  }
+
+  if (lines.length > 0) {
+    // Avoid falling back to another PATH-dependent command
+    // when every discovered installation is incompatible.
+    throw new Error(
+      'Only Windows-native GitNexus installations were found under WSL. ' +
+        'Install GitNexus using Linux npm and a Linux-owned npm prefix, ' +
+        'then run gitnexus setup again.',
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -235,6 +342,8 @@ async function mergeJsoncFile(
   value: unknown,
   options?: { preserveHttpEntry?: boolean },
 ): Promise<boolean | 'preserved-http'> {
+  const resolveValue = () => (typeof value === 'function' ? value() : value);
+
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
@@ -250,7 +359,7 @@ async function mergeJsoncFile(
   if (raw.trim().length === 0) {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const formattingOptions = { tabSize: 2, insertSpaces: true };
-    const edits = modify('{}', keyPath, value, { formattingOptions });
+    const edits = modify('{}', keyPath, resolveValue(), { formattingOptions });
     const result = applyEdits('{}', edits);
     await fs.writeFile(filePath, result, 'utf-8');
     return true;
@@ -270,7 +379,7 @@ async function mergeJsoncFile(
       return 'preserved-http';
     }
     const formattingOptions = detectIndentation(raw);
-    const edits = modify(raw, keyPath, value, { formattingOptions });
+    const edits = modify(raw, keyPath, resolveValue(), { formattingOptions });
     const result = applyEdits(raw, edits);
     await fs.writeFile(filePath, result, 'utf-8');
     return true;
@@ -335,7 +444,7 @@ async function setupCursor(result: SetupResult): Promise<void> {
 
   const { file: mcpPath, keyPath } = mcpTarget('cursor');
   try {
-    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry(), {
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry, {
       preserveHttpEntry: true,
     });
     if (ok === 'preserved-http') {
@@ -360,7 +469,7 @@ async function setupClaudeCode(result: SetupResult): Promise<void> {
   // Claude Code stores MCP config in ~/.claude.json ($CLAUDE_CONFIG_DIR/.claude.json when set)
   const { file: mcpPath, keyPath } = mcpTarget('claude');
   try {
-    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry(), {
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry, {
       preserveHttpEntry: true,
     });
     if (ok === 'preserved-http') {
@@ -1498,6 +1607,9 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
   if (selected.has('codex')) await setupCodex(result);
   if (selected.has('droid')) await setupDroid(result);
 
+  // Capture MCP configuration results before installing skills and hooks.
+  const mcpConfigured = [...result.configured];
+
   // Install global skills for platforms that support them
   if (selected.has('claude')) {
     await installClaudeCodeSkills(result);
@@ -1549,9 +1661,7 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
 
   console.log('');
   console.log('  Summary:');
-  console.log(
-    `    MCP configured for: ${result.configured.filter((c) => !c.includes('skills')).join(', ') || 'none'}`,
-  );
+  console.log(`    MCP configured for: ${mcpConfigured.join(', ') || 'none'}`);
   console.log(
     `    Skills installed to: ${result.configured.filter((c) => c.includes('skills')).length > 0 ? result.configured.filter((c) => c.includes('skills')).join(', ') : 'none'}`,
   );
@@ -1561,7 +1671,7 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
     process.exitCode = 1;
   }
   console.log('');
-  if (configurationSucceeded) {
+  if (mcpConfigured.length > 0) {
     console.log('  Next steps:');
     console.log('    1. cd into any git repo');
     console.log('    2. Run: gitnexus analyze');
