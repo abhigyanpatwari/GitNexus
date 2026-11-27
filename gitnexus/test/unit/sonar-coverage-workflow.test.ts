@@ -19,7 +19,10 @@ type Job = { if?: string; steps?: Step[]; needs?: string[]; permissions?: Record
 function readWorkflow(name: string) {
   const file = path.resolve(__dirname, '../../../.github/workflows', name + '.yml');
   return load(readFileSync(file, 'utf8')) as {
-    on: { pull_request?: { branches?: string[] } };
+    on: {
+      pull_request?: { branches?: string[] };
+      workflow_run?: { workflows: string[]; types: string[]; branches: string[] };
+    };
     jobs: Record<string, Job>;
   };
 }
@@ -279,14 +282,27 @@ describe('SonarQube coverage handoff', () => {
       'github.event.pull_request.head.repo.full_name == github.repository',
     );
     expect(readWorkflow('publish').jobs.sonar).toBeUndefined();
-    const source = readWorkflow('sonarqube-main').jobs.source;
+    const main = readWorkflow('sonarqube-main');
+    expect(main.on.workflow_run).toEqual({
+      workflows: ['Publish'],
+      types: ['completed'],
+      branches: ['main'],
+    });
+    const source = main.jobs.source;
     for (const condition of [
-      "github.event.workflow_run.event == 'push'",
+      "github.event.workflow_run.event == 'workflow_dispatch'",
+      "github.event.workflow_run.path == '.github/workflows/publish.yml'",
       "github.event.workflow_run.head_branch == 'main'",
       'github.event.workflow_run.head_repository.full_name == github.repository',
     ]) {
       expect(source.if).toContain(condition);
     }
+    const mainDispatch =
+      "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'";
+    for (const name of ['Stage LCOV for the scanner', 'Upload SonarQube coverage']) {
+      expect(namedStep(producer, name).if).toContain(mainDispatch);
+    }
+    expect(readWorkflow('ci-tests').jobs['save-shard-timings'].if).toBe(mainDispatch);
     const download = namedStep(scanner, 'Download CLI and web LCOV');
     expect(download.with?.['run-id']).toContain('github.event.workflow_run.id || github.run_id');
     expect(scanner[0].with?.ref).toContain('github.event.workflow_run.head_sha || github.sha');

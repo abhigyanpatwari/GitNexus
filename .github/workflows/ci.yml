@@ -14,9 +14,8 @@ permissions:
 # prefix that could resolve to the caller's name would share a concurrency group
 # with the caller → deadlock. A literal prefix is immune. Direct `pull_request`
 # invocations use `CI-<ref>`; invocations from a reusable-workflow caller fall
-# into a per-run-unique group that never serializes with the caller. `push` to
-# main is handled by publish.yml (RC mode), which calls this workflow once
-# before publishing.
+# into a per-run-unique group that never serializes with the caller. Publish
+# calls this workflow for a manual RC request on main or a stable version tag.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('CI-{0}', github.ref) || format('CI-nested-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

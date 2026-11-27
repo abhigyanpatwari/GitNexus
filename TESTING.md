@@ -132,9 +132,8 @@ generic estimates; new files in an established profile use the package's median.
 The merge reporter includes setup, collection, and test execution costs and
 smooths new measurements with previous ones. It rejects missing, duplicate, or
 unexpected modules and unsuccessful runs, and retains prior costs for skipped
-modules. Native blobs are merged on their originating OS. Only main-branch push
-runs that pass the execution audit publish the updated history to the Actions
-cache. Cache expiry affects balance, not test discovery or completeness.
+modules. Native blobs are merged on their originating OS. Manual RC runs on `main` publish the updated
+history to the Actions cache after the execution audit passes. Cache expiry affects balance, not test discovery or completeness.
 
 To reproduce a native shard, use a release run. For coverage, use the release or PR run that executed it. Download its `shard-timing-input` artifact into
 `gitnexus/.vitest/timings/` and set `GITNEXUS_SHARD_PROFILE` to `windows-latest`,
@@ -169,11 +168,11 @@ PRs compare the checked-out merge commit with its first parent. The `Select CI c
 
 Code PRs also run formatting, lint, and the shared language-boundary check. Changes to root agent instructions and package configuration select the tests that read those files. Parser, ingestion, package and backend changes select additional ABI, Java or browser checks as applicable. Same-repository code PRs run SonarQube with coverage for the selected packages. The coverage merge enforces each package's thresholds. The `CI Gate` requires the selected jobs to succeed.
 
-Publish runs the native Windows and macOS shards, packaged installs, containment tests, benchmarks, tool accuracy and the full execution audit before an RC or stable release. It also runs any PR suites missing for the release candidate. To reuse a check, Publish verifies a merged same-repository PR, the successful CI jobs, and the tree and parents of the merge revision GitHub recorded for the reusable workflow. A squash merge can qualify even though its commit SHA changed. A different base, a direct push without matching CI, or an unavailable lookup triggers fresh checks. Publish reruns a suite when its receipt is missing, has an unreadable expiry, or has less than 24 hours left. If a delayed release loses a receipt after planning, use **Re-run all jobs** to select fresh checks. **Re-run failed jobs** keeps the original plan.
+Release CI starts when a maintainer requests an RC with `gh workflow run publish.yml --ref main` or pushes a stable `vX.Y.Z` tag. Publish runs the native Windows and macOS shards, packaged installs, containment tests, benchmarks, tool accuracy and the full execution audit. It also runs any PR suites missing for that commit. To reuse a check, Publish verifies a merged same-repository PR, the successful CI jobs, and the tree and parents of the merge revision GitHub recorded for the reusable workflow. A squash merge can qualify even though its commit SHA changed. A different base, a direct push without matching CI, or an unavailable lookup triggers fresh checks. Publish reruns a suite when its receipt is missing, has an unreadable expiry, or has less than 24 hours left. If a delayed release loses a receipt after planning, use **Re-run all jobs** to select fresh checks. **Re-run failed jobs** keeps the original plan.
 
 Paired benchmarks compare against the nearest earlier first-parent RC marker with a successful main Publish run that passed all seven benchmark jobs. Stable Docker images build after npm publication for the same commit.
 
-Reused package reports and eval receipts feed the same release audit as fresh results. Main's SonarQube scan reads both package reports from the Publish run. The six legacy three-shard platform check names summarize the full native matrix on releases.
+Reused package reports and eval receipts feed the same release audit as fresh results. After a manual RC run executes CI on `main`, the main-branch SonarQube scan reads both package reports from that run. The six legacy three-shard platform check names summarize the full native matrix on releases.
 
 ### Complete execution, including platform and benchmark tests
 

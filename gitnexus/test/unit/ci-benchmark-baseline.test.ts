@@ -70,7 +70,7 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
-it('uses the last measured main ancestor across a failed publish, a no-op publish, and a merge', async () => {
+it.each(['push', 'workflow_dispatch'])('uses the last measured %s ancestor', async (event) => {
   const good = mark();
   git('checkout', '-qb', 'topic');
   git('commit', '-qm', 'side branch', '--allow-empty');
@@ -83,7 +83,7 @@ it('uses the last measured main ancestor across a failed publish, a no-op publis
   mark(); // A repeat release of the candidate must still compare to its ancestor.
   const actions = {
     listWorkflowRuns: vi.fn(async ({ head_sha }: { head_sha: string }) => [
-      { id: head_sha, event: 'push' },
+      { id: head_sha, event },
     ]),
     listJobsForWorkflowRun: vi.fn(async ({ run_id }: { run_id: string }) =>
       run_id === good ? passed : [{ name: 'RC guard', conclusion: 'success' }],

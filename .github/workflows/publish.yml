@@ -6,7 +6,7 @@ name: Publish
 # double-publish race this unification closes.
 #
 # Two release modes, both routed through this file:
-#   • Release candidate (rc)  — triggered by push to `main` or workflow_dispatch.
+#   • Release candidate (rc)  — manually dispatched on `main`.
 #       The RC path computes the next rc version, applies it in-CI, pushes a
 #       detached release commit with v<X.Y.Z>-rc.<N> + rc/<SHA> marker
 #       atomically, then publishes to npm with --tag rc and creates a GitHub
@@ -28,11 +28,6 @@ name: Publish
 
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
     tags:
       # Negative-globbed exclusion of RC tags this workflow itself produces
       # (see the SELF-TRIGGER INVARIANT in the header comment).
@@ -65,9 +60,8 @@ on:
 # Workflow-level deny-all; each job declares the minimum it needs.
 permissions: {}
 
-# Distinct refs (refs/heads/main, refs/tags/v*) run in parallel. The
-# release-PR-skip in rc-guard is the load-bearing invariant that prevents
-# an RC main-push and a stable tag-push colliding on the same release commit.
+# Serialize repeated requests on the same ref. An RC dispatch on main and a
+# stable tag can run in parallel; the RC guard skips release PRs by default.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -118,9 +112,6 @@ jobs:
               ;;
             push)
               case "${GH_REF}" in
-                refs/heads/main)
-                  MODE="rc"
-                  ;;
                 refs/tags/v*)
                   # The trigger filter already excluded v*-rc.* tags. Anything
                   # reaching here is either a stable semver or a malformed v*.
@@ -176,7 +167,6 @@ jobs:
         env:
           FORCE: ${{ inputs.force }}
           BUMP_INPUT: ${{ inputs.bump }}
-          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -191,18 +181,15 @@ jobs:
           fi
 
           # Explicit cycle reset on dispatch bypasses dedup.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
-             && [ -n "${BUMP_INPUT:-}" ] \
-             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
+          if [[ "${BUMP_INPUT:-auto}" != auto ]]; then
             echo "Explicit bump=$BUMP_INPUT — bypassing marker dedup."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # ── Skip when the merge commit corresponds to a release ───────────
-          # This skip is load-bearing: it prevents an RC build firing on the
-          # release-PR commit from racing the imminent stable-tag push on the
-          # same SHA. Two complementary checks:
+          # A default RC request on a release-PR commit should leave that SHA
+          # for the stable tag. Check the subject and the PR's label:
           #   1. HEAD subject matches `chore: release vX.Y.Z` (the canonical
           #      release-PR title). Anchored to require the bare title or the
           #      squash-merge `(#NNNN)` suffix exactly. Case-insensitive so
@@ -445,7 +432,6 @@ jobs:
         working-directory: gitnexus
         env:
           BUMP_INPUT: ${{ inputs.bump }}
-          EVENT_NAME: ${{ github.event_name }}
           PKG_NAME: gitnexus
         run: |
           set -euo pipefail
@@ -490,8 +476,8 @@ jobs:
           rm -f "$NPM_STDERR_VERSIONS"
 
           # 3. Base selection.
-          #    - workflow_dispatch + bump != auto → explicit cycle reset.
-          #    - Otherwise (push, or dispatch with bump=auto) → continue the
+          #    - An explicit bump starts a new cycle.
+          #    - The default continues the
           #      highest active rc base > latest if any; else patch from latest.
           # Curated wrapper around `npx semver` — bare npx errors are noisy
           # and don't distinguish registry-unreachable from invalid-bump-spec.
@@ -509,9 +495,7 @@ jobs:
             return 1
           }
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
-             && [ -n "${BUMP_INPUT:-}" ] \
-             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
+          if [[ "${BUMP_INPUT:-auto}" != auto ]]; then
             BASE="$(semver_bump "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
             echo "Explicit bump=$BUMP_INPUT → BASE=$BASE"
           else
