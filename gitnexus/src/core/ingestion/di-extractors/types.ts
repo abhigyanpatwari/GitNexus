@@ -50,11 +50,12 @@ export interface DiProviderMatch {
    * framework-specific declaration model. */
   declaredByNodeId?: string;
   /** Global preference for every injectable type (e.g. Spring `@Primary`).
-   *  Used only when `preferenceByType` is omitted. */
+   *  Used when `preferenceByType` is omitted, empty, or has no key for the
+   *  resolved injection type. */
   preferenceReason?: string;
-  /** Type-scoped preference reasons (type name → reason). An empty object
-   *  means no type-scoped preference. Qualified keys must not win injections
-   *  of a differently-qualified same short name. */
+  /** Type-scoped preference reasons (type name → reason). Looked up against
+   *  the injection spelling and the resolved type node's name/qualifiedName.
+   *  Empty object ⇒ no type-scoped hits (global preference still applies). */
   preferenceByType?: Readonly<Record<string, string>>;
 }
 

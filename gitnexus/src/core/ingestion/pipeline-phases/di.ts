@@ -88,12 +88,6 @@ function isQualifiedTypeName(name: string): boolean {
   return name.includes('.') || name.includes('\\');
 }
 
-function typeNameSimple(name: string): string {
-  if (name.includes('\\')) return name.slice(name.lastIndexOf('\\') + 1);
-  if (name.includes('.')) return name.slice(name.lastIndexOf('.') + 1);
-  return name;
-}
-
 function resolveIndexedName(
   index: NameIndex | undefined,
   name: string,
@@ -117,31 +111,43 @@ function resolveIndexedName(
   return found;
 }
 
+function lookupPreferenceByType(
+  byType: Readonly<Record<string, string>>,
+  typeName: string,
+): string | undefined {
+  const exact = byType[typeName];
+  if (exact !== undefined) return exact;
+  const lower = typeName.toLowerCase();
+  return Object.entries(byType).find(([key]) => key.toLowerCase() === lower)?.[1];
+}
+
+/**
+ * Resolve a type-scoped preference using the injection spelling and the graph
+ * node that spelling resolved to. Never matches on short-name equality alone
+ * across differently-qualified types (App\Log\Logger vs Other\Logger).
+ */
 function preferenceReasonForType(
   provider: DiProviderMatch,
   targetTypeName: string,
+  resolvedTypeNode: GraphNode | undefined,
 ): string | undefined {
   const byType = provider.preferenceByType;
-  if (byType !== undefined) {
-    if (Object.keys(byType).length === 0) return undefined;
-
-    const exact =
-      byType[targetTypeName] ??
-      Object.entries(byType).find(([key]) => key.toLowerCase() === targetTypeName.toLowerCase())?.[1];
-    if (exact !== undefined) return exact;
-
-    // Unqualified targets may match a unique FQCN preference by short name.
-    // Qualified targets never fall back to short-name equality (avoids
-    // App\Log\Logger preference winning Other\Logger injections).
-    if (!isQualifiedTypeName(targetTypeName)) {
-      const targetLower = targetTypeName.toLowerCase();
-      const hits = Object.entries(byType).filter(([typeName]) => {
-        if (!isQualifiedTypeName(typeName)) return false;
-        return typeNameSimple(typeName).toLowerCase() === targetLower;
-      });
-      if (hits.length === 1) return hits[0][1];
+  if (byType !== undefined && Object.keys(byType).length > 0) {
+    const keys = [targetTypeName];
+    if (resolvedTypeNode !== undefined) {
+      const qualifiedName = resolvedTypeNode.properties.qualifiedName;
+      if (typeof qualifiedName === 'string' && qualifiedName.length > 0) {
+        keys.push(qualifiedName);
+      }
+      const name = resolvedTypeNode.properties.name;
+      if (typeof name === 'string' && name.length > 0) {
+        keys.push(name);
+      }
     }
-    return undefined;
+    for (const key of keys) {
+      const hit = lookupPreferenceByType(byType, key);
+      if (hit !== undefined) return hit;
+    }
   }
   if (provider.preferenceReason !== undefined) {
     return provider.preferenceReason;
@@ -467,10 +473,16 @@ export const diPhase: PipelinePhase<DIOutput> = {
         continue;
       }
 
+      const resolvedTypeNode =
+        rootTypeId === undefined ? undefined : ctx.graph.getNode(rootTypeId);
       const preferred = viable.flatMap((id) => {
         const provider = providers.get(id);
         if (provider === undefined) return [];
-        const reason = preferenceReasonForType(provider, candidate.targetTypeName);
+        const reason = preferenceReasonForType(
+          provider,
+          candidate.targetTypeName,
+          resolvedTypeNode,
+        );
         if (reason === undefined) return [];
         return [{ id, reason }];
       });

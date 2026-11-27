@@ -155,19 +155,66 @@ export function extractSymfonyServiceAliases(
   return aliases;
 }
 
+/** Map custom service IDs (`app.file_logger`) to their declared `class:`. */
+export function extractSymfonyServiceIdClasses(services: unknown): Map<string, string> {
+  const idToClass = new Map<string, string>();
+  if (services === null || typeof services !== 'object' || Array.isArray(services)) {
+    return idToClass;
+  }
+  const map = services as Record<string, unknown>;
+  for (const [key, value] of Object.entries(map)) {
+    if (key.startsWith('_')) continue;
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+    const className = (value as Record<string, unknown>).class;
+    if (typeof className !== 'string' || className.trim().length === 0) continue;
+    idToClass.set(stripServiceId(key), stripServiceId(className));
+  }
+  return idToClass;
+}
+
+export function resolveSymfonyImplementationName(
+  implementationName: string,
+  serviceIdToClass: ReadonlyMap<string, string>,
+): string {
+  const direct = serviceIdToClass.get(implementationName);
+  if (direct !== undefined) return direct;
+  const lower = implementationName.toLowerCase();
+  for (const [serviceId, className] of serviceIdToClass) {
+    if (serviceId.toLowerCase() === lower) return className;
+  }
+  return implementationName;
+}
+
+export interface SymfonyServicesParseResult {
+  aliases: SymfonyServiceAlias[];
+  serviceIdToClass: Map<string, string>;
+}
+
 export function parseSymfonyServicesYaml(
   content: string,
   filePath: string,
 ): SymfonyServiceAlias[] {
+  return parseSymfonyServicesDocument(content, filePath).aliases;
+}
+
+export function parseSymfonyServicesDocument(
+  content: string,
+  filePath: string,
+): SymfonyServicesParseResult {
   let doc: unknown;
   try {
     doc = yaml.load(content, { schema: SYMFONY_YAML_SCHEMA });
   } catch {
-    return [];
+    return { aliases: [], serviceIdToClass: new Map() };
   }
-  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return [];
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+    return { aliases: [], serviceIdToClass: new Map() };
+  }
   const root = doc as Record<string, unknown>;
-  return extractSymfonyServiceAliases(root.services, filePath);
+  return {
+    aliases: extractSymfonyServiceAliases(root.services, filePath),
+    serviceIdToClass: extractSymfonyServiceIdClasses(root.services),
+  };
 }
 
 export function classMatchesName(
@@ -193,23 +240,10 @@ async function collectServiceYamlPaths(
   repoPath: string,
   allPaths: readonly string[],
 ): Promise<string[]> {
-  const fromScan = allPaths.filter(isServicesYaml);
-  const candidates = new Set(
-    fromScan.map((f) => (path.isAbsolute(f) ? f : path.join(repoPath, f))),
-  );
-
-  for (const rel of [
-    'config/services.yaml',
-    'config/services.yml',
-    'config/services_dev.yaml',
-    'config/services_test.yaml',
-    'config/services_prod.yaml',
-  ]) {
-    candidates.add(path.join(repoPath, rel));
-  }
-
+  // Only paths admitted by the repository scan (honours ignore rules / size caps).
   const existing: string[] = [];
-  for (const filePath of candidates) {
+  for (const rel of allPaths.filter(isServicesYaml)) {
+    const filePath = path.isAbsolute(rel) ? rel : path.join(repoPath, rel);
     try {
       const stat = await fs.stat(filePath);
       if (stat.isFile() && stat.size <= MAX_CONFIG_FILE_BYTES) {
@@ -249,19 +283,6 @@ async function hasSymfonyContainerEvidence(
 ): Promise<boolean> {
   if (yamlPaths.length > 0) return true;
   if (allPaths.some(isServicesPhpOrXml)) return true;
-  for (const rel of [
-    'config/services.php',
-    'config/services.xml',
-    'config/services_dev.php',
-    'config/services_dev.xml',
-  ]) {
-    try {
-      const stat = await fs.stat(path.join(repoPath, rel));
-      if (stat.isFile()) return true;
-    } catch {
-      // missing
-    }
-  }
   return composerRequiresSymfony(repoPath);
 }
 
@@ -315,12 +336,17 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
     stampPhpDiMetadata(ctx);
 
     const aliases: SymfonyServiceAlias[] = [];
+    const serviceIdToClass = new Map<string, string>();
     for (const yamlPath of yamlPaths) {
       try {
         const content = await fs.readFile(yamlPath, 'utf8');
         if (Buffer.byteLength(content, 'utf8') > MAX_CONFIG_FILE_BYTES) continue;
         const rel = path.relative(ctx.repoPath, yamlPath) || yamlPath;
-        aliases.push(...parseSymfonyServicesYaml(content, rel));
+        const parsed = parseSymfonyServicesDocument(content, rel);
+        aliases.push(...parsed.aliases);
+        for (const [serviceId, className] of parsed.serviceIdToClass) {
+          serviceIdToClass.set(serviceId, className);
+        }
       } catch {
         // unreadable
       }
@@ -328,6 +354,10 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
 
     let aliasesApplied = 0;
     for (const alias of aliases) {
+      const implementationName = resolveSymfonyImplementationName(
+        alias.implementationName,
+        serviceIdToClass,
+      );
       const matches: GraphNode[] = [];
       ctx.graph.forEachNode((node) => {
         if (node.label !== 'Class') return;
@@ -336,7 +366,7 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
           !classMatchesName(
             node.properties.name,
             node.properties.qualifiedName,
-            alias.implementationName,
+            implementationName,
           )
         ) {
           return;
@@ -351,11 +381,8 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
       const base = defaultSymfonyProvider(node);
       if (base === null) continue;
 
-      const reason = `Symfony services.yaml alias ${alias.interfaceName} → ${alias.implementationName}`;
+      const reason = `Symfony services.yaml alias ${alias.interfaceName} → ${implementationName}`;
       const preferenceByType = readPriorPreferenceByType(node);
-      // Store the alias interface id as written (FQCN when available). Do not
-      // also insert the short name — that would let App\Log\Logger preference
-      // collide with Other\Logger via short-name keys.
       preferenceByType[alias.interfaceName] = reason;
 
       node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
