@@ -497,10 +497,12 @@ export function computeTaintFlows(
     });
     if (site.receiver === b) {
       // Receiver TITO (KTD5): the receiver's value flows through the call
-      // into its result — but a sanitizer does not neutralize its receiver.
+      // into its result — a sanitizer never neutralizes its receiver, so the
+      // path is always transforming (`viaCall`) even when the site is matched
+      // (barriers must not treat `host.escape()` as the validated value).
       // Proto-key `.filter` is intentionally not an exception: key-shape
       // guards must not kind-blind kill command-injection (#3913 under-kill).
-      out.push({ ...DIRECT_PATH, viaCall: isUnmodeledCall(ctx, siteIndex) });
+      out.push({ ...DIRECT_PATH, viaCall: true });
     }
     guard.delete(siteIndex);
     return out;

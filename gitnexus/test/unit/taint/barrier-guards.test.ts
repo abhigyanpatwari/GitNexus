@@ -308,10 +308,12 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
   });
 
   it('still suppresses when a different object writes the same property name', () => {
-    // `other.body =` must not be treated as overwriting validated `req.body`.
+    // Fresh local `other` cannot alias `req` — documents binding-sensitive
+    // write matching without encoding a same-object parameter alias FN.
     const { flows } = analyze(`
-      function f(req: any, other: any) {
+      function f(req: any) {
         if (!isValidHostName(req.body)) return;
+        const other = { body: "" as any };
         other.body = req.query;
         exec(req.body);
       }
@@ -469,6 +471,45 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     const defUse = computeReachingDefs(cfg);
     const matches = matchFunctionSites(cfg, mech, buildTaintImportIndex(importsFor(code)));
     const flows = computeTaintFlows(cfg, defUse, matches);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress through a matched sanitizer receiver TITO path', () => {
+    // Global sanitizers match bare `escape` only — inject a match on
+    // `host.escape()` so the receiver path is a matched sanitizer that does
+    // not neutralize the receiver (must still refuse the barrier).
+    const mech: SourceSinkSanitizerSpec = {
+      ...MECH,
+      sanitizers: [{ name: 'escape', neutralizes: ['xss'], global: true }],
+    };
+    const code = `
+      function f(req: any) {
+        const host = req.body;
+        if (!isValidHostName(host)) return;
+        exec(host.escape());
+      }
+    `;
+    const cfg = cfgsOf(code)[0];
+    expect(hasTaintSafeSites(cfg)).toBe(true);
+    const defUse = computeReachingDefs(cfg);
+    const base = matchFunctionSites(cfg, mech, buildTaintImportIndex(importsFor(code)));
+    const statements = base.statements.map((sm) => {
+      const sites = cfg.blocks[sm.blockIndex]?.statements?.[sm.statementIndex]?.sites ?? [];
+      const idx = sites.findIndex((s) => s.callee?.endsWith('.escape'));
+      if (idx < 0) return sm;
+      return {
+        ...sm,
+        sanitizers: [
+          ...sm.sanitizers,
+          {
+            siteIndex: idx,
+            entry: { name: 'escape', neutralizes: ['xss'] as const, global: true },
+            resultDefs: sites[idx].resultDefs ?? [],
+          },
+        ],
+      };
+    });
+    const flows = computeTaintFlows(cfg, defUse, { ...base, statements });
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
