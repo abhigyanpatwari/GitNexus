@@ -112,8 +112,14 @@ function isPlainTable(node: Node, depth = 0): boolean {
  */
 function moduleConstNames(
   root: Node,
-): { name: Node; table: boolean; plain: boolean; exported: boolean }[] {
-  const names: { name: Node; table: boolean; plain: boolean; exported: boolean }[] = [];
+): { name: Node; value: Node | null; table: boolean; plain: boolean; exported: boolean }[] {
+  const names: {
+    name: Node;
+    value: Node | null;
+    table: boolean;
+    plain: boolean;
+    exported: boolean;
+  }[] = [];
   for (const statement of children(root)) {
     const declaration =
       statement.type === 'export_statement'
@@ -128,6 +134,7 @@ function moduleConstNames(
       const table = value?.type === 'object';
       names.push({
         name,
+        value,
         table,
         plain: table && value !== null && isPlainTable(value),
         exported: statement.type === 'export_statement',
@@ -216,6 +223,9 @@ function isWriteTarget(read: Node): boolean {
  * repeated key) is not folded either. Strings are immutable, so plain consts,
  * exported or not, need no such check.
  *
+ * Trust is transitive: a const derived from another (`const P = T.A`) is
+ * rejected when any const it was built from is, at any depth.
+ *
  * Every reference in the path must fold on its own, so a const whose value is
  * not a string leaves the path unknown instead of a `${…}` placeholder, while
  * a string const that merely contains `${` keeps its text, as a literal would.
@@ -233,16 +243,29 @@ function createConstantPaths(
   // `untrustedTables` are tables rejected from their declaration alone: exported,
   // or not plain. The escape scan in `fold` adds the ones rejected by their uses.
   let consts:
-    | { ids: Set<string>; tables: Set<string>; untrustedTables: Set<string>; declared: Set<number> }
+    | {
+        ids: Set<string>;
+        tables: Set<string>;
+        untrustedTables: Set<string>;
+        declared: Set<number>;
+        values: Map<string, Node>;
+      }
     | undefined;
   const moduleConsts = () => {
     if (consts) return consts;
-    consts = { ids: new Set(), tables: new Set(), untrustedTables: new Set(), declared: new Set() };
-    for (const { name, table, plain, exported } of moduleConstNames(tree.rootNode)) {
+    consts = {
+      ids: new Set(),
+      tables: new Set(),
+      untrustedTables: new Set(),
+      declared: new Set(),
+      values: new Map(),
+    };
+    for (const { name, value, table, plain, exported } of moduleConstNames(tree.rootNode)) {
       const id = lexical.bindingId(name);
       if (!id || lexical.ambiguous(id)) continue;
       consts.ids.add(id);
       consts.declared.add(name.id);
+      if (value) consts.values.set(id, value);
       if (table) consts.tables.add(id);
       if (table && (exported || !plain)) consts.untrustedTables.add(id);
     }
@@ -250,10 +273,27 @@ function createConstantPaths(
   };
   // Whole-file table escapes and module facts, built once and only for a path
   // whose every identifier is already a module const.
-  let folding: { untrusted: Set<string>; facts: JsRepoFacts } | undefined;
+  let folding:
+    | { untrusted: Set<string>; dependsOn: Map<string, Set<string>>; facts: JsRepoFacts }
+    | undefined;
   const fold = () => {
     if (folding) return folding;
-    const { tables, untrustedTables, declared } = moduleConsts();
+    const { ids, tables, untrustedTables, declared, values } = moduleConsts();
+    // Which module consts each const's initializer reads. A derived const
+    // (`const P = T.A`, `const Q = P + '/x'`) carries the value of every const
+    // it was built from, so it is only as trustworthy as all of them.
+    const dependsOn = new Map<string, Set<string>>();
+    for (const [id, value] of values) {
+      const deps = new Set<string>();
+      const stack: Node[] = [value];
+      for (let node = stack.pop(); node; node = stack.pop()) {
+        for (const child of node.namedChildren) stack.push(child);
+        if (node.type !== 'identifier' && node.type !== 'shorthand_property_identifier') continue;
+        const dep = lexical.bindingId(node, node.text, true);
+        if (dep && dep !== id && ids.has(dep)) deps.add(dep);
+      }
+      dependsOn.set(id, deps);
+    }
     const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
     const leaves = facts.byFile.get(filePath)?.constants.literals ?? new Map<string, string>();
     const untrusted = new Set(untrustedTables);
@@ -274,7 +314,7 @@ function createConstantPaths(
       const dotted = read.id === node.id ? null : dottedNameOf(read);
       if (dotted === null || !leaves.has(dotted) || isWriteTarget(read)) untrusted.add(id);
     }
-    folding = { untrusted, facts };
+    folding = { untrusted, dependsOn, facts };
     return folding;
   };
 
@@ -301,8 +341,15 @@ function createConstantPaths(
       }
       for (const child of current.namedChildren) pending.push(child);
     }
-    const { untrusted, facts } = fold();
-    if (used.some((id) => untrusted.has(id))) return null;
+    const { untrusted, dependsOn, facts } = fold();
+    // Every const the path reads, directly or through the consts it was built from.
+    const reached = new Set<string>();
+    for (let id = used.pop(); id !== undefined; id = used.pop()) {
+      if (reached.has(id)) continue;
+      if (untrusted.has(id)) return null;
+      reached.add(id);
+      for (const dep of dependsOn.get(id) ?? []) used.push(dep);
+    }
     if (
       references.some((reference) => resolveJsPathExpression(filePath, reference, facts) === null)
     )

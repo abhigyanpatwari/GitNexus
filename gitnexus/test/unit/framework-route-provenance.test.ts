@@ -253,6 +253,19 @@ function handler() {} function other() {}`);
     expect(urls(source).sort()).toEqual(['GET /api/v1/users', 'POST /api/items']);
   });
 
+  it('folds consts derived from a trusted table, at any depth', () => {
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const T = { A: '/a' };
+      const P = T.A;
+      const Q = P + '/q';
+      const R = ${'`'}${'$'}{Q}/r${'`'};
+      app.get(P, handler);
+      app.post(Q, handler);
+      app.put(R, handler);`).sort(),
+    ).toEqual(['GET /a', 'POST /a/q', 'PUT /a/q/r']);
+  });
+
   it('keeps a string constant that contains ${…} exactly as its literal would', () => {
     const literal = urls(`import express from 'express'; const app = express();
       app.get('/files/\${name}', handler);`);
@@ -364,6 +377,30 @@ function handler() {} function other() {}`);
     ['a parenthesized target', `const T = { A: '/a' }; (T.A) = '/b'; app.get(T.A, h);`],
     ['a TS-wrapped target', `const T = { A: '/a' }; (T.A as string) = '/b'; app.get(T.A, h);`],
     ['a compound assignment', `const T = { A: '/a' }; T.A += '/b'; app.get(T.A, h);`],
+    [
+      'a const derived from a written table',
+      `const T = { A: '/a' }; T.A = '/b'; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a two-hop derivation from a written table',
+      `const T = { A: '/a' }; T.A = '/b'; const Q = T.A; const P = Q + '/x'; app.get(P, h);`,
+    ],
+    [
+      'a template derived from a written table',
+      `const T = { A: '/a' }; T.A = '/b'; const P = ${'`'}${'$'}{T.A}/x${'`'}; app.get(P, h);`,
+    ],
+    [
+      'a const derived from an exported table',
+      `export const T = { A: '/a' }; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a getter table',
+      `const T = { A: '/s', get A() { return '/x'; } }; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a const derived from an aliased table',
+      `const T = { A: '/a' }; const U = T; U.A = '/b'; const P = T.A; app.get(P, h);`,
+    ],
     ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
     ['a call', `const P = '/p'; app.get(build(P), h);`],
     ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],
