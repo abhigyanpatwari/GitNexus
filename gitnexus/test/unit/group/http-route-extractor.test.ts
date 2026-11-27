@@ -1718,6 +1718,37 @@ export default router;
       ).toBeDefined();
     });
 
+    it('extracts Express providers whose paths are same-file module constants', async () => {
+      const dir = path.join(tmpDir, 'express-constant-paths');
+      fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/users.ts'),
+        `
+import { Router } from 'express';
+const router = Router();
+const BASE = '/api/v1';
+const ROUTES = { USERS: '/api/v1/users' } as const;
+
+router.get(ROUTES.USERS, listUsers);
+router.delete(BASE + '/users/:id', removeUser);
+function scoped() {
+  const BASE = '/shadowed';
+  router.get(BASE, handler);
+}
+
+export default router;
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      expect(
+        contracts
+          .filter((c) => c.role === 'provider')
+          .map((c) => c.contractId)
+          .sort(),
+      ).toEqual(['http::DELETE::/api/v1/users/{param}', 'http::GET::/api/v1/users']);
+    });
+
     it('dedupes source-only providers by contract id', async () => {
       const dir = path.join(tmpDir, 'source-only-same-contract-id');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });

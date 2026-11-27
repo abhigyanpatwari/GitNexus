@@ -156,6 +156,282 @@ function handler() {} function other() {}`);
     expect(urls(`${setup} r.get('/unsafe', handler);`)).toEqual([]);
   });
 
+  it('folds route paths written through the same file’s module constants', () => {
+    expect(
+      urls(`
+      import express from 'express'; const app = express();
+      export const USERS = '/api/users';
+      const BASE = '/api/v1';
+      const PATHS = { ORDERS: '/api/orders', ADMIN: { AUDIT: '/api/admin/audit' } } as const;
+      const NESTED = BASE + '/nested';
+      app.get(USERS, handler);
+      app.post(BASE + '/items', handler);
+      app.put(\`\${BASE}/items/:id\`, handler);
+      app.delete(PATHS.ORDERS, handler);
+      app.get(PATHS.ADMIN.AUDIT, handler);
+      app.patch(NESTED, handler);
+      // Leaf reads and type-only queries do not let the table escape.
+      logger.info(PATHS.ORDERS, PATHS.ADMIN.AUDIT);
+      export type Path = (typeof PATHS)[keyof typeof PATHS];
+    `).sort(),
+    ).toEqual([
+      'DELETE /api/orders',
+      'GET /api/admin/audit',
+      'GET /api/users',
+      'PATCH /api/v1/nested',
+      'POST /api/v1/items',
+      'PUT /api/v1/items/:id',
+    ]);
+  });
+
+  // Runtime/extraction parity: for each table literal, read the member the
+  // route uses at runtime, then require the extractor to emit exactly that path
+  // (plain tables) or nothing at all (every shape the flattener cannot model).
+  it.each([
+    ['{ A: "/plain" }', 'T.A', true],
+    ['{ N: { A: "/nested" } }', 'T.N.A', true],
+    ['{ "A": "/quoted" }', 'T.A', true],
+    ['{ A: "/plain" } as const', 'T.A', true],
+    ['{ A: "/stale", get A() { return "/actual"; } }', 'T.A', false],
+    ['{ N: { A: "/stale", get A() { return "/actual"; } } }', 'T.N.A', false],
+    ['{ get A() { return "/getter-only"; } }', 'T.A', false],
+    ['{ A: "/stale", ["A"]: "/computed" }', 'T.A', false],
+    ['{ A: "/first", A: "/second" }', 'T.A', false],
+    ['{ A: "/own", __proto__: { B: "/proto" } }', 'T.A', false],
+    ['{ A: "/stale", ...{ A: "/spread" } }', 'T.A', false],
+  ] as const)('matches runtime for the table %s read as %s', (table, read, folds) => {
+    const runtime = new Function(`const T = ${table.replace(/ as const$/, '')}; return ${read};`)();
+    expect(typeof runtime).toBe('string');
+    const emitted = urls(`import express from 'express'; const app = express();
+      const T = ${table};
+      app.get(${read}, handler);`);
+    expect(emitted).toEqual(folds ? [`GET ${runtime}`] : []);
+  });
+
+  it('keeps a table whose leaves are only read, including inside loops and patterns', () => {
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const T = { A: '/a', B: '/b' };
+      for (const x of [T.A]) {}
+      for (const k in { [T.B]: 1 }) {}
+      const { x = T.A } = {};
+      const [y = T.B] = [];
+      f({ a: T.A }, [T.B]);
+      app.get(T.A, handler);
+      app.post(T.B, handler);`).sort(),
+    ).toEqual(['GET /a', 'POST /b']);
+  });
+
+  // A constant must read exactly as the same literal would, escapes included.
+  it.each([
+    ['a unicode escape', String.raw`'/a\u002Fb'`],
+    ['a braced unicode escape', String.raw`'/caf\u{e9}'`],
+    ['a hex escape', String.raw`'/x\x2Dy'`],
+    ['an escaped quote', String.raw`'/it\'s'`],
+    ['an escape-only template', '`/t\\u0061b`'],
+  ])('decodes %s in a constant path exactly as the literal does', (_label, literal) => {
+    const direct = urls(`import express from 'express'; const app = express();
+      app.get(${literal}, handler);`);
+    expect(direct).toHaveLength(1);
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const P = ${literal};
+      app.get(P, handler);`),
+    ).toEqual(direct);
+  });
+
+  it('decodes escapes in the static pieces of an interpolated constant path', () => {
+    // Plain string so the escapes reach the parsed source undecoded.
+    const source = [
+      "import express from 'express'; const app = express();",
+      "const BASE = '/api';",
+      "const T = { USERS: '/us\\u0065rs' };",
+      'app.get(`${BASE}\\u002Fv1${T.USERS}`, handler);',
+      "app.post(BASE + '\\x2Fitems', handler);",
+    ].join('\n');
+    expect(source).toContain('\\u002F');
+    expect(urls(source).sort()).toEqual(['GET /api/v1/users', 'POST /api/items']);
+  });
+
+  it('folds consts derived from a trusted table, at any depth', () => {
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const T = { A: '/a' };
+      const P = T.A;
+      const Q = P + '/q';
+      const R = ${'`'}${'$'}{Q}/r${'`'};
+      app.get(P, handler);
+      app.post(Q, handler);
+      app.put(R, handler);`).sort(),
+    ).toEqual(['GET /a', 'POST /a/q', 'PUT /a/q/r']);
+  });
+
+  it('keeps a string constant that contains ${…} exactly as its literal would', () => {
+    const literal = urls(`import express from 'express'; const app = express();
+      app.get('/files/\${name}', handler);`);
+    expect(literal).toHaveLength(1);
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const FILES = '/files/\${name}';
+      app.get(FILES, handler);`),
+    ).toEqual(literal);
+  });
+
+  it('folds constant paths through route builders, mounts and one helper call', () => {
+    const result = resolve({
+      'server.ts': `
+      import express from 'express';
+      import { mount } from './helper';
+      const API = '/api';
+      const BOOKS = API + '/books';
+      const app = express();
+      const books = express.Router();
+      books.route('/:id').get(handler);
+      app.use(BOOKS, books);
+      app.route(\`\${API}/authors\`).get(handler).post(handler);
+      mount(app, \`\${API}/health\`);`,
+      'helper.ts': `
+      export function mount(app, routePath) { app.get(routePath, handler); }`,
+    });
+    expect(
+      composeFrameworkRoutePaths(result)
+        .map((route) => `${route.httpMethod} ${route.routePath}`)
+        .sort(),
+    ).toEqual(['GET /api/authors', 'GET /api/books/:id', 'GET /api/health', 'POST /api/authors']);
+  });
+
+  it.each([
+    ['a shadowing local', `const P = '/top'; function f() { const P = '/local'; app.get(P, h); }`],
+    ['a shadowing parameter', `const P = '/top'; function f(P) { app.get(P, h); }`],
+    ['a let binding', `let P = '/let'; app.get(P, h);`],
+    ['a reassigned var', `var P = '/var'; P = '/other'; app.get(P, h);`],
+    ['a function-local const', `function f() { const P = '/local'; app.get(P, h); }`],
+    ['an imported constant', `import { P } from './paths'; app.get(P, h);`],
+    ['a written table member', `const T = { A: '/a' }; T.A = '/b'; app.get(T.A, h);`],
+    ['a deleted table member', `const T = { A: '/a' }; delete T.A; app.get(T.A, h);`],
+    [
+      'a table written through an alias',
+      `const T = { A: '/a' }; const alias = T; alias.A = '/b'; app.get(T.A, h);`,
+    ],
+    [
+      'a table passed to a call',
+      `const T = { A: '/a' }; Object.assign(T, { A: '/b' }); app.get(T.A, h);`,
+    ],
+    [
+      'a table in a shorthand property',
+      `const T = { A: '/a' }; const o = { T }; o.T.A = '/b'; app.get(T.A, h);`,
+    ],
+    [
+      'a sub-table written through an alias',
+      `const T = { N: { A: '/a' } }; const n = T.N; n.A = '/b'; app.get(T.N.A, h);`,
+    ],
+    [
+      'a table read by subscript elsewhere',
+      `const T = { A: '/a' }; const k = 'A'; T[k] = '/b'; app.get(T.A, h);`,
+    ],
+    ['an exported table', `export const T = { A: '/a' } as const; app.get(T.A, h);`],
+    ['a table exported by specifier', `const T = { A: '/a' }; export { T }; app.get(T.A, h);`],
+    ['a table exported as default', `const T = { A: '/a' }; export default T; app.get(T.A, h);`],
+    [
+      'a table on module.exports',
+      `const T = { A: '/a' }; module.exports = { T }; app.get(T.A, h);`,
+    ],
+    [
+      'a non-string const in a template',
+      `const P = '/p'; const S = other; app.get(\`\${P}/\${S}\`, h);`,
+    ],
+    [
+      'a getter overriding a literal',
+      `const T = { A: '/stale', get A() { return '/actual'; } }; app.get(T.A, h);`,
+    ],
+    [
+      'a nested getter',
+      `const T = { N: { A: '/stale', get A() { return '/actual'; } } }; app.get(T.N.A, h);`,
+    ],
+    ['a setter', `const T = { A: '/a', set B(v) {} }; app.get(T.A, h);`],
+    ['a method', `const T = { A: '/a', toString() { return '/x'; } }; app.get(T.A, h);`],
+    ['a spread', `const T = { A: '/a', ...OVERRIDES }; app.get(T.A, h);`],
+    ['a computed key', `const T = { A: '/stale', ['A']: '/actual' }; app.get(T.A, h);`],
+    ['a repeated key', `const T = { A: '/first', 'A': '/second' }; app.get(T.A, h);`],
+    ['a __proto__ entry', `const T = { __proto__: BASE, A: '/a' }; app.get(T.A, h);`],
+    ['a for-of target', `const T = { A: '/a' }; for (T.A of ['/b']) {} app.get(T.A, h);`],
+    ['a for-in target', `const T = { A: '/a' }; for (T.A in { '/b': 1 }) {} app.get(T.A, h);`],
+    ['an array destructuring target', `const T = { A: '/a' }; [T.A] = ['/b']; app.get(T.A, h);`],
+    [
+      'an object destructuring target',
+      `const T = { A: '/a' }; ({ x: T.A } = { x: '/b' }); app.get(T.A, h);`,
+    ],
+    [
+      'a nested destructuring target',
+      `const T = { A: '/a' }; ({ o: [T.A] } = { o: ['/b'] }); app.get(T.A, h);`,
+    ],
+    [
+      'a destructuring default target',
+      `const T = { A: '/a' }; [T.A = '/d'] = []; app.get(T.A, h);`,
+    ],
+    ['a rest target', `const T = { A: '/a' }; [...T.A] = ['/b']; app.get(T.A, h);`],
+    [
+      'a destructuring for-of target',
+      `const T = { A: '/a' }; for ([T.A] of [['/b']]) {} app.get(T.A, h);`,
+    ],
+    ['a parenthesized target', `const T = { A: '/a' }; (T.A) = '/b'; app.get(T.A, h);`],
+    ['a TS-wrapped target', `const T = { A: '/a' }; (T.A as string) = '/b'; app.get(T.A, h);`],
+    ['a compound assignment', `const T = { A: '/a' }; T.A += '/b'; app.get(T.A, h);`],
+    [
+      'a const derived from a written table',
+      `const T = { A: '/a' }; T.A = '/b'; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a two-hop derivation from a written table',
+      `const T = { A: '/a' }; T.A = '/b'; const Q = T.A; const P = Q + '/x'; app.get(P, h);`,
+    ],
+    [
+      'a template derived from a written table',
+      `const T = { A: '/a' }; T.A = '/b'; const P = ${'`'}${'$'}{T.A}/x${'`'}; app.get(P, h);`,
+    ],
+    [
+      'a const derived from an exported table',
+      `export const T = { A: '/a' }; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a getter table',
+      `const T = { A: '/s', get A() { return '/x'; } }; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a const derived from an aliased table',
+      `const T = { A: '/a' }; const U = T; U.A = '/b'; const P = T.A; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a reassigned let',
+      `let B = '/old'; B = '/new'; const P = B; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a let in a concat',
+      `let B = '/old'; B = '/new'; const P = B + '/x'; app.get(P, h);`,
+    ],
+    [
+      'a two-hop derivation from a let',
+      `let B = '/old'; B = '/new'; const Q = B; const P = Q; app.get(P, h);`,
+    ],
+    [
+      'a const derived from a var',
+      `var B = '/old'; B = '/new'; const P = ${'`'}${'$'}{B}/x${'`'}; app.get(P, h);`,
+    ],
+    [
+      'a const derived from an import',
+      `import { B } from './b'; const P = B + '/x'; app.get(P, h);`,
+    ],
+    ['a const derived from an undeclared global', `const P = GLOBAL_BASE + '/x'; app.get(P, h);`],
+    ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
+    ['a call', `const P = '/p'; app.get(build(P), h);`],
+    ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],
+    ['a runtime term in a template', `const P = '/p'; app.get(\`\${P}/\${slug}\`, h);`],
+    ['a relative constant', `const P = 'relative'; app.get(P, h);`],
+    ['an undeclared name', `app.get(UNDECLARED, h);`],
+  ])('leaves a constant path unknown through %s', (_label, body) => {
+    expect(urls(`import express from 'express'; const app = express(); ${body}`)).toEqual([]);
+  });
+
   // GitNexus's own server registers through helpers that receive the app and,
   // for SSE progress, the path (#3487): one call-site hop, never two.
   it('forwards a proven receiver and literal path through one helper call', () => {

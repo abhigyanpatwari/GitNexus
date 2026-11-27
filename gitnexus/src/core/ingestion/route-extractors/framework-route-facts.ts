@@ -4,6 +4,13 @@ import { plainString } from './data-route-table.js';
 import { unboundCallableName } from '../languages/typescript/unbound-callables.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
 import {
+  buildJsRepoFacts,
+  dottedNameOf,
+  extractJsModuleFacts,
+  resolveJsPathExpression,
+  type JsRepoFacts,
+} from './js-const-resolver.js';
+import {
   createLexicalBindings,
   importBindingKey,
   isCommonJsGlobal,
@@ -51,6 +58,315 @@ function literalPaths(node: Node | undefined): string[] | null {
     : null;
 }
 
+/** Expression shapes a module-constant path can be written in. */
+const CONSTANT_PATH_TYPES = new Set([
+  'identifier',
+  'member_expression',
+  'template_string',
+  'binary_expression',
+]);
+
+/** `x as const`, `(x)`, `x satisfies T` → `x`. */
+function unwrapTransparent(node: Node | null): Node | null {
+  let current = node;
+  while (current && TRANSPARENT_EXPRESSION_TYPES.has(current.type))
+    current = transparentInner(current);
+  return current;
+}
+
+/** Nesting bound for {@link isPlainTable}; deeper tables are simply not trusted. */
+const MAX_TABLE_DEPTH = 8;
+
+/**
+ * Whether an object literal's value at runtime is exactly what
+ * `flattenObjectLiteral` records: only `key: value` pairs with static,
+ * distinct keys, and nested tables that are plain too.
+ *
+ * The flattener skips everything else, and anything else can change what a
+ * member read returns: a getter or setter (`get A() {…}` beats an earlier
+ * `A: '/x'`), a method, a spread, a computed key, a shorthand property, a
+ * repeated key, or a `__proto__` entry that swaps the prototype. Any of those
+ * makes the whole table untrusted instead of folding a value the runtime may
+ * never see.
+ */
+function isPlainTable(node: Node, depth = 0): boolean {
+  if (depth > MAX_TABLE_DEPTH) return false;
+  const keys = new Set<string>();
+  for (const member of children(node)) {
+    if (member.type !== 'pair') return false;
+    const key = member.childForFieldName('key');
+    if (!key || (key.type !== 'property_identifier' && key.type !== 'string')) return false;
+    const name = key.type === 'string' ? plainString(key) : key.text;
+    if (name === null || name === '__proto__' || keys.has(name)) return false;
+    keys.add(name);
+    const value = unwrapTransparent(member.childForFieldName('value'));
+    if (value?.type === 'object' && !isPlainTable(value, depth + 1)) return false;
+  }
+  return true;
+}
+
+/**
+ * Top-level `const` declarator names, including `export const`. `table` marks a
+ * const bound to an object literal: its members stay writable, unlike a string.
+ * `plain` is {@link isPlainTable} for a table.
+ */
+function moduleConstNames(
+  root: Node,
+): { name: Node; value: Node | null; table: boolean; plain: boolean; exported: boolean }[] {
+  const names: {
+    name: Node;
+    value: Node | null;
+    table: boolean;
+    plain: boolean;
+    exported: boolean;
+  }[] = [];
+  for (const statement of children(root)) {
+    const declaration =
+      statement.type === 'export_statement'
+        ? statement.childForFieldName('declaration')
+        : statement;
+    if (declaration?.type !== 'lexical_declaration') continue;
+    if (declaration.child(0)?.type !== 'const') continue;
+    for (const declarator of children(declaration)) {
+      const name = declarator.childForFieldName('name');
+      if (declarator.type !== 'variable_declarator' || name?.type !== 'identifier') continue;
+      const value = unwrapTransparent(declarator.childForFieldName('value'));
+      const table = value?.type === 'object';
+      names.push({
+        name,
+        value,
+        table,
+        plain: table && value !== null && isPlainTable(value),
+        exported: statement.type === 'export_statement',
+      });
+    }
+  }
+  return names;
+}
+
+/** The outermost member read a name heads (`T` in `T.A.B` → `T.A.B`). */
+function outermostMember(node: Node): Node {
+  let current = node;
+  while (
+    current.parent?.type === 'member_expression' &&
+    current.parent.childForFieldName('object')?.id === current.id
+  )
+    current = current.parent;
+  return current;
+}
+
+/** Whether `child` is `parent`'s field `field`. */
+const isField = (parent: Node, field: string, child: Node): boolean =>
+  parent.childForFieldName(field)?.id === child.id;
+
+/**
+ * Whether a member read is actually a write target. The read is first lifted
+ * out of whatever can hold an assignment target without changing which
+ * location it names (parentheses and TS wrappers, destructuring patterns, a
+ * pattern default's left side, a rest element). Then the enclosing node
+ * decides: the left side of `=`, `+=` and similar, or of `for (… in/of …)`;
+ * the operand of `++`/`--`; or the operand of `delete`. That covers
+ * `T.A = x`, `[T.A] = xs`, `({ k: T.A } = o)`, `for (T.A of xs)`,
+ * `for ([T.A] of xs)` and `delete T.A`, while `for (x of [T.A])` stays a read.
+ */
+function isWriteTarget(read: Node): boolean {
+  let target = read;
+  for (let parent = target.parent; parent; parent = target.parent) {
+    const lift =
+      TRANSPARENT_EXPRESSION_TYPES.has(parent.type) ||
+      parent.type === 'array_pattern' ||
+      parent.type === 'object_pattern' ||
+      parent.type === 'rest_pattern' ||
+      (parent.type === 'pair_pattern' && isField(parent, 'value', target)) ||
+      (parent.type === 'assignment_pattern' && isField(parent, 'left', target));
+    if (!lift) break;
+    target = parent;
+  }
+  const parent = target.parent;
+  if (!parent) return false;
+  switch (parent.type) {
+    case 'assignment_expression':
+    case 'augmented_assignment_expression':
+    case 'for_in_statement':
+      return isField(parent, 'left', target);
+    case 'update_expression':
+      return isField(parent, 'argument', target);
+    case 'unary_expression':
+      return (
+        parent.children.some((child) => child.type === 'delete') &&
+        isField(parent, 'argument', target)
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Route paths written through the file's own module constants: `const USERS =
+ * '/api/users'`, a table member `PATHS.USERS`, `BASE + '/x'` and `` `${BASE}/x` ``.
+ *
+ * Folding reuses the consumer-side resolver (`resolveJsPathExpression`), so a
+ * provider and the code calling it read one constant the same way. Every
+ * identifier in the expression must resolve, at the use site, to a top-level
+ * `const` of this file. A local that shadows it, a `let`, an import, a
+ * parameter or any call leaves the path unknown, which keeps the previous
+ * behavior (no route) rather than inventing one.
+ *
+ * A table (a const bound to an object literal) is trusted only while every
+ * reference to it in the file reads a string leaf (`T.A`, `T.N.A`) and none
+ * writes one. Any other use lets the object escape (an alias, a call argument,
+ * a shorthand property, an export in any form, a subscript, a sub-table read),
+ * and an escaped object can be written where this scan cannot follow, so the
+ * table is not folded. `as const` is a type, not `Object.freeze`, so an
+ * exported table is writable by its importers. A table whose literal is not
+ * plain ({@link isPlainTable}: a getter, a method, a spread, a computed or
+ * repeated key) is not folded either. Strings are immutable, so plain consts,
+ * exported or not, need no such check.
+ *
+ * Trust is transitive: a const derived from another (`const P = T.A`) is
+ * rejected when any const it was built from is, at any depth, and a const
+ * whose initializer reads anything but module consts (`const P = BASE` with
+ * `let BASE`) is rejected outright.
+ *
+ * Every reference in the path must fold on its own, so a const whose value is
+ * not a string leaves the path unknown instead of a `${…}` placeholder, while
+ * a string const that merely contains `${` keeps its text, as a literal would.
+ *
+ * The const scan and the module facts are built on first use, so a file whose
+ * routes are all literals pays nothing.
+ */
+function createConstantPaths(
+  tree: Parser.Tree,
+  filePath: string,
+  lexical: LexicalBindings,
+): (node: Node | undefined) => string[] | null {
+  // Top-level statements only: cheap, and enough to reject the common case (a
+  // helper called with a local or a parameter) before any whole-file work.
+  // `untrustedTables` are tables rejected from their declaration alone: exported,
+  // or not plain. The escape scan in `fold` adds the ones rejected by their uses.
+  let consts:
+    | {
+        ids: Set<string>;
+        tables: Set<string>;
+        untrustedTables: Set<string>;
+        declared: Set<number>;
+        values: Map<string, Node>;
+      }
+    | undefined;
+  const moduleConsts = () => {
+    if (consts) return consts;
+    consts = {
+      ids: new Set(),
+      tables: new Set(),
+      untrustedTables: new Set(),
+      declared: new Set(),
+      values: new Map(),
+    };
+    for (const { name, value, table, plain, exported } of moduleConstNames(tree.rootNode)) {
+      const id = lexical.bindingId(name);
+      if (!id || lexical.ambiguous(id)) continue;
+      consts.ids.add(id);
+      consts.declared.add(name.id);
+      if (value) consts.values.set(id, value);
+      if (table) consts.tables.add(id);
+      if (table && (exported || !plain)) consts.untrustedTables.add(id);
+    }
+    return consts;
+  };
+  // Whole-file table escapes and module facts, built once and only for a path
+  // whose every identifier is already a module const.
+  let folding:
+    | { untrusted: Set<string>; dependsOn: Map<string, Set<string>>; facts: JsRepoFacts }
+    | undefined;
+  const fold = () => {
+    if (folding) return folding;
+    const { ids, tables, untrustedTables, declared, values } = moduleConsts();
+    // Which module consts each const's initializer reads. A derived const
+    // (`const P = T.A`, `const Q = P + '/x'`) carries the value of every const
+    // it was built from, so it is only as trustworthy as all of them. An
+    // initializer that reads any other name (a `let` or `var`, an import, a
+    // parameter, an undeclared global) is not trusted at all: the module facts
+    // record a `let` by its initializer and never see a later reassignment.
+    const dependsOn = new Map<string, Set<string>>();
+    const impure = new Set<string>();
+    for (const [id, value] of values) {
+      const deps = new Set<string>();
+      const stack: Node[] = [value];
+      for (let node = stack.pop(); node; node = stack.pop()) {
+        for (const child of node.namedChildren) stack.push(child);
+        if (node.type !== 'identifier' && node.type !== 'shorthand_property_identifier') continue;
+        const dep = lexical.bindingId(node, node.text, true);
+        if (dep === id) continue;
+        if (dep && ids.has(dep)) deps.add(dep);
+        else impure.add(id);
+      }
+      dependsOn.set(id, deps);
+    }
+    const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
+    const leaves = facts.byFile.get(filePath)?.constants.literals ?? new Map<string, string>();
+    const untrusted = new Set([...untrustedTables, ...impure]);
+    const pending: Node[] = tables.size > 0 ? [tree.rootNode] : [];
+    for (let node = pending.pop(); node; node = pending.pop()) {
+      for (const child of node.namedChildren) pending.push(child);
+      if (node.type === 'shorthand_property_identifier') {
+        const id = lexical.bindingId(node, node.text, true);
+        if (id && tables.has(id)) untrusted.add(id);
+        continue;
+      }
+      if (node.type !== 'identifier' || declared.has(node.id)) continue;
+      const id = lexical.bindingId(node, node.text, true);
+      if (!id || !tables.has(id)) continue;
+      const read = outermostMember(node);
+      // `typeof T` in a type position reads nothing at runtime.
+      if (read.parent?.type === 'type_query') continue;
+      const dotted = read.id === node.id ? null : dottedNameOf(read);
+      if (dotted === null || !leaves.has(dotted) || isWriteTarget(read)) untrusted.add(id);
+    }
+    folding = { untrusted, dependsOn, facts };
+    return folding;
+  };
+
+  return (node) => {
+    if (!node || node.hasError || !CONSTANT_PATH_TYPES.has(node.type)) return null;
+    const { ids } = moduleConsts();
+    if (ids.size === 0) return null;
+    const used: string[] = [];
+    const references: Node[] = [];
+    const pending: Node[] = [node];
+    for (let current = pending.pop(); current; current = pending.pop()) {
+      if (current.type === 'identifier') {
+        const id = lexical.bindingId(current, current.text, true);
+        if (!id || !ids.has(id)) return null;
+        used.push(id);
+        references.push(outermostMember(current));
+      } else if (
+        current.type === 'call_expression' ||
+        current.type === 'new_expression' ||
+        current.type === 'subscript_expression' ||
+        LEXICAL_FUNCTION_TYPES.has(current.type)
+      ) {
+        return null;
+      }
+      for (const child of current.namedChildren) pending.push(child);
+    }
+    const { untrusted, dependsOn, facts } = fold();
+    // Every const the path reads, directly or through the consts it was built from.
+    const reached = new Set<string>();
+    for (let id = used.pop(); id !== undefined; id = used.pop()) {
+      if (reached.has(id)) continue;
+      if (untrusted.has(id)) return null;
+      reached.add(id);
+      for (const dep of dependsOn.get(id) ?? []) used.push(dep);
+    }
+    if (
+      references.some((reference) => resolveJsPathExpression(filePath, reference, facts) === null)
+    )
+      return null;
+    const path = resolveJsPathExpression(filePath, node, facts);
+    return path !== null && path.startsWith('/') ? [path] : null;
+  };
+}
+
 /**
  * Reuses the parser's AST and ParsedFile lexical ownership. The only additional
  * data is framework value flow; declarations/scopes are never reconstructed.
@@ -73,6 +389,9 @@ export function extractFrameworkRouteFacts(
     invocations: [],
   };
   const { bindingId, isGlobal, ambiguous } = lexical;
+  const constantPaths = createConstantPaths(tree, filePath, lexical);
+  const pathsOf = (node: Node | undefined): string[] | null =>
+    literalPaths(node) ?? constantPaths(node);
   const invalid = new Set<string>();
   const importsAtPosition = new Map<string, ParsedImport[]>();
   for (const imported of parsedFile.parsedImports) {
@@ -166,7 +485,7 @@ export function extractFrameworkRouteFacts(
           callee: expression(callee, depth + 1),
           construct: node.type === 'new_expression',
           argumentCount: arguments_.length,
-          paths: literalPaths(arguments_[0]),
+          paths: pathsOf(arguments_[0]),
         };
       }
     }
@@ -422,7 +741,7 @@ export function extractFrameworkRouteFacts(
           receiver: expression(callee.childForFieldName('object')),
           method,
           arguments: arguments_.map((argument) => expression(argument)),
-          paths: literalPaths(arguments_[0]),
+          paths: pathsOf(arguments_[0]),
           lineNumber: node.startPosition.row + lineOffset,
           ...(handlerName ? { handlerName } : {}),
         });
@@ -443,7 +762,7 @@ export function extractFrameworkRouteFacts(
           const value = expression(argument);
           return CARRIER_KINDS.has(value.kind) ? value : UNKNOWN;
         });
-        const paths = positional.map((argument) => literalPaths(argument));
+        const paths = positional.map((argument) => pathsOf(argument));
         if (carried.some((value) => value !== UNKNOWN) || paths.some((path) => path !== null))
           facts.invocations.push({ callee: expression(callee), arguments: carried, paths });
       }
