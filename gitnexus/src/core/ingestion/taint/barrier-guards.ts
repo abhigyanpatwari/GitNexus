@@ -192,22 +192,50 @@ export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): Readonl
   return new Set(discoverProtoGuardRefs(cfgs).map((r) => r.name));
 }
 
-/** Relative import target may resolve to this file (basename / suffix match). */
+/**
+ * Relative import target may resolve to this file (exact or path-suffix).
+ * No bare-basename fallback — `a/helpers.ts` and `b/helpers.ts` must not
+ * both match `./helpers` via basename alone.
+ */
 function importTargetMatchesFile(targetRaw: string, filePath: string): boolean {
   const stripExt = (s: string): string => s.replace(/\.(tsx?|jsx?|mjs|cjs)$/i, '');
   const target = stripExt(targetRaw.replace(/^\.\//, '').replace(/\\/g, '/'));
   const file = stripExt(filePath.replace(/\\/g, '/'));
-  if (file === target || file.endsWith(`/${target}`)) return true;
-  const targetBase = target.split('/').pop() ?? target;
-  const fileBase = file.split('/').pop() ?? file;
-  return fileBase.length > 0 && fileBase === targetBase;
+  if (target.length === 0) return false;
+  return file === target || file.endsWith(`/${target}`);
+}
+
+/**
+ * Unique file among `candidates` that matches `targetRaw`, or undefined when
+ * none / ambiguous (multiple same-suffix modules).
+ */
+function uniqueFileForImportTarget(
+  targetRaw: string,
+  candidates: readonly string[],
+): string | undefined {
+  const hits = [...new Set(candidates.filter((f) => importTargetMatchesFile(targetRaw, f)))];
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+/**
+ * True when `callee` is excluded: exact match (qualified namespace form) or
+ * bare/leaf match for same-file and named-import exclusions.
+ */
+export function calleeIsExcludedBarrier(
+  callee: string,
+  excludeBarrierCallees: ReadonlySet<string>,
+): boolean {
+  if (excludeBarrierCallees.has(callee)) return true;
+  const leaf = calleeLeaf(callee);
+  // Bare leaf entries exclude both `isValidKey` and `obj.isValidKey` (local
+  // wraps). Qualified entries (`guards.isValidKey`) match only exactly.
+  return excludeBarrierCallees.has(leaf);
 }
 
 /**
  * Per-file barrier exclusions: same-file proto-reject helpers, plus repo
- * proto helpers this file imports from a *matching module* (named/alias local
- * names, and namespace import leaves). Same-named helpers in unrelated modules
- * must not disable a genuine imported validator.
+ * proto helpers this file imports from a *uniquely matching* module
+ * (named/alias local names; namespace as `ns.name` only).
  */
 export function resolveBarrierExclusions(
   localCfgs: readonly FunctionCfg[],
@@ -216,22 +244,26 @@ export function resolveBarrierExclusions(
 ): ReadonlySet<string> {
   const out = new Set(discoverProtoGuardCallees(localCfgs));
   if (!repoProtoGuards || repoProtoGuards.length === 0) return out;
+  const candidateFiles = repoProtoGuards.map((r) => r.filePath);
   for (const imp of imports) {
     if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') continue;
     if (imp.typeOnly === true) continue;
+    const file = uniqueFileForImportTarget(imp.targetRaw, candidateFiles);
+    if (!file) continue;
     if (imp.kind === 'named' || imp.kind === 'alias') {
       const imported = imp.importedName;
       if (!imported) continue;
-      const hit = repoProtoGuards.some(
-        (r) => r.name === imported && importTargetMatchesFile(imp.targetRaw, r.filePath),
-      );
+      const hit = repoProtoGuards.some((r) => r.name === imported && r.filePath === file);
       if (!hit) continue;
       out.add(imported);
       if (imp.localName) out.add(imp.localName);
     } else {
-      // import * as guards → guards.isValidKey; exclude by leaf name.
+      // import * as guards → exclude only `guards.isValidKey`, not bare leaf
+      // (a separate validators.isValidKey must remain a barrier).
+      const ns = imp.localName;
+      if (!ns) continue;
       for (const r of repoProtoGuards) {
-        if (importTargetMatchesFile(imp.targetRaw, r.filePath)) out.add(r.name);
+        if (r.filePath === file) out.add(`${ns}.${r.name}`);
       }
     }
   }
@@ -405,10 +437,10 @@ export function collectBarrierControllers(
         const site = sites[siteIndex];
         if (site.kind !== 'call' || !site.callee) continue;
         // Name-heuristic validators only. Proto-reject helpers are excluded by
-        // callee leaf so `validators.isValidKey` (local `{ isValidKey }` wrap)
-        // cannot kind-blind suppress when `isValidKey` is proto-only.
+        // bare leaf (local / named import) or exact qualified form (namespace
+        // import `guards.isValidKey`).
         if (!isBarrierCalleeName(site.callee)) continue;
-        if (excludeBarrierCallees.has(calleeLeaf(site.callee))) continue;
+        if (calleeIsExcludedBarrier(site.callee, excludeBarrierCallees)) continue;
         // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
         const subjects = primaryArgSubjects(sites, siteIndex, site);

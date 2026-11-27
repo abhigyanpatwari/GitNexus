@@ -1309,6 +1309,57 @@ class FactAccumulator {
 }
 
 /**
+ * Decode a JS/TS string literal's contents (`"isValid\u004bey"` → `isValidKey`).
+ * Under-kill: returns undefined when the literal cannot be decoded safely.
+ */
+function decodeJsStringLiteral(raw: string): string | undefined {
+  if (raw.length < 2) return undefined;
+  const quote = raw[0];
+  if ((quote !== '"' && quote !== "'") || raw[raw.length - 1] !== quote) return undefined;
+  let out = '';
+  for (let i = 1; i < raw.length - 1; i++) {
+    const ch = raw[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next === undefined) return undefined;
+    if (next === 'u' && /^[0-9a-fA-F]{4}/.test(raw.slice(i + 2, i + 6))) {
+      out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16));
+      i += 5;
+      continue;
+    }
+    if (next === 'x' && /^[0-9a-fA-F]{2}/.test(raw.slice(i + 2, i + 4))) {
+      out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 4), 16));
+      i += 3;
+      continue;
+    }
+    const simple: Record<string, string> = {
+      n: '\n',
+      r: '\r',
+      t: '\t',
+      b: '\b',
+      f: '\f',
+      v: '\v',
+      '0': '\0',
+      '\\': '\\',
+      "'": "'",
+      '"': '"',
+    };
+    if (simple[next] !== undefined) {
+      out += simple[next];
+      i += 1;
+      continue;
+    }
+    // Unknown escape — keep the escaped char (JS behavior for many).
+    out += next;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Enclosing binding name for an expression assigned to a variable/field
  * (`const isValidKey = function helper() {}` → `isValidKey`).
  */
@@ -1340,18 +1391,10 @@ function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
       }
       return undefined;
     }
-    // validators['isValidKey'] = …
+    // validators['isValidKey'] / validators["isValid\u004bey"] = …
     if (left?.type === 'subscript_expression') {
       const index = left.childForFieldName('index');
-      if (index?.type === 'string') {
-        const raw = index.text;
-        if (
-          (raw.startsWith('"') && raw.endsWith('"')) ||
-          (raw.startsWith("'") && raw.endsWith("'"))
-        ) {
-          return raw.slice(1, -1);
-        }
-      }
+      if (index?.type === 'string') return decodeJsStringLiteral(index.text);
     }
     return undefined;
   }

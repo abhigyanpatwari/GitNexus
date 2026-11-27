@@ -716,12 +716,59 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     `;
     const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
     const repo = discoverProtoGuardRefs(helperCfgs);
-    expect([...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo)]).toContain(
-      'isValidKey',
-    );
+    const excluded = resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo);
+    expect([...excluded]).toContain('guards.isValidKey');
+    expect([...excluded]).not.toContain('isValidKey');
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
     expect(flows.kills).toHaveLength(0);
+  });
+
+  it('namespace proto exclusion does not disable a separate same-named validator', () => {
+    const helper = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const caller = `
+      import * as guards from './helpers';
+      function isValidKey(key: string) {
+        return /^[a-z0-9._-]+$/i.test(key);
+      }
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
+    const { flows } = analyze(caller, 1, { extraCfgs: helperCfgs });
+    expect(flows.findings).toHaveLength(0);
+  });
+
+  it('does not exclude via ambiguous same-basename modules', () => {
+    const protoA = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const protoB = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__";
+      }
+    `;
+    const caller = `
+      import { isValidKey } from './helpers';
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const repo = [
+      ...discoverProtoGuardRefs(withFilePath(cfgsOf(protoA), 'a/helpers.ts')),
+      ...discoverProtoGuardRefs(withFilePath(cfgsOf(protoB), 'b/helpers.ts')),
+    ];
+    const excluded = resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo);
+    expect([...excluded]).not.toContain('isValidKey');
   });
 
   it('does not kind-blind suppress aliased import of a proto-only helper', () => {
@@ -764,6 +811,28 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
     expect(cfgs.some((c) => c.functionName === 'helper')).toBe(false);
     expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
+    const { flows } = analyze(
+      code,
+      cfgs.findIndex((c) => c.functionName === 'write'),
+    );
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('decodes unicode escapes in computed member-assigned proto guards', () => {
+    const code = `
+      const validators: any = {};
+      validators["isValid\\u004bey"] = function helper(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      };
+      function write(req: any) {
+        if (!validators.isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+    expect(cfgs.some((c) => (c.functionName ?? '').includes('u004b'))).toBe(false);
     const { flows } = analyze(
       code,
       cfgs.findIndex((c) => c.functionName === 'write'),
