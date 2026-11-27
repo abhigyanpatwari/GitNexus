@@ -461,6 +461,58 @@ describe('CommonJS callable default exports', () => {
       ['function later() { module = {}; } const saved = module; module = saved;', 'candidate'],
       ['module ||= {}; const saved = module; module = saved;', 'candidate'],
       ['module &&= (module);', 'candidate'],
+      ['const saved = module; module = undefined; module ||= saved;', 'candidate'],
+      ['const saved = module; module = null; module ??= saved;', 'candidate'],
+      [
+        'const saved = module; (function () { module = {}; })(module = null); module ??= saved;',
+        undefined,
+      ],
+      [
+        'const saved = module; (function () { module = null; })(module = {}); module ??= saved;',
+        'candidate',
+      ],
+      [
+        'const saved = module; (() => { (() => { module = null; })(module = {}); })(module = {}); module ??= saved;',
+        'candidate',
+      ],
+      [
+        'const saved = module; (() => { module = {}; })((() => { module = null; })(module = {})); module ??= saved;',
+        undefined,
+      ],
+      [
+        '(function () { const saved = module; module = {}; module = saved; })(module = {});',
+        undefined,
+      ],
+      [
+        'const original = module; module = {}; (function () { const saved = module; module = {}; module = saved; })(module = original);',
+        'candidate',
+      ],
+      ['const saved = module; var module = undefined; module ||= saved;', 'candidate'],
+      ['const saved = module; module = false; module ||= saved;', 'candidate'],
+      ['const saved = module; module = 0; module ??= saved;', undefined],
+      ['const saved = module; module = ""; module &&= saved;', undefined],
+      ['const saved = module; module = {}; module &&= saved;', 'candidate'],
+      ['const saved = module; module = true; module ||= saved;', undefined],
+      ['const saved = module; module = other; module ||= saved;', undefined],
+      [
+        'const saved = module; (function(undefined) { module = undefined; })({}); module ||= saved;',
+        undefined,
+      ],
+      [
+        'const saved = module; module = {}; if (false) { var module = null; } module ??= saved;',
+        undefined,
+      ],
+      [
+        'const saved = module; module = null; module || (module = {}); module ??= saved;',
+        undefined,
+      ],
+      ['function fallback() { module ||= {}; } fallback();', 'candidate'],
+      ['var module = module || {};', 'candidate'],
+      ['const saved = module; if (flag) module = null; module ??= saved;', 'candidate'],
+      [
+        'const saved = module; const undefined = {}; module = undefined; module ||= saved;',
+        undefined,
+      ],
       ['const saved = module; module = {}; let fn; fn?.(module = saved);', undefined],
       ['{ module = module || {}; }', 'candidate'],
       ['const saved = module; { module = saved; }', 'candidate'],
@@ -486,6 +538,29 @@ describe('CommonJS callable default exports', () => {
       expect(exports.get('default')?.qualifiedName).toBe(expected);
     });
   });
+
+  it.each([
+    ['function late() { module = {}; }', 'late();', true],
+    ['', 'late(); function late() { module = {}; }', true],
+    ['const late = () => { module = {}; };', 'late();', true],
+    ['late(); function late() { module = {}; }', '', false],
+    ['run(); function late() { module = {}; }', 'function run() { late(); }', false],
+    ['const callback = late; callback(); function late() { module = {}; }', '', false],
+  ] as const)(
+    'preserves exports established before a deferred write in %s %s',
+    (before, after, expected) => {
+      const source = `${before} module.exports = function visible() {}; ${after} module.exports = function hidden() {};`;
+      for (const [emit, file] of [
+        [emitJsScopeCaptures, 'late.cjs'],
+        [emitTsScopeCaptures, 'late.cts'],
+      ] as const) {
+        const marked = emit(source, file)
+          .filter((capture) => capture['@declaration.is-default-export']?.text === 'true')
+          .map((capture) => capture['@declaration.name'].text);
+        expect(marked).toEqual(expected ? ['visible'] : []);
+      }
+    },
+  );
 
   it.each(['var module = {};', 'module = {};'])('applies %s at its write position', (write) => {
     const file = 'x.cjs';

@@ -16,6 +16,7 @@
  */
 
 import fs from 'fs/promises';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'path';
 import { createRequire } from 'node:module';
 import type Parser from 'tree-sitter';
@@ -65,9 +66,68 @@ export interface NodeWorkspacePackages {
 const SCAN_MAX_DIRS = 20_000;
 const SCAN_MAX_DEPTH = 24;
 
+/** Only directories omitted by the bounded workspace-name discovery need extra format probes. */
+interface PackageFormatFrontier {
+  readonly repoRoot: string;
+  readonly roots: ReadonlySet<string>;
+  readonly declarations: Map<string, boolean | null>;
+  readonly cacheLimit: number;
+}
+const formatsBeyondScan = new WeakMap<NodeWorkspacePackages, PackageFormatFrontier>();
+
+/** Mirrors the directory walk: read only a regular, in-repo manifest and skip absent inputs. */
+function readUnscannedPackageFormat(repoRoot: string, directory: string): boolean | null {
+  const manifest = path.join(repoRoot, directory, 'package.json');
+  try {
+    if (realpathSync.native(manifest) !== manifest || !lstatSync(manifest).isFile()) return null;
+    const contents = JSON.parse(readFileSync(manifest, 'utf8'));
+    return contents && typeof contents === 'object' ? contents.type === 'module' : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatBeyondScan(directory: string, frontier: PackageFormatFrontier): boolean | null {
+  if (!directory || path.isAbsolute(directory)) return null;
+  const ancestors = [directory];
+  let dir = directory;
+  while (!frontier.roots.has(dir)) {
+    if (dir === '.') return null;
+    dir = path.posix.dirname(dir);
+    ancestors.push(dir);
+  }
+  // The scan supplies canonical repo-relative paths. Standalone callers must stay inside
+  // the same source tree, including the walk's directory and symlink exclusions.
+  if (path.posix.normalize(directory) !== directory || directory.includes('\\')) return null;
+  if (
+    ancestors.some((candidate) =>
+      isHardcodedIgnoredDirectoryAtPath(frontier.repoRoot, path.join(frontier.repoRoot, candidate)),
+    )
+  )
+    return null;
+
+  for (const candidate of ancestors) {
+    let format = frontier.declarations.get(candidate);
+    if (format === undefined) {
+      format = readUnscannedPackageFormat(frontier.repoRoot, candidate);
+      if (frontier.declarations.size >= frontier.cacheLimit) {
+        frontier.declarations.delete(frontier.declarations.keys().next().value!);
+      }
+      frontier.declarations.set(candidate, format);
+    }
+    if (format !== null) return format;
+  }
+  return null;
+}
+
 /** Node uses the nearest package.json, including unnamed packages. */
 export function nodePackageIsEsm(file: string, packages?: NodeWorkspacePackages | null): boolean {
   if (!packages?.packageModules) return false;
+  const frontier = formatsBeyondScan.get(packages);
+  if (frontier) {
+    const format = formatBeyondScan(path.posix.dirname(file), frontier);
+    if (format !== null) return format;
+  }
   let directory = file;
   for (;;) {
     const slash = directory.lastIndexOf('/');
@@ -541,13 +601,67 @@ export function invalidateNodeWorkspacePackages(repoRoot: string): void {
   workspacePackagesMemo.delete(path.resolve(repoRoot));
 }
 
-export async function loadNodeWorkspacePackages(
+type PackageLoadOptions = { fresh?: boolean; filePaths?: readonly string[] };
+export type WorkspacePackageOptions = PackageLoadOptions | { scanFiles: readonly string[] };
+
+// Scan passes allocate one inventory for all providers. A later pass gets a new
+// array even when its filenames match; rename refreshes never enter this cache.
+const packagesByScan = new WeakMap<
+  readonly string[],
+  { root: string; pending: Promise<NodeWorkspacePackages | null> }
+>();
+
+export function loadNodeWorkspacePackages(
   repoRoot: string,
-  options?: { fresh?: boolean },
+  options: WorkspacePackageOptions = {},
+): Promise<NodeWorkspacePackages | null> {
+  if (!('scanFiles' in options)) return loadWorkspacePackageSnapshot(repoRoot, options);
+  const files = options.scanFiles;
+  const root = path.resolve(repoRoot);
+  const existing = packagesByScan.get(files);
+  if (existing?.root === root) return existing.pending;
+  const pending = loadWorkspacePackageSnapshot(root, { fresh: true, filePaths: files }).catch(
+    (err: unknown) => {
+      if (packagesByScan.get(files)?.pending === pending) packagesByScan.delete(files);
+      throw err;
+    },
+  );
+  packagesByScan.set(files, { root, pending });
+  return pending;
+}
+
+async function loadWorkspacePackageSnapshot(
+  repoRoot: string,
+  options?: PackageLoadOptions,
 ): Promise<NodeWorkspacePackages | null> {
   // Rename capabilities must observe package changes without replacing the
   // indexing pass's shared memo or joining an older in-flight acquisition.
-  if (options?.fresh) return loadNodeWorkspacePackagesUncached(repoRoot);
+  const packages = options?.fresh
+    ? await loadNodeWorkspacePackagesUncached(repoRoot)
+    : await cachedWorkspacePackages(repoRoot);
+  const frontier = packages && formatsBeyondScan.get(packages);
+  if (!packages || !frontier || !options?.filePaths) return packages;
+
+  // Freeze the formats governing the actual scan or rename inputs before parsing. Only a
+  // standalone lookup without a source inventory needs the on-demand frontier afterwards.
+  const capture = {
+    ...frontier,
+    declarations: new Map<string, boolean | null>(),
+    cacheLimit: Infinity,
+  };
+  const directories = new Set<string>();
+  for (const file of options.filePaths) {
+    if (/\.[jt]sx?$/i.test(file)) directories.add(path.posix.dirname(file));
+  }
+  for (const directory of directories) formatBeyondScan(directory, capture);
+  const packageModules = new Map(packages.packageModules);
+  for (const [directory, format] of capture.declarations) {
+    if (format !== null) packageModules.set(directory, format);
+  }
+  return { byName: packages.byName, packageModules };
+}
+
+function cachedWorkspacePackages(repoRoot: string): Promise<NodeWorkspacePackages | null> {
   const key = path.resolve(repoRoot);
   const cached = workspacePackagesMemo.get(key);
   if (cached !== undefined) return cached;
@@ -578,12 +692,15 @@ async function loadNodeWorkspacePackagesUncached(
   const scope = await loadWorkspaceScope(repoRoot);
   const byName = new Map<string, NodeWorkspacePackage>();
   const packageModules = new Map<string, boolean>();
+  const unscanned = new Set<string>();
   const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   let queueHead = 0;
   let dirsScanned = 0;
 
   while (queueHead < queue.length) {
     if (dirsScanned >= SCAN_MAX_DIRS) {
+      for (let i = queueHead; i < queue.length; i++)
+        unscanned.add(repoRelativeDir(repoRoot, queue[i].dir));
       logger.warn(
         `[node] package.json scan of ${repoRoot} hit the ${SCAN_MAX_DIRS}-directory cap; workspace packages below it will not resolve`,
       );
@@ -603,6 +720,8 @@ async function loadNodeWorkspacePackagesUncached(
         if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
         if (depth < SCAN_MAX_DEPTH) {
           queue.push({ dir: childDir, depth: depth + 1 });
+        } else {
+          unscanned.add(repoRelativeDir(repoRoot, childDir));
         }
         continue;
       }
@@ -625,6 +744,17 @@ async function loadNodeWorkspacePackagesUncached(
   }
 
   if (!packageModules.has('') && (await inheritsEsmPackage(repoRoot))) packageModules.set('', true);
+  if (unscanned.size > 0) {
+    const packages = { byName, packageModules };
+    formatsBeyondScan.set(packages, {
+      repoRoot: await fs.realpath(repoRoot),
+      roots: unscanned,
+      declarations: new Map(),
+      // A standalone caller supplies one file at a time and can retain this loader indefinitely.
+      cacheLimit: 4096,
+    });
+    return packages;
+  }
   if ([...packageModules.values()].includes(true)) return { byName, packageModules };
   return byName.size === 0 ? null : { byName };
 }

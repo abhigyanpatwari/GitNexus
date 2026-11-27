@@ -7,10 +7,6 @@ export const canonicalTypeScriptName = (name: string): string => decodeIdentifie
 
 export { canonicalModuleExportName } from '../../utils/ecmascript-literals.js';
 
-/** Numeric JavaScript property expressions with statically known values. */
-export const numericPropertyKeyQuery = `[(number) (parenthesized_expression)
-  (unary_expression operator: ["+" "-"] argument: [(number) (parenthesized_expression)])]`;
-
 /** Query candidates for literalMethodName, which checks grouping and substitutions. */
 export const literalPropertyKeyQuery = `[(string) (number) (template_string) (parenthesized_expression)
   (unary_expression operator: ["+" "-"] argument: [(number) (parenthesized_expression)])]`;
@@ -82,16 +78,6 @@ export function literalMethodName(node: SyntaxNode | null, filePath?: string): s
     return undefined;
   if (node.type === 'string' || node.type === 'template_string')
     return decodeStringLiteral(node.text) ?? undefined;
-  return literalNumericMethodName(node, filePath);
-}
-
-/** JavaScript's numeric-key queries also encounter grouped, nonnumeric expressions. */
-export function literalNumericMethodName(
-  node: SyntaxNode | null,
-  filePath?: string,
-): string | undefined {
-  node = unwrapLiteral(node);
-  if (!node) return undefined;
   const spelling = node.type === 'number' ? node.text : signedNumericSpelling(node, 'property-key');
   if (spelling === undefined) return undefined;
   let value = numericLiteralValue(spelling);

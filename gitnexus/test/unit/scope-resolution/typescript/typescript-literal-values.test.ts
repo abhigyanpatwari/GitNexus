@@ -31,6 +31,7 @@ describe('TypeScript literal evidence', () => {
       A = 1 << 2, B, C = (Flags.B | A) * 2, D,
       E = ~(-D) & 0xff, Label = 'he' + 'llo',
       Unknown = getValue(), AfterUnknown, Reset = 12, Last,
+      Alias = Flags['Last'], Dynamic = Flags[getValue()],
     }`;
     const declaration = getTsParser().parse(source).rootNode.namedChild(0)!;
     expect(enumConstants(declaration)).toEqual([
@@ -42,6 +43,7 @@ describe('TypeScript literal evidence', () => {
       ['Label', 'hello'],
       ['Reset', 12],
       ['Last', 13],
+      ['Alias', 13],
     ]);
   });
 

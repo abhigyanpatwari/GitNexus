@@ -114,6 +114,26 @@ describe('TypeScript synthesized capture order', () => {
     },
   );
 
+  it.each([
+    ['', true],
+    ['make();', true],
+    ['const saved = make();', true],
+    ['make()();', false],
+    ['const saved = make(); saved();', false],
+  ] as const)(
+    'tracks invocation of a returned writer before export after %s',
+    (before, expected) => {
+      const source = `function make() { return () => { make = replacement; return 1; }; }
+      function replacement() { return () => 2; }
+      ${before}
+      export default make();`;
+      const captures = emitTsScopeCaptures(source, 'factory.ts');
+      expect(
+        captures.some((match) => match['@declaration.is-default-export']?.text === 'true'),
+      ).toBe(expected);
+    },
+  );
+
   describe('guards after writes to the receiver', () => {
     it.each([
       [

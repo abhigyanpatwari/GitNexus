@@ -16,10 +16,7 @@ import {
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
 } from './ts-js-hoc-utils.js';
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
-import {
-  literalPropertyKeyQuery,
-  numericPropertyKeyQuery,
-} from './languages/typescript/identifiers.js';
+import { literalPropertyKeyQuery } from './languages/typescript/identifiers.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -837,7 +834,7 @@ ${unboundCallableQuery('definition.function')}
   name: (property_identifier) @name) @definition.method
 
 (method_definition
-  name: [(number) (computed_property_name ${numericPropertyKeyQuery})] @name @name.literal) @definition.method
+  name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal) @definition.method
 
 ; ES2022 #private methods
 (method_definition

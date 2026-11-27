@@ -2,6 +2,49 @@
   "schemaVersion": 1,
   "graphExpectations": [
     {
+      "_note": "#4084. On this frozen main corpus the TypeScript compiler verified declaration positions and type-reference targets. Interface field types restore 57 chained reads. Additional dispatch edges retain the primary signature and point to declared concrete implementations. The 65 previous runtime-dispatch reads targeting erased subinterfaces are absent.",
+      "baselineSourceTrees": [
+        "d074cc6b389fb3afba9334994b53437a450c2a30",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "1e5050c061ec9864d6d51109c4fe48043035d53c",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
+      "sourceFiles": 1205,
+      "baseline": {
+        "cold": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "warm": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "edit": ["fc7bf6b824e5d5b9305591085ce5aff197d212eb1ca4abde2761a053ea2690a0", 38044, 107998],
+        "two-edits": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ],
+        "repack": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ]
+      },
+      "candidate": {
+        "cold": ["67188d9b4042fc2153cde3ca9dfa9e17111428e9f812c68790dc63edaed309ca", 38050, 113573],
+        "warm": ["67188d9b4042fc2153cde3ca9dfa9e17111428e9f812c68790dc63edaed309ca", 38050, 113573],
+        "edit": ["26fcd2513ff7274d2b3976b24391cd902b363bc25f6e91f46be596a1132623e0", 38051, 113574],
+        "two-edits": [
+          "391363034a75ca118ddbe1d62218d4651c6d56b1150c758f8febf58ab0be1562",
+          38053,
+          113576
+        ],
+        "repack": [
+          "391363034a75ca118ddbe1d62218d4651c6d56b1150c758f8febf58ab0be1562",
+          38053,
+          113576
+        ]
+      }
+    },
+    {
       "baselineSourceTrees": [
         "4d44c393f50c0d1a71f2cda2381d769d59c19657",
         "196f9344962250e43352d23bec6a81cdc739a257"

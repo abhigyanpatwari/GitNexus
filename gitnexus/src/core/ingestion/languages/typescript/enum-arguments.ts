@@ -81,11 +81,13 @@ function initializerValue(
       const receiver = node.childForFieldName('object');
       if (receiver?.type !== 'identifier' || canonicalTypeScriptName(receiver.text) !== owner)
         return undefined;
-      const property = node.childForFieldName('property');
-      const name =
-        property?.type === 'property_identifier'
-          ? canonicalTypeScriptName(property.text)
-          : literalMethodName(node.childForFieldName('index'));
+      if (node.type === 'member_expression') {
+        const property = node.childForFieldName('property');
+        return property?.type === 'property_identifier'
+          ? members.get(canonicalTypeScriptName(property.text))
+          : undefined;
+      }
+      const name = literalMethodName(node.childForFieldName('index'));
       return name === undefined ? undefined : members.get(name);
     }
     case 'parenthesized_expression':

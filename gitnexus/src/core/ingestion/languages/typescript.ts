@@ -10,7 +10,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { isBuiltin } from 'node:module';
 import type Parser from 'tree-sitter';
 import { blockCallableIdentity, unboundCallableName } from './typescript/unbound-callables.js';
-import { literalMethodName, literalNumericMethodName } from './typescript/identifiers.js';
+import { literalMethodName } from './typescript/identifiers.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -190,14 +190,13 @@ const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
 const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
-  methodName = literalMethodName,
 ): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
   if (
     node.type === 'method_definition' ||
     node.type === 'method_signature' ||
     node.type === 'abstract_method_signature'
   ) {
-    const funcName = methodName(node.childForFieldName('name'), filePath);
+    const funcName = literalMethodName(node.childForFieldName('name'), filePath);
     return funcName === undefined ? null : { funcName, label: 'Method' };
   }
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
@@ -643,8 +642,8 @@ export const javascriptProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
     ...javascriptMethodConfig,
-    extractFunctionName: (node, filePath) =>
-      tsExtractFunctionName(node, filePath, literalNumericMethodName),
+    extractLiteralName: (node) => literalMethodName(node.childForFieldName('name')),
+    extractFunctionName: tsExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,

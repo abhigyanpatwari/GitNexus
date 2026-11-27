@@ -24,6 +24,7 @@ import {
   compareProjects,
   comparePublishedCalls,
   publishedMethodOwners,
+  publishedPropertyAccess,
 } from './check.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 import diagnostics from './diagnostics.json' with { type: 'json' };
@@ -141,6 +142,27 @@ test('TypeScript module-kind evidence survives serialization and is consumed onc
     );
     assert.equal(typescriptProvider.collectCaptureSideChannel(file), undefined);
   }
+});
+
+test('property access IDs retain direction, endpoints and the complete source range', () => {
+  const prefix = 'rel:ACCESSES:Function:a.ts:f->Property:b.ts:C.value:';
+  const edge = {
+    sourceId: 'Function:a.ts:f',
+    targetId: 'Property:b.ts:C.value',
+    reason: 'global',
+    id: prefix + 'read:4:10:5:2',
+  };
+  assert.deepEqual(publishedPropertyAccess(edge), { kind: 'read', start: '4:10', end: '5:2' });
+  assert.deepEqual(publishedPropertyAccess({ ...edge, id: prefix + 'write:4:10:5:2' }), {
+    kind: 'write',
+    start: '4:10',
+    end: '5:2',
+  });
+  assert.equal(publishedPropertyAccess({ ...edge, reason: 'interface-dispatch' }), undefined);
+  assert.throws(() => publishedPropertyAccess({ ...edge, reason: 'scope-resolution: write' }));
+  assert.throws(() => publishedPropertyAccess({ ...edge, targetId: 'Property:b.ts:D.value' }));
+  for (const suffix of ['read:4:10', 'call:4:10:5:2', 'read:4:10:4:10', 'read:4:10:4:2'])
+    assert.throws(() => publishedPropertyAccess({ ...edge, id: prefix + suffix }));
 });
 
 test('published calls retain the compiler target at each stored call range', () => {

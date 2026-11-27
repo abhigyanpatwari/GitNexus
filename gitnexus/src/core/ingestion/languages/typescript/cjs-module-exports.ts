@@ -25,7 +25,8 @@ import {
 } from '../../utils/ast-helpers.js';
 import { deriveDefaultExportHocName } from '../../ts-js-hoc-utils.js';
 import { defaultExportNameCollides, isCommonJsModule } from './cjs-export-assignment.js';
-import { canonicalTypeScriptName } from './identifiers.js';
+import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
+import { canonicalTypeScriptName, numericLiteralValue } from './identifiers.js';
 import type { LocalImportFacts } from './local-loaders.js';
 import { recordPossibleCommonJsDefault } from './module-kind.js';
 
@@ -161,43 +162,113 @@ function isModuleIdentifier(node: SyntaxNode | null): boolean {
   return node?.type === 'identifier' && canonicalTypeScriptName(node.text) === 'module';
 }
 
-/** The real wrapper is an object, so neither fallback operand executes. */
-function retainsWrapper(value: SyntaxNode | null): boolean {
-  value = ungroup(value);
-  return (
-    isModuleIdentifier(value) ||
-    (value?.type === 'binary_expression' &&
-      ['||', '??'].includes(value.childForFieldName('operator')?.type ?? '') &&
-      isModuleIdentifier(value.childForFieldName('left')))
-  );
+// Each bit represents a value the binding may hold on a reachable path.
+const enum WrapperValue {
+  Original = 1,
+  Truthy = 2,
+  Falsy = 4,
+  Nullish = 8,
+  Unknown = Original | Truthy | Falsy | Nullish,
 }
 
-/** A callable kept only under its unused local name cannot run during module evaluation. */
-function unusedLocalCallable(root: SyntaxNode) {
-  let nameCounts: Map<string, number> | undefined;
-  return (fn: SyntaxNode) => {
+function literalWrapperValue(value: SyntaxNode | null, globalUndefined: boolean): WrapperValue {
+  switch (value?.type) {
+    case 'null':
+      return WrapperValue.Nullish;
+    case 'undefined':
+      return globalUndefined ? WrapperValue.Nullish : WrapperValue.Unknown;
+    case 'false':
+      return WrapperValue.Falsy;
+    case 'true':
+    case 'object':
+    case 'array':
+    case 'arrow_function':
+    case 'function_expression':
+    case 'class':
+      return WrapperValue.Truthy;
+    case 'number':
+    case 'string': {
+      const literal =
+        value.type === 'number' ? numericLiteralValue(value.text) : decodeStringLiteral(value.text);
+      if (literal == null) return WrapperValue.Unknown;
+      return literal ? WrapperValue.Truthy : WrapperValue.Falsy;
+    }
+    case 'unary_expression':
+      if (value.childForFieldName('operator')?.type === 'void') return WrapperValue.Nullish;
+  }
+  return WrapperValue.Unknown;
+}
+
+const logicalWriteMask: Record<string, WrapperValue> = {
+  '||': WrapperValue.Falsy | WrapperValue.Nullish,
+  '??': WrapperValue.Nullish,
+  '&&': WrapperValue.Original | WrapperValue.Truthy,
+};
+
+/**
+ * In a direct synchronous IIFE the arguments run before the parameters and body.
+ * Swap those two source intervals within each enclosing call. Nested calls keep
+ * their internal order and every event stays inside its original call's extent.
+ */
+function evaluationPosition(node: SyntaxNode, at = node.endIndex): number {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (parent.type !== 'call_expression') continue;
+    const callee = parent.childForFieldName('function');
+    const fn = ungroup(callee);
+    if (fn?.type !== 'function_expression' && fn?.type !== 'arrow_function') continue;
+    if (fn.children.some((token) => token.type === 'async')) continue;
+    const args = parent.childForFieldName('arguments');
+    if (args?.type !== 'arguments') continue;
+    if (child.id === args.id) at -= args.startIndex - parent.startIndex;
+    else if (child.id === callee.id) at += parent.endIndex - args.startIndex;
+  }
+  return at;
+}
+
+/** A local callable cannot execute before its first possible use or escape. */
+function localCallableFirstUse(root: SyntaxNode) {
+  let references: Map<string, SyntaxNode[]> | undefined;
+  const byBinding = new Map<number, number>();
+  return (fn: SyntaxNode): number => {
     const binding = fn.type.endsWith('_declaration')
       ? fn.childForFieldName('name')
       : fn.parent?.type === 'variable_declarator'
         ? fn.parent.childForFieldName('name')
         : null;
-    if (binding?.type !== 'identifier') return false;
-    if (!nameCounts) {
-      nameCounts = new Map();
+    if (binding?.type !== 'identifier') return 0;
+    const cached = byBinding.get(binding.id);
+    if (cached !== undefined) return cached;
+    if (!references) {
+      references = new Map();
       for (const node of root.descendantsOfType(['identifier', 'shorthand_property_identifier'])) {
         const name = canonicalTypeScriptName(node.text);
-        nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+        const uses = references.get(name);
+        if (uses) uses.push(node);
+        else references.set(name, [node]);
       }
     }
-    return !nameCounts.has('eval') && nameCounts.get(canonicalTypeScriptName(binding.text)) === 1;
+    if (references.has('eval')) return 0;
+    let first = Infinity;
+    for (const ref of references.get(canonicalTypeScriptName(binding.text)) ?? []) {
+      if (ref.id === binding.id) continue;
+      // A function declaration containing the reference may have been called before its source.
+      if (ref.closest(['function_declaration', 'generator_function_declaration'])) {
+        first = 0;
+        break;
+      }
+      first = Math.min(first, evaluationPosition(ref, ref.startIndex));
+    }
+    byBinding.set(binding.id, first);
+    return first;
   };
 }
 
 /** Unknown branch conditions join both paths. Indirect invocations have no known write position. */
 function wrapperWriteExecution(
   write: SyntaxNode,
-  unused: (fn: SyntaxNode) => boolean,
-): 'always' | 'conditional' | 'deferred' | undefined {
+  firstUse: (fn: SyntaxNode) => number,
+): { when: WrapperValue; conditional: boolean } | { deferredAt: number } | undefined {
+  let when = WrapperValue.Unknown;
   let conditional = false;
   for (let child = write, parent = write.parent; parent; child = parent, parent = parent.parent) {
     if (FUNCTION_NODE_TYPES.has(parent.type) || parent.type === 'generator_function') {
@@ -211,14 +282,15 @@ function wrapperWriteExecution(
           parent.type === 'generator_function' ||
           parent.children.some((token) => token.type === 'async')
         )
-          return 'deferred';
+          return { deferredAt: 0 };
         continue;
       }
-      return unused(parent) ? undefined : 'deferred';
+      const at = firstUse(parent);
+      return at === Infinity ? undefined : { deferredAt: at };
     }
     switch (parent.type) {
       case 'program':
-        return conditional ? 'conditional' : 'always';
+        return { when, conditional };
       case 'parenthesized_expression':
       case 'sequence_expression':
       case 'expression_statement':
@@ -249,13 +321,11 @@ function wrapperWriteExecution(
         const left = ungroup(parent.childForFieldName('left'));
         const op = parent.childForFieldName('operator')?.type;
         if (child.id !== parent.childForFieldName('right')?.id) break;
-        if (
-          (op === '&&' && left?.type === 'false') ||
-          (op === '||' && left?.type === 'true') ||
-          ((op === '||' || op === '??') && isModuleIdentifier(left))
-        )
+        if ((op === '&&' && left?.type === 'false') || (op === '||' && left?.type === 'true'))
           return undefined;
-        conditional = true;
+        if (logicalWriteMask[op] && isModuleIdentifier(left) && ungroup(child)?.id === write.id)
+          when &= logicalWriteMask[op];
+        else conditional = true;
         break;
       }
       default:
@@ -265,46 +335,35 @@ function wrapperWriteExecution(
 }
 
 type WrapperEvent =
-  | { at: number; kind: 'save' }
-  | { at: number; kind: 'write'; savedAt?: number; conditional?: boolean };
+  | { at: number; kind: 'save'; savedAt: number }
+  | { at: number; kind: 'deferred'; when: WrapperValue }
+  | {
+      at: number;
+      kind: 'write';
+      value: WrapperValue;
+      when: WrapperValue;
+      savedAt?: number;
+      conditional?: boolean;
+    };
 
-/** Lexical declarations replace the wrapper itself. Initialized vars write its shared binding. */
-function moduleDeclarationWrites(
-  root: SyntaxNode,
-  captures: CaptureMatch[],
-): WrapperEvent[] | undefined {
+/** A module-level var shares the CommonJS parameter. Other declarations shadow it. */
+function hasWrapperBinding(root: SyntaxNode, captures: CaptureMatch[]): boolean {
   const scope = captures.find((capture) => capture['@scope.module']);
   const names = scope?.['@scope.name-claims']?.text;
-  if (!names) return undefined;
-  const claims: NameClaim[] = JSON.parse(names);
-  const events: WrapperEvent[] = [];
-  for (const claim of claims) {
+  if (!names) return false;
+  for (const claim of JSON.parse(names) as NameClaim[]) {
     if (claim.purpose === 'type' || canonicalTypeScriptName(claim.name) !== 'module') continue;
     const pos = { row: claim.range.startLine - 1, column: claim.range.startCol };
     let node: SyntaxNode | null = root.namedDescendantForPosition(pos);
-    let variable: SyntaxNode | undefined;
+    let sharedVar = false;
     while (node && node.type !== 'program') {
       if (node.type === 'ambient_declaration' || node.type === 'class_static_block') break;
-      if (node.type === 'variable_declaration') variable = node;
+      if (node.type === 'variable_declaration') sharedVar = true;
       node = node.parent;
     }
-    if (node?.type !== 'program') continue;
-    if (!variable) return undefined;
-    const at = claim.availableFrom;
-    if (!at) continue;
-    const declarator = variable.namedChildren.find(
-      (child) =>
-        child.endPosition.row + 1 === at.startLine && child.endPosition.column === at.startCol,
-    );
-    if (
-      declarator &&
-      isModuleIdentifier(declarator.childForFieldName('name')) &&
-      retainsWrapper(declarator.childForFieldName('value'))
-    )
-      continue;
-    events.push({ at: declarator?.endIndex ?? variable.endIndex, kind: 'write' });
+    if (node?.type === 'program' && !sharedVar) return false;
   }
-  return events;
+  return true;
 }
 
 /** Advance once through stores and const snapshots, in the same order as the export sites. */
@@ -313,47 +372,76 @@ function wrapperAtExport(
   captures: CaptureMatch[],
   writes: LocalImportFacts['wrapperWrites'],
 ) {
-  const events = moduleDeclarationWrites(root, captures);
-  if (!events) return () => false;
-  const unused = unusedLocalCallable(root);
-  for (const { node, savedAt } of writes) {
-    const execution = wrapperWriteExecution(node, unused);
+  if (!hasWrapperBinding(root, captures)) return () => false;
+  const events: WrapperEvent[] = [];
+  const firstUse = localCallableFirstUse(root);
+  for (const { node, savedAt, globalUndefined } of writes) {
+    const execution = wrapperWriteExecution(node, firstUse);
     if (!execution) continue;
-    const direct = isModuleIdentifier(node.childForFieldName('left'));
-    const op = node.childForFieldName('operator')?.type;
-    if (direct && (op === '||=' || op === '??=')) continue;
+    const declarator = node.type === 'variable_declarator';
+    const direct = isModuleIdentifier(node.childForFieldName(declarator ? 'name' : 'left'));
+    let op = node.childForFieldName('operator')?.type.replace(/=$/u, '');
+    const assignment =
+      direct && (declarator || node.type === 'assignment_expression' || logicalWriteMask[op]);
+    let value = assignment ? ungroup(node.childForFieldName(declarator ? 'value' : 'right')) : null;
+    if (isModuleIdentifier(value)) continue;
     if (
-      direct &&
-      (node.type === 'assignment_expression' || op === '&&=') &&
-      retainsWrapper(node.childForFieldName('right'))
-    )
+      (declarator || node.type === 'assignment_expression') &&
+      value?.type === 'binary_expression' &&
+      isModuleIdentifier(value.childForFieldName('left'))
+    ) {
+      const binary = value.childForFieldName('operator')?.type;
+      if (logicalWriteMask[binary]) {
+        op = binary;
+        value = ungroup(value.childForFieldName('right'));
+      }
+    }
+    const when = logicalWriteMask[op] ?? WrapperValue.Unknown;
+    if ('deferredAt' in execution) {
+      events.push({ at: execution.deferredAt, kind: 'deferred', when });
       continue;
-    if (execution === 'deferred') return () => false;
-    const alias =
-      direct && (node.type === 'assignment_expression' || op === '&&=') ? savedAt : undefined;
-    if (alias !== undefined) events.push({ at: alias, kind: 'save' });
+    }
+    const alias = assignment ? savedAt : undefined;
+    if (alias !== undefined) {
+      const snapshot = root.namedDescendantForIndex(alias - 1);
+      events.push({ at: evaluationPosition(snapshot, alias), kind: 'save', savedAt: alias });
+    }
     events.push({
-      at: node.endIndex,
+      at: evaluationPosition(node),
       kind: 'write',
+      value: literalWrapperValue(value, globalUndefined),
+      when: when & execution.when,
       savedAt: alias,
-      conditional: execution === 'conditional' || op === '&&=',
+      conditional: execution.conditional,
     });
   }
   events.sort((a, b) => a.at - b.at);
-  const savedWrapper = new Set<number>();
+  const snapshots = new Map<number, WrapperValue>();
   let index = 0;
-  let original = true;
+  let current = WrapperValue.Original;
+  let deferredWhen = 0;
   return (position: number) => {
     while (index < events.length && events[index].at <= position) {
       const event = events[index++];
-      if (event.kind === 'write')
-        original =
-          (!event.conditional || original) &&
-          event.savedAt !== undefined &&
-          savedWrapper.has(event.savedAt);
-      else if (original) savedWrapper.add(event.at);
+      if (event.kind === 'save') {
+        snapshots.set(event.savedAt, current);
+        continue;
+      }
+      if (event.kind === 'deferred') {
+        deferredWhen |= event.when;
+        if (current & deferredWhen) current = WrapperValue.Unknown;
+        continue;
+      }
+      const when = event.when;
+      if (!(current & when)) continue;
+      const next =
+        event.savedAt === undefined
+          ? event.value
+          : (snapshots.get(event.savedAt) ?? WrapperValue.Unknown);
+      current = (event.conditional ? current : current & ~when) | next;
+      if (current & deferredWhen) current = WrapperValue.Unknown;
     }
-    return original;
+    return current === WrapperValue.Original;
   };
 }
 

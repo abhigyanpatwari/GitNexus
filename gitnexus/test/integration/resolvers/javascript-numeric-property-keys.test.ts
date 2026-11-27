@@ -20,7 +20,8 @@ describe('JavaScript numeric property keys', () => {
         'const grouped = { [ +(077) ]() {}, [-(077)]() {}, [("text")]() {}, [(key)]() {} };',
         'function positiveGroup() { grouped[((077))](); }',
         'function negativeGroup() { grouped[-(077)](); }',
-        'function dynamicGroup() { grouped[(key)](); grouped[(1 + 2)](); grouped[("text")](); }',
+        'function staticGroup() { grouped[("text")](); }',
+        'function dynamicGroup() { grouped[(key)](); grouped[(1 + 2)](); }',
       ].join('\n'),
       'strict.cjs': '"other"; /* comment */ "use strict"; const strict = { [077]() {} };',
       'strict-call.cjs': [
@@ -30,6 +31,8 @@ describe('JavaScript numeric property keys', () => {
       ].join('\n'),
       'local.cjs': 'function local() { "use strict"; const nested = { [077]() {} }; }',
       'class.cjs': 'class Strict { [077]() {} }',
+      'class-field.cjs': 'const before = { [077]() {} }; const Strict = class { [08] = 1; };',
+      'class-heritage.cjs': 'class Strict extends bases[09] {} const after = { [077]() {} };',
       'module.mjs': 'const esm = { [077]() {} };',
       'typescript.cts': 'const ts = { [077]() {} };',
       'modern.mjs': 'class Modern { [0o77](arg) {} } function modern() { new Modern()[63](1); }',
@@ -53,13 +56,18 @@ describe('JavaScript numeric property keys', () => {
       ['Function:valid.cjs:nine', 'Method:valid.cjs:obj.9#0'],
       ['Function:valid.cjs:octal', 'Method:valid.cjs:obj.63#0'],
       ['Function:valid.cjs:positiveGroup', 'Method:valid.cjs:grouped.63#0'],
+      ['Function:valid.cjs:staticGroup', 'Method:valid.cjs:grouped.text#0'],
     ]);
     expect(
       graph.nodes
         .filter((node) => node.id.startsWith('Method:valid.cjs:grouped.'))
         .map((node) => node.id)
         .sort(),
-    ).toEqual(['Method:valid.cjs:grouped.-63#0', 'Method:valid.cjs:grouped.63#0']);
+    ).toEqual([
+      'Method:valid.cjs:grouped.-63#0',
+      'Method:valid.cjs:grouped.63#0',
+      'Method:valid.cjs:grouped.text#0',
+    ]);
   });
 
   it('excludes illegal legacy keys and retains modern keys in strict code', () => {
@@ -68,6 +76,8 @@ describe('JavaScript numeric property keys', () => {
       'strict.cjs',
       'local.cjs',
       'class.cjs',
+      'class-field.cjs',
+      'class-heritage.cjs',
       'module.mjs',
       'typescript.cts',
     ]);

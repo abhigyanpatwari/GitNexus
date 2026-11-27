@@ -238,6 +238,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveReceiverMember'
   | 'receiverMemberLookupCoversAllCalls'
   | 'receiverCallSite'
+  | 'interfaceMembersAreTypeOnly'
   | 'resolveSelectedMethodImplementation'
   | 'suppressReceiverLookup'
   | 'isModuleExportAssignment'
@@ -1549,6 +1550,7 @@ function emitReceiverBoundCallsInPass(
           !implementationUnmapped &&
           implMember.isDeleted !== true &&
           implMember.nodeId !== primaryMemberDef.nodeId &&
+          !(subDef.type === 'Interface' && provider.interfaceMembersAreTypeOnly) &&
           !isDeclarationOnly(implMember) &&
           !isUnreachableByInstanceDispatch(implMember)
         ) {

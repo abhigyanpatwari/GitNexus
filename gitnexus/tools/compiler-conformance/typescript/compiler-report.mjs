@@ -558,7 +558,14 @@ function reportProject(
     ]);
     function propertyReference(node) {
       const field = symbolDeclaration(checker.getSymbolAtLocation(node.name), project);
-      if (field?.kind !== SyntaxKind.PropertyDeclaration) return;
+      if (
+        field?.kind !== SyntaxKind.PropertyDeclaration &&
+        !(
+          field?.kind === SyntaxKind.PropertySignature &&
+          field.parent.kind === SyntaxKind.InterfaceDeclaration
+        )
+      )
+        return;
       const parent = node.parent;
       const assignment =
         parent.kind === SyntaxKind.BinaryExpression &&

@@ -51,13 +51,16 @@ import {
   typescriptModuleExports,
 } from '../typescript/module-exports.js';
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
-import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
+import {
+  loadNodeWorkspacePackages,
+  type WorkspacePackageOptions,
+} from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
 
-async function loadResolutionConfig(repoPath: string, fresh = false) {
+async function loadResolutionConfig(repoPath: string, options?: WorkspacePackageOptions) {
   return {
     tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, options),
   };
 }
 
@@ -86,9 +89,10 @@ const javascriptScopeResolver: ScopeResolver = {
   // outright. Without them a bare specifier used to fall through to suffix
   // matching (#2953); now it simply does not resolve.
   loadResolutionConfig,
-  captureResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
+  captureResolutionConfig: (repoPath, scanFiles) => loadResolutionConfig(repoPath, { scanFiles }),
   fileParseContext: javascriptParseContext,
-  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
+  refreshResolutionConfig: (repoPath, filePaths) =>
+    loadResolutionConfig(repoPath, { fresh: true, filePaths }),
 
   // JavaScript LEGB — same tier ordering as TypeScript; no declaration-
   // merging across type/value/namespace spaces.

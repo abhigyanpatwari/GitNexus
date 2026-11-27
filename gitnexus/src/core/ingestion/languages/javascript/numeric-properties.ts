@@ -14,16 +14,16 @@ export function legacyNumericPropertyValue(
   let valid = validCommonJs.get(node.tree);
   if (valid === undefined) {
     try {
-      // Parse once with Node's CommonJS parameters. V8 checks directive
-      // prologues, class strictness and module-only syntax without running code.
-      compileFunction(node.tree.rootNode.text, [
-        'exports',
-        'require',
-        'module',
-        '__filename',
-        '__dirname',
-      ]);
-      valid = true;
+      const root = node.tree.rootNode;
+      // Check directives and CommonJS syntax without running the source.
+      compileFunction(root.text, ['exports', 'require', 'module', '__filename', '__dirname']);
+      // Node 22 accepts legacy numerics in computed class keys and heritage.
+      // ECMAScript makes the entire class declaration or expression strict.
+      valid = !root
+        .descendantsOfType('number')
+        .some(
+          (number) => /^0\d/u.test(number.text) && number.closest(['class_declaration', 'class']),
+        );
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
       valid = false;

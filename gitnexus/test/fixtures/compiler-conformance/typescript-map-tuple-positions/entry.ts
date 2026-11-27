@@ -47,3 +47,13 @@ export function syncLoopOverAsync(entries: AsyncIterable<[Key, Value]>) {
   // @ts-expect-error A synchronous loop cannot consume an async-only iterator.
   for (const [, value] of entries) value.save();
 }
+
+export function named(entries: Iterable<[key: Key, value: Value]>) {
+  for (const [first, second] of entries) { first.save(); second.save(); }
+}
+export function afterRest(entries: Iterable<[...prefix: unknown[], last: Value]>) {
+  for (const [, second] of entries) {
+    // @ts-expect-error The second slot may be an unknown prefix element.
+    second.save();
+  }
+}

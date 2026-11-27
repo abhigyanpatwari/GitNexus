@@ -22,6 +22,30 @@ export function publishedMethodOwners(graph) {
   return owners;
 }
 
+export function publishedPropertyAccess(edge) {
+  const prefix = 'rel:ACCESSES:' + edge.sourceId + '->' + edge.targetId + ':';
+  const span =
+    edge.id.startsWith(prefix) &&
+    /^(read|write):(\d+):(\d+):(\d+):(\d+)$/.exec(edge.id.slice(prefix.length));
+  assert.ok(span, 'Invalid property access identity: ' + edge.id);
+  const [, kind, ...coordinates] = span;
+  const positions = coordinates.map(Number);
+  const [line, col, endLine, endCol] = positions;
+  assert.ok(
+    positions.every((n, i) => Number.isSafeInteger(n) && String(n) === coordinates[i]) &&
+      line >= 1 &&
+      (endLine > line || (endLine === line && endCol > col)),
+    'Invalid property access range: ' + edge.id,
+  );
+  // Some producers state the direction explicitly. Others record the receiver
+  // resolution tier (e.g. "global") while the ID carries the access direction.
+  const statedKind = edge.reason?.split(': ').at(-1);
+  if (statedKind === 'read' || statedKind === 'write')
+    assert.equal(kind, statedKind, 'Conflicting property access direction: ' + edge.id);
+  if (edge.reason === 'interface-dispatch') return undefined;
+  return { kind, start: line + ':' + col, end: endLine + ':' + endCol };
+}
+
 function graphReport(
   graph,
   boundCalls,
@@ -92,20 +116,16 @@ function graphReport(
       const caller = graph.getNode(edge.sourceId);
       const field = graph.getNode(edge.targetId);
       assert.ok(caller && field, 'Unpublished property access: ' + edge.id);
-      const kind = edge.reason?.split(': ').at(-1);
-      assert.ok(kind === 'read' || kind === 'write', 'Unknown property access: ' + edge.id);
+      const access = publishedPropertyAccess(edge);
+      if (!access) continue; // The compiler selects the interface member, not runtime implementations.
+      const { kind, start, end } = access;
       const report = result[kind === 'read' ? 'PROPERTY_READS' : 'PROPERTY_WRITES'];
       const target = graphIdentity(field);
       report.edges.push({ from: callableIdentity(caller), to: target });
-      const prefix = 'rel:ACCESSES:' + edge.sourceId + '->' + edge.targetId + ':';
-      const span =
-        edge.id.startsWith(prefix) &&
-        /^(?:read|write):(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
-      assert.ok(span, 'Missing property access span: ' + edge.id);
       report.sites.push({
         file: caller.properties.filePath,
-        start: span[1],
-        end: span[2],
+        start,
+        end,
         status: 'resolved',
         target,
       });

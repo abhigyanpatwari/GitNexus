@@ -87,6 +87,11 @@ const MAX_EXTENDS_DEPTH = 16;
  */
 export function tsconfigFor(index: TsconfigIndex | null, filePath: string): TsconfigScope | null {
   if (index === null) return null;
+  // A single project has no competing ancestor configs to search for on each import.
+  if (index.scopes.length === 1) {
+    const scope = index.scopes[0];
+    return scope.dir === '' || filePath.startsWith(`${scope.dir}/`) ? scope : null;
+  }
   let nearest = nearestByIndex.get(index);
   if (!nearest) {
     nearest = new Map();

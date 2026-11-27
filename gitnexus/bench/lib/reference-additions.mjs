@@ -11,7 +11,12 @@ export function expectedReferenceAdditions(revision) {
   manifest ??= JSON.parse(
     fs.readFileSync(new URL('./expected-reference-additions.json', import.meta.url), 'utf8'),
   );
-  return Object.hasOwn(manifest, revision) ? manifest[revision] : undefined;
+  if (Object.hasOwn(manifest, revision)) return manifest[revision];
+  // Archived reports use the original two-tree keys. New reports can replay
+  // those receipts only for their complete, explicitly audited checkouts.
+  if (typeof revision === 'string' && revision.startsWith('checkout-sha256:')) {
+    return Object.values(manifest).find((entry) => entry.checkoutFingerprint === revision);
+  }
 }
 
 /** Check every node field when a pinned compiler comparison adds declaration positions. */

@@ -1877,6 +1877,9 @@ export interface ScopeResolver {
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
 
+  /** Interface members in this language have no runtime implementation of their own. */
+  readonly interfaceMembersAreTypeOnly?: boolean;
+
   /** Find an implementation of an already selected compile-time signature.
    * This is override matching, not overload applicability at a runtime subtype.
    * Undefined means no matching implementation; unknown retains a boundary. */

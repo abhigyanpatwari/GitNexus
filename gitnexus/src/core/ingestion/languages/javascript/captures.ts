@@ -47,7 +47,7 @@ import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
-import { literalNumericMethodName } from '../typescript/identifiers.js';
+import { literalMethodName } from '../typescript/identifiers.js';
 import { unboundCallableName } from '../typescript/unbound-callables.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
 import {
@@ -856,17 +856,17 @@ export function emitJsScopeCaptures(
       grouped[tag] = nodeToCapture(tag, c.node);
       groupedNodes[tag] = c.node;
     }
-    const numericKey = groupedNodes['@numeric.key'];
-    if (numericKey) {
-      const key = literalNumericMethodName(numericKey, filePath);
+    const literalKey = groupedNodes['@literal.key'];
+    if (literalKey) {
+      const key = literalMethodName(literalKey, filePath);
       if (key === undefined) continue;
       const tag = grouped['@declaration.method'] ? '@declaration.name' : '@reference.name';
       grouped[tag] = { ...grouped[tag], text: key };
-      delete grouped['@numeric.key'];
+      delete grouped['@literal.key'];
       if (tag === '@declaration.name' && key.includes('.')) {
         grouped['@declaration.literal-member-name'] = syntheticCapture(
           '@declaration.literal-member-name',
-          numericKey,
+          literalKey,
           key,
         );
       }

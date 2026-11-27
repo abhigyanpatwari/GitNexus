@@ -604,6 +604,12 @@ ${unboundCallableQuery('declaration.function')}
   (property_signature
     name: (property_identifier) @declaration.name) @declaration.property)
 
+;; Resolve the next member in a chain from the interface field's own type.
+(interface_body
+  (property_signature
+    name: (property_identifier) @type-binding.name
+    type: (type_annotation [(type_identifier) (nested_type_identifier)] @type-binding.type)) @type-binding.annotation)
+
 ;; Object-literal keys of a NAMED object — the scope-resolution half of the
 ;; matching rule in TYPESCRIPT_QUERIES. The parse query mints the Property NODE;
 ;; this mints the DEF a precise read can resolve to.

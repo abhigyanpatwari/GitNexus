@@ -45,7 +45,11 @@ import {
 } from './module-exports.js';
 import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
-import { loadNodeWorkspacePackages, type NodeWorkspacePackages } from './workspace-packages.js';
+import {
+  loadNodeWorkspacePackages,
+  type NodeWorkspacePackages,
+  type WorkspacePackageOptions,
+} from './workspace-packages.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { typescriptArityCompatibility, typescriptMergeBindings, resolveTsTarget } from './index.js';
 import {
@@ -95,10 +99,10 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
   };
 }
 
-async function loadResolutionConfig(repoPath: string, fresh = false) {
+async function loadResolutionConfig(repoPath: string, options?: WorkspacePackageOptions) {
   return {
     tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, options),
     nuxtAutoImports: await loadNuxtAutoImports(repoPath),
   };
 }
@@ -123,6 +127,7 @@ const typescriptScopeResolver: ScopeResolver = {
   },
   isGlobalNameFallbackPlausible: projectNameFallback,
   selectReceiverTypeOwner: representativeUnionOwner,
+  interfaceMembersAreTypeOnly: true,
   resolveReceiverMember: resolveTsMemberArguments,
   receiverMemberLookupCoversAllCalls: true,
   receiverCallSite: tsReceiverCallSite,
@@ -154,7 +159,9 @@ const typescriptScopeResolver: ScopeResolver = {
   // `nuxtAutoImports` is null for non-Nuxt projects (no .nuxt/imports.d.ts),
   // so this adds zero overhead to ordinary TypeScript repos.
   loadResolutionConfig,
-  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
+  captureResolutionConfig: (repoPath, scanFiles) => loadResolutionConfig(repoPath, { scanFiles }),
+  refreshResolutionConfig: (repoPath, filePaths) =>
+    loadResolutionConfig(repoPath, { fresh: true, filePaths }),
 
   // TypeScript declaration merging + LEGB: local > import > wildcard,
   // separated by declaration space (value / type / namespace). The

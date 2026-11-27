@@ -85,7 +85,7 @@ export interface SymbolDefinition {
   /** Per-parameter type names for overload disambiguation (e.g. ['int', 'String']).
    *  Populated when parameter types are resolvable from AST (any typed language). */
   parameterTypes?: string[];
-  /** Exact positional annotations when a provider compares written overload signatures. */
+  /** Positional overload types, preserving annotations and any provider-inferred implicit types. */
   declaredParameterTypes?: string[];
   /** Additive per-parameter type shape sidecar for languages that need cv/ref/pointer distinctions.
    *  Does not participate in graph node identity unless a resolver explicitly opts in. */

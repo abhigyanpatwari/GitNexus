@@ -51,6 +51,7 @@
  */
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import type { ParameterInfo } from '../../method-types.js';
 import { typescriptMethodConfig } from '../../method-extractors/configs/typescript-javascript.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
@@ -59,6 +60,15 @@ interface TsArityMetadata {
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;
   readonly declaredParameterTypes?: readonly string[];
+}
+
+function overloadParameterType(parameter: ParameterInfo): string {
+  if (parameter.rawType != null) return parameter.rawType;
+  // An unannotated identifier is implicit any. A binding pattern constrains the
+  // argument's shape, and a rest parameter represents a sequence of arguments.
+  if (parameter.isVariadic || parameter.name.startsWith('{') || parameter.name.startsWith('['))
+    return '';
+  return 'any';
 }
 
 export function computeTsArityMetadata(
@@ -77,7 +87,7 @@ export function computeTsArityMetadata(
     if (p.isVariadic) hasRest = true;
     else if (p.isOptional) optionalCount++;
     const t = p.type !== null && p.type !== undefined ? stripGenericsAndArraySuffix(p.type) : '';
-    if (isOverloadSignature && (p.rawType ?? '') !== t) needsWrittenTypes = true;
+    if (isOverloadSignature && overloadParameterType(p) !== t) needsWrittenTypes = true;
     if (t !== sharedTypes[index]) {
       normalized ??= sharedTypes.slice();
       normalized[index] = t;
@@ -103,7 +113,7 @@ export function computeTsArityMetadata(
     requiredParameterCount,
     parameterTypes,
     ...(isOverloadSignature && (needsWrittenTypes || hasRest)
-      ? { declaredParameterTypes: params.map((p) => p.rawType ?? '') }
+      ? { declaredParameterTypes: params.map(overloadParameterType) }
       : {}),
   };
 }

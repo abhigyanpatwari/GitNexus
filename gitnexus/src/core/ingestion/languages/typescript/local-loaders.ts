@@ -80,6 +80,7 @@ export function boundNames(node: SyntaxNode | null): SyntaxNode[] {
   if (node === null) return [];
   switch (node.type) {
     case 'identifier':
+    case 'undefined': // Both grammars use this node for a parameter named undefined.
     case 'type_identifier':
     case 'shorthand_property_identifier_pattern':
       return [node];
@@ -618,7 +619,11 @@ function indexConstWrapperAliases(
 
 export interface LocalImportFacts {
   readonly validRequireCalls: ReadonlyMap<number, ReadonlySet<string>>;
-  readonly wrapperWrites: readonly { node: SyntaxNode; savedAt?: number }[];
+  readonly wrapperWrites: readonly {
+    node: SyntaxNode;
+    savedAt?: number;
+    globalUndefined?: boolean;
+  }[];
 }
 
 /**
@@ -742,14 +747,21 @@ export function synthesizeTsLocalImports(
       const uninitializedVar =
         node.parent?.type === 'variable_declaration' && node.childForFieldName('value') === null;
       const claimStart = owner.claims.length;
+      const declared = boundNames(node.childForFieldName('name'));
       add(
         owner,
         anchor,
-        boundNames(node.childForFieldName('name')),
+        declared,
         uninitializedVar ? { hoisted: true } : { availableFrom: atEnd(node) },
       );
       if (uninitializedVar) {
         for (const claim of owner.claims.slice(claimStart)) uninitializedVarClaims.add(claim);
+      }
+      // A top-level var initializer writes Node's module parameter at this site.
+      if (!uninitializedVar && declaration.type === 'variable_declaration' && owner === module) {
+        const wrapper = declared.find((name) => canonicalTypeScriptName(name.text) === 'module');
+        if (wrapper && !node.closest(['ambient_declaration', 'class_static_block']))
+          writes.push({ node, scope: current, names: [wrapper] });
       }
       declarations.push({ node, scope: owner });
     } else if (node.type === 'catch_clause') {
@@ -853,7 +865,7 @@ export function synthesizeTsLocalImports(
   // An assignment to an actual local shadow does not mutate the ambient loader.
   // A write to the ambient loader makes its identity unknown for this file.
   let ambientLoaderWritten = false;
-  const wrapperWrites: { node: SyntaxNode; savedAt?: number }[] = [];
+  const wrapperWrites: Array<LocalImportFacts['wrapperWrites'][number]> = [];
   let wrapperAliases: ReturnType<typeof indexConstWrapperAliases> | undefined;
   let escaped: ReturnType<typeof indexEscapedNames> | undefined;
   for (const { node, scope, names } of writes) {
@@ -865,7 +877,9 @@ export function synthesizeTsLocalImports(
         const canonicalOwner = bindingOwner(scope, canonical, escaped);
         if (canonicalOwner === module) onModuleBindingWrite?.(canonical, node);
         if (canonical === 'module' && (!canonicalOwner || canonicalOwner === module)) {
-          const rhs = unwrapWriteTarget(node.childForFieldName('right'));
+          const rhs = unwrapWriteTarget(
+            node.childForFieldName(node.type === 'variable_declarator' ? 'value' : 'right'),
+          );
           let savedAt: number | undefined;
           if (rhs?.type === 'identifier' && canonicalTypeScriptName(rhs.text) !== 'module') {
             const alias = canonicalTypeScriptName(rhs.text);
@@ -875,7 +889,9 @@ export function synthesizeTsLocalImports(
               savedAt = wrapperAliases.get(owner)?.get(alias);
             }
           }
-          wrapperWrites.push({ node, savedAt });
+          const globalUndefined =
+            rhs?.type === 'undefined' && !bindingOwner(scope, 'undefined', escaped);
+          wrapperWrites.push({ node, savedAt, globalUndefined });
         }
       }
       if (name.text === 'require' && !owner) ambientLoaderWritten = true;
