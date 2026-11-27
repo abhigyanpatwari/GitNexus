@@ -532,7 +532,7 @@ jobs:
     name: ubuntu / coverage merge
     outputs:
       package-counts: ${{ steps.counts.outputs.counts }}
-    needs: [tests, java-compiler-conformance]
+    needs: [tests, java-compiler-conformance, shard-plan]
     if: ${{ !cancelled() && (fromJSON(inputs.plan).packages[0] != '' || fromJSON(inputs.plan).run.docker) }}
     runs-on: ubuntu-latest
     # The optional LCOV upload has its own two-minute timeout after the tests.
@@ -584,7 +584,9 @@ jobs:
           path: gitnexus/.vitest/blob
           merge-multiple: true
       - name: Download frozen timing snapshot
-        if: fromJSON(inputs.plan).run.cli
+        # A release reusing CLI coverage carries forward its own trusted
+        # snapshot. Only a fresh CLI merge learns new coverage timings.
+        if: fromJSON(inputs.plan).run.cli || fromJSON(inputs.plan).release
         uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input

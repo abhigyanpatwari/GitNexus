@@ -7,7 +7,7 @@ files=()
 if [[ "$CLI" == true ]]; then
   files+=(gitnexus/coverage/lcov.info)
   if [[ "$mode" == evidence ]]; then
-    files+=(gitnexus/test-results.json gitnexus/.vitest/timings/coverage.json)
+    files+=(gitnexus/test-results.json)
   fi
 fi
 if [[ "$WEB" == true ]]; then
