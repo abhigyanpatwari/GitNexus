@@ -1485,7 +1485,7 @@ describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar
     const calls = getRelationships(result, 'CALLS');
     const baseCall = calls.find((c) => c.target === 'base' && c.source === 'added');
     expect(baseCall).toBeDefined();
-    expect(baseCall!.rel.targetId).toBe('Function:Types.swift:Bar.base#0');
+    expect(baseCall!.rel.targetId).toBe('Function:Types.swift:Foo.Bar.base#0');
   });
 });
 
@@ -1511,7 +1511,9 @@ describe.skipIf(!swiftAvailable)(
         (call) => call.source === 'makeEntry' && call.target === 'Entry',
       );
 
-      expect(entryCalls.map((call) => call.rel.targetId)).toEqual(['Struct:Types.swift:Entry']);
+      expect(entryCalls.map((call) => call.rel.targetId)).toEqual([
+        'Struct:Types.swift:Outer.Container.Entry',
+      ]);
       expect(entryCalls.some((call) => call.rel.targetId === 'Struct:Standalone.swift:Entry')).toBe(
         false,
       );
