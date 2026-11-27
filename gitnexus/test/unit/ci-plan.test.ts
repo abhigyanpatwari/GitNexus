@@ -398,31 +398,45 @@ describe('release reuse', () => {
   });
 });
 
-it.skipIf(process.platform !== 'linux')(
-  'round-trips only selected reports and rejects missing evidence',
-  () => {
+const cliLcov = 'gitnexus/coverage/lcov.info';
+const webLcov = 'gitnexus-web/coverage/lcov.info';
+const cliResults = 'gitnexus/test-results.json';
+const webResults = 'gitnexus-web/web-test-results.json';
+
+it.skipIf(process.platform !== 'linux').each([
+  ['evidence', true, false, [cliLcov, cliResults]],
+  ['evidence', false, true, [webLcov, webResults]],
+  ['evidence', true, true, [cliLcov, cliResults, webLcov, webResults]],
+  ['lcov', true, false, [cliLcov]],
+  ['lcov', false, true, [webLcov]],
+  ['lcov', true, true, [cliLcov, webLcov]],
+] as const)(
+  'round-trips %s reports (CLI %s, web %s) and rejects missing inputs',
+  (mode, cli, web, expected) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'ci-package-evidence-'));
     try {
       const source = path.join(dir, 'source');
       const artifact = path.join(dir, 'artifact');
       const restored = path.join(dir, 'restored');
       const script = path.resolve(__dirname, '../../../.github/scripts/copy-ci-reports.sh');
-      const web = ['gitnexus-web/coverage/lcov.info', 'gitnexus-web/web-test-results.json'];
-      const files = [...web, 'gitnexus/test-results.json', 'unrelated.txt'];
+      const checkedFiles = [cliLcov, webLcov, cliResults, webResults, 'unrelated.txt'];
+      const files = [...checkedFiles, 'gitnexus/.vitest/timings/coverage.json'];
       for (const file of files) {
         mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
         writeFileSync(path.join(source, file), file);
       }
       const copy = (src: string, dest: string) =>
-        execFileSync('bash', [script, src, dest, 'evidence'], {
-          env: { ...process.env, CLI: 'false', WEB: 'true' },
+        execFileSync('bash', [script, src, dest, mode], {
+          env: { ...process.env, CLI: String(cli), WEB: String(web) },
         });
       copy(source, artifact);
       copy(artifact, restored);
-      for (const file of web) expect(readFileSync(path.join(restored, file), 'utf8')).toBe(file);
-      expect(existsSync(path.join(restored, 'gitnexus'))).toBe(false);
-      expect(existsSync(path.join(restored, 'unrelated.txt'))).toBe(false);
-      rmSync(path.join(artifact, web[1]));
+      expect(checkedFiles.filter((file) => existsSync(path.join(restored, file))).sort()).toEqual(
+        [...expected].sort(),
+      );
+      for (const file of expected)
+        expect(readFileSync(path.join(restored, file), 'utf8')).toBe(file);
+      rmSync(path.join(artifact, expected[0]));
       expect(() => copy(artifact, restored)).toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });

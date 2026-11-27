@@ -14,7 +14,7 @@ type Step = {
   with?: Record<string, string>;
   'continue-on-error'?: boolean;
 };
-type Job = { if?: string; steps?: Step[]; needs?: string[] };
+type Job = { if?: string; steps?: Step[]; needs?: string[]; permissions?: Record<string, string> };
 
 function readWorkflow(name: string) {
   const file = path.resolve(__dirname, '../../../.github/workflows', name + '.yml');
@@ -144,6 +144,49 @@ describe.skipIf(process.platform === 'win32')('selected CI checks', () => {
     });
     expect(result.status, result.stderr).toBe(expected);
   });
+
+  it.each([
+    [{}, 0],
+    [{ RUN_CLI: 'true', TESTS: 'skipped' }, 1],
+    [{ RUN_JAVA: 'true', JAVA: 'failure' }, 1],
+  ] as const)('checks results before merging coverage (%j)', (env, expected) => {
+    const step = namedStep(producer, 'Require selected CLI suites');
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], {
+      env: { RUN_CLI: 'true', RUN_JAVA: 'true', TESTS: 'success', JAVA: 'success', ...env },
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(expected);
+  });
+
+  it.each([
+    [{}, 0],
+    [{ RUN_COVERAGE: 'true', COVERAGE: 'skipped' }, 1],
+    [{ RUN_EVAL: 'true', EVAL: 'failure' }, 1],
+    [{ RUN_ABI: 'true', ABI: 'cancelled' }, 1],
+    [{ RUN_ABI: 'false', ABI: 'success' }, 1],
+  ] as const)('checks results of each selected PR suite (%j)', (env, expected) => {
+    const audit = readWorkflow('ci-tests').jobs['test-completeness'];
+    const step = namedStep(audit.steps ?? [], 'Require every selected PR suite to pass');
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], {
+      env: {
+        RUN_COVERAGE: 'false',
+        COVERAGE: 'skipped',
+        RUN_EVAL: 'false',
+        EVAL: 'skipped',
+        RUN_ABI: 'false',
+        ABI: 'skipped',
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(expected);
+  });
+
+  it('grants release planning access to PR and Actions evidence through both workflow calls', () => {
+    for (const job of [ci.jobs.plan, readWorkflow('publish').jobs.ci]) {
+      expect(job.permissions).toMatchObject({ 'pull-requests': 'read', actions: 'read' });
+    }
+  });
 });
 
 describe('SonarQube coverage handoff', () => {
@@ -164,11 +207,26 @@ describe('SonarQube coverage handoff', () => {
       expect(step(name).if).toContain('!cancelled()');
     }
     expect(producer.indexOf(java)).toBeGreaterThan(producer.indexOf(merge));
-    expect(upload.if).toContain("steps.java-lcov.outcome == 'success'");
+    expect(upload.if).toContain(
+      "(!fromJSON(inputs.plan).run.java || steps.java-lcov.outcome == 'success')",
+    );
     expect(upload.if).toContain('!cancelled()');
     expect(upload['continue-on-error']).toBe(true);
     expect(upload.with?.path).toBe('${{ runner.temp }}/sonar-coverage/');
-    expect(step('Stage LCOV for the scanner').run).toContain('copy-ci-reports.sh');
+    const stage = step('Stage LCOV for the scanner');
+    const evidence = step('Stage selected package evidence');
+    expect(stage.run).toMatch(/copy-ci-reports\.sh .* lcov$/);
+    expect(evidence.run).toMatch(/copy-ci-reports\.sh .* evidence$/);
+    for (const source of [stage, evidence]) {
+      expect(source.env).toMatchObject({
+        CLI: "${{ contains(fromJSON(inputs.plan).packages, 'cli') }}",
+        WEB: "${{ contains(fromJSON(inputs.plan).packages, 'web') }}",
+      });
+    }
+    expect(namedStep(scanner, 'Prepare repository-relative LCOV').env).toMatchObject({
+      CLI: "${{ contains(fromJSON(inputs.packages), 'cli') }}",
+      WEB: "${{ contains(fromJSON(inputs.packages), 'web') }}",
+    });
     expect(producer.indexOf(upload)).toBeGreaterThan(
       producer.indexOf(step('Run docker-server integration tests')),
     );
@@ -219,47 +277,57 @@ describe('SonarQube coverage handoff', () => {
     expect(scanner[0].with?.ref).toContain('github.event.workflow_run.head_sha || github.sha');
   });
 
-  it
-    .skipIf(process.platform === 'win32')
-    .each([
-      'complete',
-      'CLI only',
-      'missing web',
-      'empty web',
-      'unknown source',
-      'outside package',
-    ])('requires valid reports for every selected package (%s)', (scenario) => {
+  type Report = { pkg: string; source: string; data: string };
+  const cliReport = { pkg: 'gitnexus', source: 'src/index.ts', data: 'DA:1,0\n' };
+  const webReport = { ...cliReport, pkg: 'gitnexus-web' };
+  function prepareReports(reports: Report[], selected: readonly string[]) {
     temp = mkdtempSync(path.join(tmpdir(), 'sonar-coverage-'));
     for (const pkg of packages) {
       const source = path.join(temp, pkg, 'src');
       mkdirSync(source, { recursive: true });
       writeFileSync(path.join(source, 'index.ts'), 'export const n = 1;');
-      if (pkg === 'gitnexus-web' && ['missing web', 'CLI only'].includes(scenario)) continue;
-      const reports = path.join(temp, 'sonar-coverage', pkg, 'coverage');
-      mkdirSync(reports, { recursive: true });
-      let sf = pkg === 'gitnexus-web' && scenario === 'unknown source' ? 'absent.ts' : 'index.ts';
-      if (pkg === 'gitnexus-web' && scenario === 'outside package')
-        sf = '../../gitnexus/src/index.ts';
-      const data = pkg === 'gitnexus-web' && scenario === 'empty web' ? '' : 'DA:1,0\n';
-      writeFileSync(path.join(reports, 'lcov.info'), `SF:src/${sf}\n${data}end_of_record\n`);
+    }
+    for (const { pkg, source, data } of reports) {
+      const dest = path.join(temp, 'sonar-coverage', pkg, 'coverage');
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(path.join(dest, 'lcov.info'), `SF:${source}\n${data}end_of_record\n`);
     }
     const prepare = namedStep(scanner, 'Prepare repository-relative LCOV').run;
     if (!prepare) throw new Error('The LCOV preparation step must run a shell script');
     const result = spawnSync('bash', ['-eo', 'pipefail', '-c', prepare], {
       cwd: temp,
-      env: { ...process.env, RUNNER_TEMP: temp, CLI: 'true', WEB: String(scenario !== 'CLI only') },
+      env: {
+        ...process.env,
+        RUNNER_TEMP: temp,
+        CLI: String(selected.includes('gitnexus')),
+        WEB: String(selected.includes('gitnexus-web')),
+      },
       encoding: 'utf8',
     });
     if (result.error) throw result.error;
-    if (scenario === 'complete' || scenario === 'CLI only') {
-      expect(result.status, result.stderr).toBe(0);
-      const lcov = readFileSync(path.join(temp, 'coverage', 'lcov.info'), 'utf8');
-      const selected = scenario === 'CLI only' ? ['gitnexus'] : packages;
-      expect(lcov.match(/^SF:.*$/gm)).toEqual(selected.map((pkg) => `SF:${pkg}/src/index.ts`));
-      expect(lcov.match(/^DA:1,0$/gm)).toHaveLength(selected.length);
-    } else {
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain('::error::');
-    }
+    return result;
+  }
+
+  it.skipIf(process.platform === 'win32').each([
+    { selected: packages, reports: [cliReport, webReport] },
+    { selected: ['gitnexus'], reports: [cliReport] },
+    { selected: ['gitnexus-web'], reports: [webReport] },
+  ])('normalizes reports for $selected', ({ selected, reports }) => {
+    const result = prepareReports(reports, selected);
+    expect(result.status, result.stderr).toBe(0);
+    const lcov = readFileSync(path.join(temp, 'coverage', 'lcov.info'), 'utf8');
+    expect(lcov.match(/^SF:.*$/gm)).toEqual(selected.map((pkg) => `SF:${pkg}/src/index.ts`));
+    expect(lcov.match(/^DA:1,0$/gm)).toHaveLength(selected.length);
+  });
+
+  it.skipIf(process.platform === 'win32').each([
+    ['missing web', [cliReport]],
+    ['empty web', [cliReport, { ...webReport, data: '' }]],
+    ['unknown source', [cliReport, { ...webReport, source: 'src/absent.ts' }]],
+    ['outside package', [cliReport, { ...webReport, source: 'src/../../gitnexus/src/index.ts' }]],
+  ] as const)('rejects invalid reports (%s)', (_reason, reports) => {
+    const result = prepareReports([...reports], packages);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('::error::');
   });
 });
