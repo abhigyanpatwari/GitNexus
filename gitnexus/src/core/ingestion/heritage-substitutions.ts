@@ -53,17 +53,19 @@ function specializeType(
 ): string | null {
   if (type.length > maxExpandedTypeLength) return null;
   if (!bindings?.size || local?.has(type)) return type;
-  const direct = bindings.get(type);
-  if (direct !== undefined) return direct;
-  if (nullableOwner?.specialize && type.endsWith('?')) {
-    const formal = type.slice(0, -1);
-    const actual = local?.has(formal) ? undefined : bindings.get(formal);
-    if (actual !== undefined) {
-      if (actual === null) return null;
-      const result = nullableOwner.specialize(nullableOwner.declaration, formal, actual);
-      return result !== null && result.length <= maxExpandedTypeLength ? result : null;
-    }
-  }
+  const resolveOperand = (name: string): string | null | undefined => {
+    if (local?.has(name)) return undefined;
+    const direct = bindings.get(name);
+    if (direct !== undefined || !nullableOwner?.specialize || !name.endsWith('?')) return direct;
+    const formal = name.slice(0, -1).trimEnd();
+    if (local?.has(formal)) return undefined;
+    const actual = bindings.get(formal);
+    if (actual === undefined || actual === null) return actual;
+    return nullableOwner.specialize(nullableOwner.declaration, formal, actual);
+  };
+  const direct = resolveOperand(type);
+  if (direct !== undefined)
+    return direct !== null && direct.length <= maxExpandedTypeLength ? direct : null;
   const pattern = compositeType.test(type) ? namedType : qualifiedPattern?.(type, bindings, local);
   if (!pattern) return type;
   let length = type.length;
@@ -72,7 +74,7 @@ function specializeType(
   for (const match of type.matchAll(pattern)) {
     const name = match[0];
     const offset = match.index;
-    const actual = local?.has(name) ? undefined : bindings.get(name);
+    const actual = resolveOperand(name);
     if (actual === undefined) continue;
     if (actual === null) return null;
     // Preserve precedence when an argument is spliced into a larger type.

@@ -57,3 +57,25 @@ export function afterRest(entries: Iterable<[...prefix: unknown[], last: Value]>
     second.save();
   }
 }
+
+function entryOwner(key: string, value: number): Key;
+function entryOwner(key: number, value: string): Value;
+function entryOwner(key: string | number, value: string | number) {
+  return typeof key === 'string' ? new Key() : new Value();
+}
+export function mapOverloads(entries: Map<string, number>, reverse: ReadonlyMap<number, string>) {
+  for (const [key, value] of entries) {
+    const owner = entryOwner(key, value);
+    owner.save();
+  }
+  for (const [key, value] of reverse) {
+    const owner = entryOwner(key, value);
+    owner.save();
+  }
+}
+export function mapTupleArgument(entries: Map<string, [number, string]>) {
+  for (const [, args] of entries) {
+    const owner = entryOwner(...args);
+    owner.save();
+  }
+}

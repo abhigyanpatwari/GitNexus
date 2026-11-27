@@ -69,6 +69,7 @@ export function populateCsharpNamespacePrefixes(parsed: ParsedFile): void {
 const globalQualifier = /(?<![.\p{ID_Continue}])global\s*::/gu;
 const qualifiedNames =
   /[_\p{ID_Start}][\p{ID_Continue}]*(?:\s*(?:\.|::)\s*[_\p{ID_Start}][\p{ID_Continue}]*)*/gu;
+const nullableQualifiedNames = new RegExp(qualifiedNames.source + String.raw`(?:\s*\?)?`, 'gu');
 const namedComposite = /^[\p{ID_Continue}\s.<>,\[\]()]+$/u;
 
 export function isStableCsharpTypeName(name: string): boolean {
@@ -82,7 +83,9 @@ function stableType(
   bindings?: ReadonlyMap<string, string | null>,
   shadowed?: ReadonlySet<string>,
 ): boolean {
-  if (!namedComposite.test(type.replace(globalQualifier, '.'))) return false;
+  // Only a postfix on a named operand is part of this substitution grammar.
+  const grammar = type.replace(globalQualifier, '.').replace(/(?<=[\p{ID_Continue}])\s*\?/gu, '');
+  if (!namedComposite.test(grammar)) return false;
   for (const [name] of type.matchAll(qualifiedNames)) {
     if (isStableCsharpTypeName(name)) continue;
     const actual = shadowed?.has(name) ? undefined : bindings?.get(name);
@@ -97,5 +100,7 @@ export function csharpQualifiedHeritageTypePattern(
   bindings: ReadonlyMap<string, string | null>,
   shadowed?: ReadonlySet<string>,
 ): RegExp | undefined {
-  return type.includes('::') && stableType(type, bindings, shadowed) ? qualifiedNames : undefined;
+  return type.includes('::') && stableType(type, bindings, shadowed)
+    ? nullableQualifiedNames
+    : undefined;
 }

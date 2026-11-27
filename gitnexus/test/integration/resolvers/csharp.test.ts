@@ -3164,3 +3164,24 @@ it('preserves constructed C# arguments and their nullable value or reference sig
     ['Class:Constructed.cs:Simple', base],
   ]);
 });
+
+it('resolves qualified nullable C# arguments by their declaring namespace and formal constraints', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/qualified-csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const target = 'Method:Types.cs:Base.M#1';
+  expect(overrides).toEqual([
+    ['Class:Alias.cs:SameAlias', target],
+    ['Class:Shadow.cs:NestedNamespace', target],
+    ['Class:Types.cs:Lifted', target],
+    ['Class:Types.cs:OpenNullable', target],
+    ['Class:Types.cs:OpenValue', target],
+    ['Class:Types.cs:RefString', target],
+    ['Class:Types.cs:Right', target],
+    ['Class:Types.cs:RootRight', target],
+  ]);
+});

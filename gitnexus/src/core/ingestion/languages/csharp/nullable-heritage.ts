@@ -1,4 +1,5 @@
-import type { SymbolDefinition } from 'gitnexus-shared';
+import { makeScopeId, type SymbolDefinition } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { specializeNamedNullableOperand } from '../../heritage-substitutions.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { canonicalName, isCsharpReservedTypeKeyword } from './identifiers.js';
@@ -115,6 +116,46 @@ export function specializeCsharpNullableFormal(
   return actual !== 'void' && isCsharpReservedTypeKeyword(actual) ? actual : null;
 }
 
+// The provider's namespace lookup tiers retain the complete declaring namespace,
+// including nested blocks and file-scoped namespaces.
+function declaringNamespace(
+  def: SymbolDefinition,
+  indexes: ScopeResolutionIndexes,
+): string | undefined {
+  if (!def.declarationRange) return undefined;
+  const id = makeScopeId({
+    filePath: def.filePath,
+    range: def.declarationRange,
+    kind: def.type === 'Namespace' ? 'Namespace' : 'Class',
+  });
+  if (def.type === 'Namespace') return indexes.namespaceLookupTiersByScope?.get(id)?.[0]?.[0];
+  for (const parent of indexes.scopeTree.getAncestors(id)) {
+    const tier = indexes.namespaceLookupTiersByScope?.get(parent);
+    if (tier) return tier[0]?.[0];
+  }
+  return undefined;
+}
+
+function nominalIdentity(
+  def: SymbolDefinition,
+  includeValues: boolean,
+  indexes: ScopeResolutionIndexes,
+): NominalName | undefined {
+  // The Record label also includes record structs.
+  const reference = def.type === 'Class' || def.type === 'Interface';
+  if (
+    (!reference && !(includeValues && (def.type === 'Struct' || def.type === 'Enum'))) ||
+    !def.qualifiedName
+  )
+    return undefined;
+  const namespace = declaringNamespace(def, indexes) ?? def.namespacePrefix;
+  const qualified =
+    namespace && !def.qualifiedName.startsWith(namespace + '.')
+      ? namespace + '.' + def.qualifiedName
+      : def.qualifiedName;
+  return { name: 'global::' + qualified, reference };
+}
+
 /** Compare a reference type by its CLR identity in the declaration that wrote it. */
 export const normalizeCsharpNullableSignature: NonNullable<
   ScopeResolver['normalizeNullableHeritageSignature']
@@ -127,29 +168,53 @@ export const normalizeCsharpNullableSignature: NonNullable<
       return { name: spelling, reference: spelling === 'string' || spelling === 'object' };
     }
     const rooted = spelling.startsWith('global::');
-    const tail = rooted ? spelling.slice('global::'.length).split('.').at(-1)! : spelling;
-    const name = canonicalName(tail);
+    const path = rooted ? spelling.slice('global::'.length) : spelling;
+    const dot = path.indexOf('.');
+    if (dot >= 0) {
+      let absolute = path;
+      if (!rooted) {
+        const head = canonicalName(path.slice(0, dot));
+        if (bindsTypeParameter(scope, head, indexes)) return undefined;
+        const claim = lookupNameClaim(scope, head, indexes, { purpose: 'type' });
+        if (claim.status !== 'resolved' || !claim.bindings.length) return undefined;
+        // The first component may be a file-local namespace alias. All selected
+        // bindings must agree on the namespace before its members can be used.
+        let namespace: string | undefined;
+        for (const { def } of claim.bindings) {
+          if (def.type !== 'Namespace') return undefined;
+          const candidate = declaringNamespace(def, indexes);
+          if (!candidate || (namespace && namespace !== candidate)) return undefined;
+          namespace = candidate;
+        }
+        absolute = namespace + path.slice(dot);
+      }
+      // C# keeps simple type names in this index. Select only declarations
+      // whose complete namespace and type match the written path.
+      const tail = absolute.slice(absolute.lastIndexOf('.') + 1);
+      let identity: NominalName | undefined;
+      for (const id of indexes.qualifiedNames.get(tail)) {
+        const def = indexes.defs.get(id);
+        const candidate = def && nominalIdentity(def, includeValues, indexes);
+        if (!candidate || candidate.name !== 'global::' + absolute) continue;
+        if (identity && identity.reference !== candidate.reference) return undefined;
+        identity = candidate;
+      }
+      return identity;
+    }
+    const name = canonicalName(path);
     if (bindsTypeParameter(scope, name, indexes)) return undefined;
     const claim = lookupNameClaim(scope, name, indexes, { purpose: 'type' });
     if (claim.status !== 'resolved' || !claim.bindings.length) return undefined;
     let identity: NominalName | undefined;
     for (const { def } of claim.bindings) {
-      // The Record label also includes record structs.
-      const reference = def.type === 'Class' || def.type === 'Interface';
+      const candidate = nominalIdentity(def, includeValues, indexes);
+      if (!candidate || (rooted && candidate.name !== spelling)) return undefined;
       if (
-        (!reference && !(includeValues && (def.type === 'Struct' || def.type === 'Enum'))) ||
-        !def.qualifiedName
+        identity &&
+        (identity.name !== candidate.name || identity.reference !== candidate.reference)
       )
         return undefined;
-      const qualified =
-        def.namespacePrefix && !def.qualifiedName.startsWith(def.namespacePrefix + '.')
-          ? def.namespacePrefix + '.' + def.qualifiedName
-          : def.qualifiedName;
-      const resolved = 'global::' + qualified;
-      if (rooted && resolved !== spelling) return undefined;
-      if (identity && (identity.name !== resolved || identity.reference !== reference))
-        return undefined;
-      identity = { name: resolved, reference };
+      identity = candidate;
     }
     return identity;
   };
