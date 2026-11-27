@@ -70,6 +70,7 @@ import { typescriptArityCompatibility, typescriptMergeBindings } from '../typesc
 import { makeVueResolveImportTarget } from './import-target.js';
 import { extractVueTemplateEdgeData } from '../../vue-sfc-extractor.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 
 // Languages whose files may be pulled into the Vue scope-resolution pass
 // as import-closure context (`.vue` → `.ts` / `.js` cross-file resolution).
@@ -92,6 +93,7 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 
 const vueScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
+  elementTypeOf: indexOnlyElementType,
   language: SupportedLanguages.Vue,
   languageProvider: vueProvider,
   importEdgeReason: 'vue-scope: import',

@@ -18,6 +18,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
 
@@ -506,5 +507,63 @@ describe('F92 — JS-lang script block', () => {
   it('parses <script lang="js"> content and finds functions', () => {
     const funcs = getNodesByLabel(result, 'Function');
     expect(funcs).toContain('greet');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VUE-01: Array indexed element receiver resolution (repos[0].save())
+// ---------------------------------------------------------------------------
+
+describe('Vue array indexed element resolution (VUE-01)', () => {
+  const getResult = useFixture('vue-array-index', {
+    'models.ts': `export class User {
+    save(): void {}
+}
+
+export class Address {
+    save(): void {}
+}
+
+export class Decoy {
+    static save(): void {}
+}
+`,
+    'App.vue': `<script setup lang="ts">
+import { User, Address, Decoy } from './models';
+
+function processUsers(repos: User[]) {
+  repos[0].save();
+}
+
+function processUntyped(repos: any[]) {
+  repos[0].save();
+}
+</script>
+
+<template>
+  <div>App</div>
+</template>
+`,
+  });
+
+  it('resolves repos[0].save() to User.save with no decoy edges', () => {
+    const calls = getRelationships(getResult(), 'CALLS').filter((e) => e.source === 'processUsers');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].target).toBe('save');
+    expect(calls[0].targetFilePath).toBe('models.ts');
+    expect(calls[0].rel.targetId).toContain('User.save');
+  });
+
+  it('does not emit spurious edges to Address.save or Decoy.save from array callers', () => {
+    const calls = getRelationships(getResult(), 'CALLS').filter((e) => e.source === 'processUsers');
+    for (const call of calls) {
+      expect(call.rel.targetId).not.toContain('Address.save');
+      expect(call.rel.targetId).not.toContain('Decoy.save');
+    }
+  });
+
+  it('leaves untyped array receiver with no call edge to User.save', () => {
+    const calls = getRelationships(getResult(), 'CALLS').filter((e) => e.source === 'processUntyped');
+    expect(calls).toHaveLength(0);
   });
 });
