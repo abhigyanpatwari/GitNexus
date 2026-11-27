@@ -18,10 +18,15 @@ import {
   MiniMaxConfig,
   GLMConfig,
   DeepSeekConfig,
+  OrcaRouterConfig,
   ProviderConfig,
   MINIMAX_MODEL_IDS,
 } from './types';
-import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../config/ui-constants';
+import {
+  DEFAULT_OPENROUTER_BASE_URL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_ORCAROUTER_BASE_URL,
+} from '../../config/ui-constants';
 import { resilientFetch } from 'gitnexus-shared';
 
 const STORAGE_KEY = 'gitnexus-llm-settings';
@@ -80,6 +85,10 @@ const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings =>
   deepseek: {
     ...DEFAULT_LLM_SETTINGS.deepseek,
     ...parsed?.deepseek,
+  },
+  orcarouter: {
+    ...DEFAULT_LLM_SETTINGS.orcarouter,
+    ...parsed?.orcarouter,
   },
 });
 
@@ -168,7 +177,9 @@ export const updateProviderSettings = <T extends LLMProvider>(
                     ? Partial<Omit<GLMConfig, 'provider'>>
                     : T extends 'deepseek'
                       ? Partial<Omit<DeepSeekConfig, 'provider'>>
-                      : never
+                      : T extends 'orcarouter'
+                        ? Partial<Omit<OrcaRouterConfig, 'provider'>>
+                        : never
   >,
 ): LLMSettings => {
   const current = loadSettings();
@@ -274,6 +285,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
+    case 'orcarouter': {
+      const updated: LLMSettings = {
+        ...current,
+        orcarouter: {
+          ...(current.orcarouter ?? {}),
+          ...(updates as Partial<Omit<OrcaRouterConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     default: {
       // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
       const updated: LLMSettings = { ...current };
@@ -355,6 +377,17 @@ const providerBuilders: Record<LLMProvider, ProviderBuilder> = {
     if (!settings.deepseek?.apiKey) return null;
     return { provider: 'deepseek', ...settings.deepseek } as DeepSeekConfig;
   },
+  orcarouter: (settings) => {
+    if (!settings.orcarouter?.apiKey || settings.orcarouter.apiKey.trim() === '') return null;
+    return {
+      provider: 'orcarouter',
+      apiKey: settings.orcarouter.apiKey,
+      model: settings.orcarouter.model || 'orcarouter/auto',
+      baseUrl: settings.orcarouter.baseUrl || DEFAULT_ORCAROUTER_BASE_URL,
+      temperature: settings.orcarouter.temperature,
+      maxTokens: settings.orcarouter.maxTokens,
+    } as OrcaRouterConfig;
+  },
 };
 
 export const getActiveProviderConfig = (): ProviderConfig | null => {
@@ -427,6 +460,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'GLM (Z.AI)';
     case 'deepseek':
       return 'DeepSeek';
+    case 'orcarouter':
+      return 'OrcaRouter';
     default:
       return provider;
   }
@@ -459,6 +494,8 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
     case 'deepseek':
       return ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'];
+    case 'orcarouter':
+      return ['orcarouter/auto'];
     default:
       return [];
   }
