@@ -14,10 +14,10 @@ import { computeTaintFlows } from '../../../src/core/ingestion/taint/propagate.j
 import {
   buildBarrierGuardIndex,
   discoverProtoGuardCallees,
-  expandBarrierExclusionsForImports,
   functionContainsProtoGuard,
   isBarrierCalleeName,
   isBarrierGuarded,
+  resolveBarrierExclusions,
   validatedLabelForCondition,
 } from '../../../src/core/ingestion/taint/barrier-guards.js';
 
@@ -36,17 +36,22 @@ const MECH: SourceSinkSanitizerSpec = {
 function analyze(
   code: string,
   fnIndex = 0,
-  opts?: { excludeBarrierCallees?: ReadonlySet<string>; extraCfgs?: ReturnType<typeof cfgsOf> },
+  opts?: {
+    excludeBarrierCallees?: ReadonlySet<string>;
+    extraCfgs?: ReturnType<typeof cfgsOf>;
+    repoProtoGuardCallees?: ReadonlySet<string>;
+  },
 ) {
   const cfgs = cfgsOf(code);
   const cfg = cfgs[fnIndex] ?? cfgOf(code, fnIndex);
   expect(hasTaintSafeSites(cfg)).toBe(true);
   const defUse = computeReachingDefs(cfg);
   const matches = matchFunctionSites(cfg, MECH, buildTaintImportIndex(importsFor(code)));
-  const declared =
-    opts?.excludeBarrierCallees ??
-    discoverProtoGuardCallees(opts?.extraCfgs ? [...opts.extraCfgs, ...cfgs] : cfgs);
-  const excludeBarrierCallees = expandBarrierExclusionsForImports(declared, importsFor(code));
+  const repoProto =
+    opts?.repoProtoGuardCallees ??
+    (opts?.extraCfgs ? discoverProtoGuardCallees(opts.extraCfgs) : undefined);
+  const excludeBarrierCallees =
+    opts?.excludeBarrierCallees ?? resolveBarrierExclusions(cfgs, importsFor(code), repoProto);
   return {
     cfg,
     flows: computeTaintFlows(
@@ -598,6 +603,45 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not kind-blind suppress qualified call to same-file proto-only helper', () => {
+    const code = `
+      function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+      function write(req: any) {
+        const validators = { isValidKey };
+        if (!validators.isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const { flows } = analyze(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('keeps a genuine local isValidKey barrier despite an unrelated proto-only helper', () => {
+    // Repo-wide name clash must not disable this file's real validator.
+    const protoOnly = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const genuine = `
+      function isValidKey(key: string) {
+        return /^[a-z0-9._-]+$/i.test(key);
+      }
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const { flows } = analyze(genuine, 1, {
+      repoProtoGuardCallees: discoverProtoGuardCallees(cfgsOf(protoOnly)),
+    });
+    expect(flows.findings).toHaveLength(0);
+    expect(flows.kills.length).toBeGreaterThan(0);
+  });
+
   it('does not kind-blind suppress imported proto-only isValidKey from another file', () => {
     // Caller-only discovery misses the helper body; cross-file exclusion must apply.
     const helper = `
@@ -637,10 +681,10 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       }
     `;
     const helperCfgs = cfgsOf(helper);
-    const declared = discoverProtoGuardCallees([...helperCfgs, ...cfgsOf(caller)]);
-    expect([...declared]).toContain('isValidKey');
-    expect([...declared]).not.toContain('isValidHostName');
-    expect([...expandBarrierExclusionsForImports(declared, importsFor(caller))]).toContain(
+    const repo = discoverProtoGuardCallees(helperCfgs);
+    expect([...repo]).toContain('isValidKey');
+    expect([...repo]).not.toContain('isValidHostName');
+    expect([...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo)]).toContain(
       'isValidHostName',
     );
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });

@@ -81,7 +81,7 @@ import {
 import type { BindingEntry, FunctionCfg } from '../cfg/types.js';
 import { hasTaintSafeSites } from './site-safety.js';
 import { buildTaintImportIndex, matchFunctionSites } from './match.js';
-import { discoverProtoGuardCallees, expandBarrierExclusionsForImports } from './barrier-guards.js';
+import { resolveBarrierExclusions } from './barrier-guards.js';
 import {
   computeTaintFlows,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -171,12 +171,11 @@ export function emitFileTaint(
   parsed?: ParsedFile,
   refine: RefinementSolver = createFunctionRefinement,
   /**
-   * Proto-reject helper names discovered across the repo (or file). When
-   * omitted, discovered from `cfgs` alone — callers that import a proto-only
-   * `isValid*` from another file must pass the cross-file set or the name
-   * heuristic would kind-blind suppress command-injection.
+   * Repo-wide declared names of proto-reject helpers. Scoped per file via
+   * {@link resolveBarrierExclusions}: local CFGs always apply; cross-file
+   * names apply only when this file imports them (plus local aliases).
    */
-  excludeBarrierCallees?: ReadonlySet<string>,
+  repoProtoGuardCallees?: ReadonlySet<string>,
 ): TaintEmitResult {
   const result: TaintEmitResult = {
     functionsAnalyzed: 0,
@@ -198,12 +197,7 @@ export function emitFileTaint(
   const maxHops = limits?.maxHops ?? DEFAULT_PDG_MAX_TAINT_HOPS;
   const maxFacts = limits?.maxFacts ?? DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION;
   // Proto-reject helpers (even if named isValid*) must not KIND_ORDER-suppress.
-  // Expand declared CFG names with local import aliases (`isValidKey as
-  // isValidHostName`) so call-site spellings match the exclusion set.
-  const excluded = expandBarrierExclusionsForImports(
-    excludeBarrierCallees ?? discoverProtoGuardCallees(cfgs),
-    parsedImports,
-  );
+  const excluded = resolveBarrierExclusions(cfgs, parsedImports, repoProtoGuardCallees);
   const barrierOptions = excluded.size > 0 ? { excludeBarrierCallees: excluded } : undefined;
 
   // Defensive cross-CFG id guard: finding identity is unique WITHIN a

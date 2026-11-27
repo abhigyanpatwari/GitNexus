@@ -175,21 +175,24 @@ export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): Readonl
 }
 
 /**
- * Expand proto-guard exclusions with local import aliases.
- * Declared CFG names (`isValidKey`) must also exclude `import { isValidKey as
- * isValidHostName }` call-site spellings, or the name heuristic still barriers.
+ * Per-file barrier exclusions: same-file proto-reject helpers, plus only those
+ * repo-wide proto helpers this file actually imports (with local aliases).
+ * Unrelated same-named helpers in other files must not disable a genuine
+ * local `isValid*` barrier.
  */
-export function expandBarrierExclusionsForImports(
-  declared: ReadonlySet<string>,
+export function resolveBarrierExclusions(
+  localCfgs: readonly FunctionCfg[],
   imports: readonly ParsedImport[],
+  repoProtoGuards?: ReadonlySet<string>,
 ): ReadonlySet<string> {
-  if (declared.size === 0 || imports.length === 0) return declared;
-  const out = new Set(declared);
+  const out = new Set(discoverProtoGuardCallees(localCfgs));
+  if (!repoProtoGuards || repoProtoGuards.size === 0) return out;
   for (const imp of imports) {
     if (imp.kind !== 'named' && imp.kind !== 'alias') continue;
     if (imp.typeOnly === true) continue;
     const imported = imp.importedName;
-    if (!imported || !declared.has(imported)) continue;
+    if (!imported || !repoProtoGuards.has(imported)) continue;
+    out.add(imported);
     if (imp.localName) out.add(imp.localName);
   }
   return out;
@@ -361,11 +364,11 @@ export function collectBarrierControllers(
       for (let siteIndex = 0; siteIndex < sites.length; siteIndex++) {
         const site = sites[siteIndex];
         if (site.kind !== 'call' || !site.callee) continue;
-        // Name-heuristic validators only. Proto-reject helpers are excluded
-        // only for *bare* same-file calls (`isValidKey`), not qualified
-        // `obj.isValidKey` / `validators.isValidKey` (avoid cross-object FPs).
+        // Name-heuristic validators only. Proto-reject helpers are excluded by
+        // callee leaf so `validators.isValidKey` (local `{ isValidKey }` wrap)
+        // cannot kind-blind suppress when `isValidKey` is proto-only.
         if (!isBarrierCalleeName(site.callee)) continue;
-        if (!site.callee.includes('.') && excludeBarrierCallees.has(site.callee)) continue;
+        if (excludeBarrierCallees.has(calleeLeaf(site.callee))) continue;
         // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
         const subjects = primaryArgSubjects(sites, siteIndex, site);

@@ -2085,12 +2085,13 @@ export function runScopeResolution(
     // harvest needs it for EVERY language (it is pure data-dependence, no taint
     // model), and the taint summary harvest reuses it when taintSpec is present.
     const fnNodeIndex = input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph);
-    // Cross-file proto-reject helpers (even named isValid*): discover once
-    // over every emit-safe CFG so an import of a proto-only helper cannot
-    // kind-blind suppress command-injection in the caller file.
+    // Cross-file proto-reject helper *declared names*: discover once over
+    // every emit-safe CFG. emitFileTaint scopes these per file — only imports
+    // of a repo proto helper (plus same-file discovery) enter exclusions, so
+    // an unrelated genuine isValidKey elsewhere is not disabled.
     // Per-element try mirrors the in-loop isEmitSafeCfg filter — a throwing
     // getter must skip that CFG, not abort runScopeResolution.
-    const repoExcludeBarrierCallees = discoverProtoGuardCallees(
+    const repoProtoGuardCallees = discoverProtoGuardCallees(
       emitParsedFiles.flatMap((pf) => {
         const side = pf.cfgSideChannel;
         if (!Array.isArray(side)) return [];
@@ -2244,7 +2245,7 @@ export function runScopeResolution(
             rdSolve,
             pf,
             refine,
-            repoExcludeBarrierCallees,
+            repoProtoGuardCallees,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
