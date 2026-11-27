@@ -101,14 +101,24 @@ function resolveIndexedName(index: NameIndex | undefined, name: string) {
     : index.bySimpleName.get(name);
 }
 
-function preferenceAppliesToType(provider: DiProviderMatch, targetTypeName: string): boolean {
-  if (provider.preferenceReason === undefined) return false;
-  const scoped = provider.preferredForTypeNames;
-  if (scoped === undefined || scoped.length === 0) return true;
-  const targetSimple = typeNameSimple(targetTypeName);
-  return scoped.some((typeName) => {
-    return typeName === targetTypeName || typeName === targetSimple || typeNameSimple(typeName) === targetSimple;
-  });
+function preferenceReasonForType(
+  provider: DiProviderMatch,
+  targetTypeName: string,
+): string | undefined {
+  const byType = provider.preferenceByType;
+  if (byType !== undefined) {
+    const exact = byType[targetTypeName];
+    if (exact !== undefined) return exact;
+    if (!isQualifiedTypeName(targetTypeName)) {
+      for (const [typeName, reason] of Object.entries(byType)) {
+        if (typeNameSimple(typeName) === targetTypeName) return reason;
+      }
+    }
+  }
+  if (provider.preferenceReason !== undefined && byType === undefined) {
+    return provider.preferenceReason;
+  }
+  return undefined;
 }
 
 function providerCandidates(
@@ -425,10 +435,8 @@ export const diPhase: PipelinePhase<DIOutput> = {
 
       const preferred = viable.flatMap((id) => {
         const provider = providers.get(id);
-        if (provider === undefined || !preferenceAppliesToType(provider, candidate.targetTypeName)) {
-          return [];
-        }
-        const reason = provider.preferenceReason;
+        if (provider === undefined) return [];
+        const reason = preferenceReasonForType(provider, candidate.targetTypeName);
         if (reason === undefined) return [];
         return [{ id, reason }];
       });

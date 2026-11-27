@@ -49,13 +49,14 @@ export interface DiProviderMatch {
    * provider from injection into its own declaration site without knowing the
    * framework-specific declaration model. */
   declaredByNodeId?: string;
-  /** Present when the framework marks this as its preferred candidate. The
-   *  value is appended to the emitted edge reason when it disambiguates. */
+  /** Present when the framework marks this as its preferred candidate for
+   *  every injectable type (e.g. Spring `@Primary`). Ignored for a given
+   *  target when `preferenceByType` also names that target. */
   preferenceReason?: string;
-  /** When set, `preferenceReason` only applies to these injection type names
-   *  (simple or qualified). Omitted ⇒ preference applies to every type the
-   *  provider can satisfy (e.g. Spring `@Primary`). */
-  preferredForTypeNames?: readonly string[];
+  /** Type-scoped preference reasons (simple and/or qualified type name →
+   *  reason). Used by Symfony aliases so a preference for interface A cannot
+   *  win an ambiguous injection of unrelated interface B. */
+  preferenceByType?: Readonly<Record<string, string>>;
 }
 
 /** Per-language DI behavior. Matchers receive whole nodes so the shared phase

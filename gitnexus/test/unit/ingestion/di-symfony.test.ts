@@ -19,11 +19,16 @@ import {
   extractSymfonyServiceAliases,
   isServicesYaml,
   parseSymfonyServicesYaml,
+  symfonyConfigPhase,
 } from '../../../src/core/ingestion/pipeline-phases/symfony-config.js';
 import { generateId } from '../../../src/lib/utils.js';
 import type { PipelineContext } from '../../../src/core/ingestion/pipeline-phases/types.js';
+import type { PhaseResult } from '../../../src/core/ingestion/pipeline-phases/types.js';
 import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 function makeCtx(graph: KnowledgeGraph, repoPath = '/tmp/symfony-repo'): PipelineContext {
   return { repoPath, graph, onProgress: () => {}, pipelineStart: 0 };
@@ -74,22 +79,13 @@ function addHasMethod(graph: KnowledgeGraph, classId: string, methodId: string):
 function stampSymfonyProvider(
   graph: KnowledgeGraph,
   classId: string,
-  options?: { preferenceReason?: string; preferredForTypeNames?: readonly string[] },
+  preferenceByType?: Readonly<Record<string, string>>,
 ): void {
   const node = graph.getNode(classId)!;
   const base = defaultSymfonyProvider(node);
   if (base === null) return;
-  if (options === undefined) {
-    node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = base;
-    return;
-  }
-  node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
-    ...base,
-    ...(options.preferenceReason !== undefined ? { preferenceReason: options.preferenceReason } : {}),
-    ...(options.preferredForTypeNames !== undefined
-      ? { preferredForTypeNames: options.preferredForTypeNames }
-      : {}),
-  };
+  node.properties[SYMFONY_DI_PROVIDER_PROPERTY] =
+    preferenceByType === undefined ? base : { ...base, preferenceByType };
 }
 
 describe('normalizeSymfonyInjectionType', () => {
@@ -152,6 +148,11 @@ describe('classMatchesName', () => {
 
   it('allows unqualified wanted to match a qualified node short name', () => {
     expect(classMatchesName('FileLogger', 'App\\Log\\FileLogger', 'FileLogger')).toBe(true);
+  });
+
+  it('can match more than one class for an unqualified short name', () => {
+    expect(classMatchesName('FileLogger', 'App\\Log\\FileLogger', 'FileLogger')).toBe(true);
+    expect(classMatchesName('FileLogger', 'Other\\FileLogger', 'FileLogger')).toBe(true);
   });
 });
 
@@ -278,8 +279,9 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     addImplements(graph, syslogId, loggerId);
     stampSymfonyProvider(graph, syslogId);
     stampSymfonyProvider(graph, fileLoggerId, {
-      preferenceReason: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
-      preferredForTypeNames: ['App\\Log\\Logger', 'Logger'],
+      'App\\Log\\Logger':
+        'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      Logger: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
     });
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
@@ -328,6 +330,52 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     expect(injects.some((e) => e.sourceId === orderId && e.targetId === fileLoggerId)).toBe(true);
   });
 
+  it('skips unqualified aliases that match multiple same-named classes', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'symfony-di-'));
+    await fs.mkdir(path.join(repoPath, 'config'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoPath, 'config', 'services.yaml'),
+      `
+services:
+  App\\Log\\Logger: '@FileLogger'
+`,
+      'utf8',
+    );
+
+    const graph = createKnowledgeGraph();
+    const aId = addNode(graph, 'Class', 'FileLogger', {
+      qualifiedName: 'App\\Log\\FileLogger',
+    });
+    const bId = addNode(graph, 'Class', 'FileLoggerB', {
+      name: 'FileLogger',
+      qualifiedName: 'Other\\FileLogger',
+      filePath: 'src/Other/FileLogger.php',
+    });
+
+    const deps = new Map<string, PhaseResult<unknown>>([
+      [
+        'parse',
+        {
+          phaseName: 'parse',
+          output: { allPaths: ['config/services.yaml'] },
+          durationMs: 0,
+        },
+      ],
+    ]);
+
+    const output = await symfonyConfigPhase.execute(makeCtx(graph, repoPath), deps);
+    expect(output.aliasesFound).toBe(1);
+    expect(output.aliasesApplied).toBe(0);
+    expect(graph.getNode(aId)!.properties[SYMFONY_DI_PROVIDER_PROPERTY]).toEqual(
+      expect.not.objectContaining({ preferenceByType: expect.anything() }),
+    );
+    expect(graph.getNode(bId)!.properties[SYMFONY_DI_PROVIDER_PROPERTY]).toEqual(
+      expect.not.objectContaining({ preferenceByType: expect.anything() }),
+    );
+
+    await fs.rm(repoPath, { recursive: true, force: true });
+  });
+
   it('does not apply a Logger alias preference to an unrelated Clock injection', async () => {
     const graph = createKnowledgeGraph();
     const orderId = addNode(graph, 'Class', 'OrderService');
@@ -353,8 +401,9 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     stampSymfonyProvider(graph, systemClockId);
     stampSymfonyProvider(graph, otherClockId);
     stampSymfonyProvider(graph, fileLoggerId, {
-      preferenceReason: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
-      preferredForTypeNames: ['App\\Log\\Logger', 'Logger'],
+      'App\\Log\\Logger':
+        'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      Logger: 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
     });
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {

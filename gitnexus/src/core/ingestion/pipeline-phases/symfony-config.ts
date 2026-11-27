@@ -13,6 +13,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import type { GraphNode } from 'gitnexus-shared';
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
@@ -245,6 +246,7 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
 
     let aliasesApplied = 0;
     for (const alias of aliases) {
+      const matches: GraphNode[] = [];
       ctx.graph.forEachNode((node) => {
         if (node.label !== 'Class') return;
         if (node.properties.language !== 'php') return;
@@ -257,25 +259,35 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
         ) {
           return;
         }
-        const base = defaultSymfonyProvider(node);
-        if (base === null) return;
-        const existing = node.properties[SYMFONY_DI_PROVIDER_PROPERTY];
-        const priorTypes =
-          existing !== null &&
-          typeof existing === 'object' &&
-          Array.isArray((existing as { preferredForTypeNames?: unknown }).preferredForTypeNames)
-            ? ((existing as { preferredForTypeNames: string[] }).preferredForTypeNames)
-            : [];
-        const preferredForTypeNames = [
-          ...new Set([...priorTypes, alias.interfaceName, simpleName(alias.interfaceName)]),
-        ];
-        node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
-          ...base,
-          preferredForTypeNames,
-          preferenceReason: `Symfony services.yaml alias ${alias.interfaceName} → ${alias.implementationName}`,
-        };
-        aliasesApplied++;
+        if (defaultSymfonyProvider(node) === null) return;
+        matches.push(node);
       });
+
+      if (matches.length !== 1) continue;
+      const node = matches[0];
+
+      const base = defaultSymfonyProvider(node);
+      if (base === null) continue;
+
+      const reason = `Symfony services.yaml alias ${alias.interfaceName} → ${alias.implementationName}`;
+      const existing = node.properties[SYMFONY_DI_PROVIDER_PROPERTY];
+      const priorByType =
+        existing !== null &&
+        typeof existing === 'object' &&
+        (existing as { preferenceByType?: unknown }).preferenceByType !== null &&
+        typeof (existing as { preferenceByType?: unknown }).preferenceByType === 'object' &&
+        !Array.isArray((existing as { preferenceByType?: unknown }).preferenceByType)
+          ? { ...((existing as { preferenceByType: Record<string, string> }).preferenceByType) }
+          : {};
+
+      priorByType[alias.interfaceName] = reason;
+      priorByType[simpleName(alias.interfaceName)] = reason;
+
+      node.properties[SYMFONY_DI_PROVIDER_PROPERTY] = {
+        ...base,
+        preferenceByType: priorByType,
+      };
+      aliasesApplied++;
     }
 
     return { aliasesApplied, aliasesFound: aliases.length };
