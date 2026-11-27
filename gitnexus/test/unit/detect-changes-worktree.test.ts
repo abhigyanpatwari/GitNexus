@@ -103,6 +103,16 @@ describe('detect_changes worktree selection', () => {
     expect(await backend.callTool('detect_changes', params)).toMatchObject(expected);
   });
 
+  it.each([
+    [{ scope: 'stage' }, 'Invalid scope'],
+    [{ scope: 'staged', base_ref: 'main' }, 'only valid for "compare" scope'],
+    [{ scope: 'compare' }, 'required for "compare" scope'],
+  ])('rejects invalid direct tool arguments (%j)', async (overrides, message) => {
+    expect(await backend.callTool('detect_changes', { ...params, ...overrides })).toEqual({
+      error: expect.stringContaining(message),
+    });
+  });
+
   it('rejects relative and foreign worktrees and reports an unavailable registered root', async () => {
     const foreign = tempDirs.dir();
     initGitRepo(foreign);
