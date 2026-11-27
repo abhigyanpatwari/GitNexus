@@ -189,6 +189,17 @@ describe('generateAIContextFiles', () => {
         expect(content).toContain(
           'impact({target: "symbolName", direction: "upstream", repo: "TransportFallback"})',
         );
+
+        // Issue #3976: pre-edit impact guidance must be scoped to code changes.
+        expect(content).toContain('MUST run impact before code/config/test edits.');
+        expect(content).toContain('Docs-only exempt.');
+        expect(content).toContain('NEVER edit code/config/tests without MCP/CLI impact.');
+
+        // The previous unconditional wording must not return.
+        expect(content).not.toContain('MUST run impact before editing.');
+        expect(content).not.toContain(
+          'NEVER edit a function, class, or method before MCP/CLI impact analysis.',
+        );
         expect(content).toContain(
           'node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .',
         );
@@ -241,6 +252,16 @@ describe('generateAIContextFiles', () => {
       for (const call of expected) expect(content).toContain(call);
     }
     expect((await refreshBaseRefLine(tmpDir, 'develop')).files).toEqual([]);
+  });
+
+  it.each([true, false])('exempts docs-only edits when hasPdg=%s (#3976)', (hasPdg) => {
+    const content = generateGitNexusContent('ScopeProject', { nodes: 50 }, { hasPdg });
+    const alwaysDo = content.slice(content.indexOf('## Always Do'), content.indexOf('## Never Do'));
+
+    expect(alwaysDo).toContain('**MUST run impact before code/config/test edits.**');
+    expect(alwaysDo).toContain('Docs-only exempt.');
+    expect(alwaysDo).toContain('report callers/processes/risk.');
+    expect(alwaysDo).toContain('**MUST analyze changes before commit.**');
   });
 
   it('uses the configured runner for transport fallbacks, including PDG impact (#2671)', () => {
