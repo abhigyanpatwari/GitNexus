@@ -460,6 +460,15 @@ describe('bundled Linux tree-sitter runtime repairs', () => {
     );
   });
 
+  // Highest minor version of a versioned symbol family named in the binary
+  // (e.g. 29 for GLIBCXX_3.4.29), so any version above the ceiling fails.
+  const highestSymbolVersion = (bytes: Buffer, family: string): number => {
+    const pattern = new RegExp(`${family.replaceAll('.', '\\.')}\\.(\\d+)`, 'g');
+    const minors = [...bytes.toString('latin1').matchAll(pattern)].map((m) => Number(m[1]));
+    expect(minors.length).toBeGreaterThan(0);
+    return Math.max(...minors);
+  };
+
   for (const [tuple, arch, other] of tuples) {
     it(`${tuple}: replacement is an N-API binary within the libstdc++ 3.4.29 ceiling`, () => {
       const entry = manifest.binaries.find((item: { tuple: string }) => item.tuple === tuple);
@@ -468,9 +477,11 @@ describe('bundled Linux tree-sitter runtime repairs', () => {
       expect(classifyBinaryHeader(bytes, bytes.length, 'linux', arch)).toBe('valid');
       expect(classifyBinaryHeader(bytes, bytes.length, 'linux', other)).toBe('corrupt');
       expect(bytes.includes(NAPI_SYMBOL)).toBe(true);
-      // Ubuntu 22.04 and Debian 12 stop at GLIBCXX_3.4.30 (#4165).
-      expect(bytes.includes('GLIBCXX_3.4.30')).toBe(false);
-      expect(bytes.includes('GLIBCXX_3.4.31')).toBe(false);
+      // RHEL 9 stops at GLIBCXX_3.4.29; Ubuntu 22.04 and Debian 12 at 3.4.30 (#4165).
+      // Same ceilings as scripts/rebuild-runtime-prebuild.cjs.
+      expect(highestSymbolVersion(bytes, 'GLIBCXX_3.4')).toBeLessThanOrEqual(29);
+      expect(highestSymbolVersion(bytes, 'CXXABI_1.3')).toBeLessThanOrEqual(9);
+      expect(highestSymbolVersion(bytes, 'GLIBC_2')).toBeLessThanOrEqual(17);
     });
 
     it(`${tuple}: installed runtime prebuild is the bundled replacement`, () => {
