@@ -121,6 +121,58 @@ describe('run-analyze module', () => {
     }
   }, 120_000);
 
+  it('re-indexes a clean same-commit checkout when the max file size changes', async () => {
+    const tmpRepo = await createTempDir('gitnexus-max-file-size-');
+    const tmpHome = await createTempDir('gitnexus-max-file-size-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    const savedLimit = process.env.GITNEXUS_MAX_FILE_SIZE;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    delete process.env.GITNEXUS_MAX_FILE_SIZE;
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      git('init');
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'main.ts'),
+        'export function main() { return 1; }',
+      );
+      // Just over the 512 KB default.
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'big.ts'),
+        `export const big = 1;\n${'// padding\n'.repeat(50_000)}`,
+      );
+      git('add', '.');
+      git('-c', 'user.name=test', '-c', 'user.email=test@test', 'commit', '-m', 'fixture');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const analyze = () =>
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { skipAgentsMd: true, skipSkills: true, skipFts: true },
+          { onProgress: () => {} },
+        );
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await analyze();
+      expect((await loadMeta(storagePath))?.fileHashes).not.toHaveProperty('big.ts');
+      expect((await analyze()).alreadyUpToDate).toBe(true);
+
+      process.env.GITNEXUS_MAX_FILE_SIZE = '2048';
+      expect((await analyze()).alreadyUpToDate).not.toBe(true);
+      expect((await loadMeta(storagePath))?.fileHashes).toHaveProperty('big.ts');
+      expect((await analyze()).alreadyUpToDate).toBe(true);
+
+      delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      expect((await analyze()).alreadyUpToDate).not.toBe(true);
+      expect((await loadMeta(storagePath))?.fileHashes).not.toHaveProperty('big.ts');
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      if (savedLimit === undefined) delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      else process.env.GITNEXUS_MAX_FILE_SIZE = savedLimit;
+      await tmpRepo.cleanup();
+      await tmpHome.cleanup();
+    }
+  }, 120_000);
+
   it('exports runFullAnalysis as a function', async () => {
     const mod = await import('../../src/core/run-analyze.js');
     expect(typeof mod.runFullAnalysis).toBe('function');

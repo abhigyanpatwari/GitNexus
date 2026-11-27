@@ -305,7 +305,10 @@ import {
 } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { walkRepositoryPaths } from './ingestion/filesystem-walker.js';
-import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
+import {
+  DEFAULT_MAX_FILE_SIZE_BYTES,
+  getMaxFileSizeBytes,
+} from './ingestion/utils/max-file-size.js';
 import { getIncludeDotDirs, includeDotDirsCoverage } from './ingestion/utils/include-dot-dirs.js';
 import {
   cacheRowCount,
@@ -3154,6 +3157,10 @@ async function runFullAnalysisInner(
   const includeDotDirsChanged =
     JSON.stringify(existingMeta?.indexCoverage?.includeDotDirs ?? []) !==
     JSON.stringify(getIncludeDotDirs());
+  // Indexes written before the limit was recorded were built with the default.
+  const maxFileSizeChanged =
+    (existingMeta?.indexCoverage?.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES) !==
+    getMaxFileSizeBytes();
   if (
     existingMeta &&
     (!existingMeta.embeddingCheckpoint ||
@@ -3165,7 +3172,8 @@ async function runFullAnalysisInner(
     existingMeta.lastCommit === currentCommit &&
     !ftsModeChanged &&
     !processDetectionMismatch &&
-    !includeDotDirsChanged
+    !includeDotDirsChanged &&
+    !maxFileSizeChanged
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
