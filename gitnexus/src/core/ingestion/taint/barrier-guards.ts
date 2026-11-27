@@ -290,7 +290,8 @@ export function calleeIsExcludedBarrier(
 /**
  * Per-file barrier exclusions: same-file proto-reject helpers, plus repo
  * proto helpers this file imports from a module resolved relative to
- * `importerFilePath` (named/alias local names; namespace as `ns.name` only).
+ * `importerFilePath` (named local / alias local only — never the exported
+ * name for aliases; namespace as `ns.name` only).
  */
 export function resolveBarrierExclusions(
   localCfgs: readonly FunctionCfg[],
@@ -313,8 +314,13 @@ export function resolveBarrierExclusions(
       if (!imported) continue;
       const hit = repoProtoGuards.some((r) => r.name === imported && r.filePath === file);
       if (!hit) continue;
-      out.add(imported);
-      if (imp.localName) out.add(imp.localName);
+      // Alias: only the local binding is callable here — do not exclude the
+      // exported name (a separate local `isValidKey` must remain a barrier).
+      if (imp.kind === 'alias') {
+        out.add(imp.localName);
+      } else {
+        out.add(imp.localName ?? imported);
+      }
     } else {
       // import * as guards → exclude only `guards.isValidKey`, not bare leaf
       // (a separate validators.isValidKey must remain a barrier).

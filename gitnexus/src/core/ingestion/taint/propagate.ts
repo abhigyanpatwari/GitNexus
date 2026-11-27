@@ -290,8 +290,9 @@ interface OccPath {
 const DIRECT_PATH: OccPath = { kinds: EMPTY_KINDS, viaCall: false, sanitizers: [] };
 
 /**
- * True when the occurrence may not be the validated value: unmodeled call, or
- * a matched sanitizer hop (`viaCall` stays false for modeled sanitizers).
+ * True when the occurrence may not be the validated value: transforming call
+ * (`viaCall`, including matched sanitizers at uncleared `args` positions), or
+ * a recorded sanitizer hop.
  */
 function pathMayTransform(path: OccPath): boolean {
   return path.viaCall || path.sanitizers.length > 0;
@@ -429,10 +430,20 @@ export function computeTaintFlows(
     return sortKinds(kinds);
   };
 
-  /** A call/new site the model does not understand (anything but a matched sanitizer). */
-  const isUnmodeledCall = (ctx: StmtContext, siteIndex: number): boolean => {
+  /**
+   * A call/new site that may transform the value without a proven kill at
+   * `argPos`: anything but a matched sanitizer that clears that position.
+   * Matched sanitizers with `args` that omit this position stay transforming
+   * (`viaCall`) so barriers cannot treat `sanitize(req.body, other)` as the
+   * validated value when only arg 1 is cleared.
+   */
+  const isUnmodeledCall = (ctx: StmtContext, siteIndex: number, argPos?: number): boolean => {
     const site = ctx.sites[siteIndex];
-    return site.kind !== 'member-read' && !ctx.sanitizersBySite.has(siteIndex);
+    if (site.kind === 'member-read') return false;
+    if (!ctx.sanitizersBySite.has(siteIndex)) return true;
+    // Matched sanitizer: modeled only for positions it actually clears.
+    if (argPos !== undefined && neutralizedAt(ctx, siteIndex, argPos).length === 0) return true;
+    return false;
   };
 
   const emerge = (ctx: StmtContext, siteIndex: number, argPos: number, inner: OccPath): OccPath => {
@@ -441,7 +452,7 @@ export function computeTaintFlows(
     const added = neutralizedAt(ctx, siteIndex, argPos);
     return {
       kinds: added.length === 0 ? inner.kinds : new Set([...inner.kinds, ...added]),
-      viaCall: inner.viaCall || isUnmodeledCall(ctx, siteIndex),
+      viaCall: inner.viaCall || isUnmodeledCall(ctx, siteIndex, argPos),
       sanitizers:
         added.length === 0 ? inner.sanitizers : [...inner.sanitizers, { siteIndex, kinds: added }],
     };

@@ -419,8 +419,8 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
   });
 
   it('does not suppress after a kind-partial sanitizer transform into the sink', () => {
-    // escape neutralizes xss only; viaCall stays false for matched sanitizers,
-    // but the barrier must still refuse — validated pre-escape value ≠ sink arg.
+    // escape neutralizes xss only; barrier must still refuse — validated
+    // pre-escape value ≠ sink arg (sanitizer hop or args-narrow miss).
     const mech: SourceSinkSanitizerSpec = {
       ...MECH,
       sanitizers: [{ name: 'escape', neutralizes: ['xss'], global: true }],
@@ -448,6 +448,28 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
       const flows = computeTaintFlows(cfg, defUse, matches);
       expect(flows.findings.length).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it('does not suppress through a matched sanitizer at a non-cleared arg position', () => {
+    // sanitize clears only arg 1 — arg 0 still transforms; barrier must refuse.
+    const mech: SourceSinkSanitizerSpec = {
+      ...MECH,
+      sanitizers: [
+        { name: 'sanitize', args: [1], neutralizes: ['command-injection'], global: true },
+      ],
+    };
+    const code = `
+      function f(req: any, other: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(sanitize(req.body, other));
+      }
+    `;
+    const cfg = cfgsOf(code)[0];
+    expect(hasTaintSafeSites(cfg)).toBe(true);
+    const defUse = computeReachingDefs(cfg);
+    const matches = matchFunctionSites(cfg, mech, buildTaintImportIndex(importsFor(code)));
+    const flows = computeTaintFlows(cfg, defUse, matches);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
   it('does not suppress when a direct and transformed path share the sink arg', () => {
@@ -862,12 +884,43 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
     const repo = discoverProtoGuardRefs(helperCfgs);
     expect(repo.some((r) => r.name === 'isValidKey')).toBe(true);
-    expect([
+    const excluded = [
       ...resolveBarrierExclusions(cfgsOf(caller), importsFor(caller), repo, 'fixture.ts'),
-    ]).toContain('isValidHostName');
+    ];
+    expect(excluded).toContain('isValidHostName');
+    expect(excluded).not.toContain('isValidKey');
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
     expect(flows.kills).toHaveLength(0);
+  });
+
+  it('alias proto exclusion does not disable a separate same-named local validator', () => {
+    const helper = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const caller = `
+      import { isValidKey as protoKey } from './helpers';
+      function isValidKey(key: string) {
+        return /^[a-z0-9._-]+$/i.test(key);
+      }
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const helperCfgs = withFilePath(cfgsOf(helper), 'helpers.ts');
+    const excluded = resolveBarrierExclusions(
+      cfgsOf(caller),
+      importsFor(caller),
+      discoverProtoGuardRefs(helperCfgs),
+      'fixture.ts',
+    );
+    expect([...excluded]).toContain('protoKey');
+    expect([...excluded]).not.toContain('isValidKey');
+    const { flows } = analyze(caller, 1, { extraCfgs: helperCfgs });
+    expect(flows.findings).toHaveLength(0);
   });
 
   it('discovers member-assigned proto guards by property name', () => {
@@ -990,6 +1043,53 @@ Key"] = function helper(key: string) {
     // Excluded by bare call-site name — must not kind-blind suppress.
     const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('discovers string-keyed object-literal proto guards by property name', () => {
+    const code = `
+      const validators = {
+        "isValidKey": function helper(key: string) {
+          return key !== "__proto__" && key !== "constructor";
+        },
+      };
+      function write(req: any) {
+        if (!validators.isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+    expect(cfgs.some((c) => c.functionName === 'helper')).toBe(false);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
+    const { flows } = analyze(
+      code,
+      cfgs.findIndex((c) => c.functionName === 'write'),
+    );
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('discovers as-cast assigned proto guards by outer binding name', () => {
+    const code = `
+      type Validator = (key: string) => boolean;
+      const isValidKey = (function helper(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }) as Validator;
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+    expect(cfgs.some((c) => c.functionName === 'helper')).toBe(false);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
+    const { flows } = analyze(
+      code,
+      cfgs.findIndex((c) => c.functionName === 'write'),
+    );
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
   });
 
   it('does not treat a __proto__ logger that always returns true as a guard', () => {

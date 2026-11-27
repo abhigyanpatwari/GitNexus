@@ -1390,8 +1390,17 @@ function decodeJsStringLiteral(raw: string): string | undefined {
  */
 function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
   let parent = fnNode.parent;
-  // Skip wrapping parentheses: const f = (x => …)
-  while (parent?.type === 'parenthesized_expression') parent = parent.parent;
+  // Skip value wrappers: const f = (x => …), (fn) as T, fn!, <T>fn
+  while (
+    parent &&
+    (parent.type === 'parenthesized_expression' ||
+      parent.type === 'as_expression' ||
+      parent.type === 'satisfies_expression' ||
+      parent.type === 'non_null_expression' ||
+      parent.type === 'type_assertion')
+  ) {
+    parent = parent.parent;
+  }
   if (!parent) return undefined;
 
   if (parent.type === 'variable_declarator') {
@@ -1424,7 +1433,7 @@ function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
     return undefined;
   }
 
-  // public safeKey = (key) => …  /  safeKey: (key) => …
+  // public safeKey = (key) => …  /  safeKey: (key) => …  /  "isValidKey": …
   if (parent.type === 'public_field_definition' || parent.type === 'pair') {
     const key =
       parent.childForFieldName('name') ??
@@ -1438,6 +1447,7 @@ function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
     ) {
       return key.text;
     }
+    if (key?.type === 'string') return decodeJsStringLiteral(key.text);
   }
 
   return undefined;
