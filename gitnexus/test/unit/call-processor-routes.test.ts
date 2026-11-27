@@ -280,11 +280,7 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
   });
 
-  it('overloaded controller method → edge targets the first-registered definition', async () => {
-    // Two same-name method definitions in the controller file (overloads).
-    // The emitter takes lookupExactAll(...)[0] — first-registered wins, parity
-    // with the legacy same-file tier which returned candidates[0]. Pins the
-    // selection policy so it can't silently drift.
+  it('overloaded controller method → fail-open guessed edge (no unique exact owner)', async () => {
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
     model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
@@ -299,7 +295,8 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
 
     const edges = routeCallsEdges(graph);
     expect(edges).toHaveLength(1);
-    expect(edges[0].targetId).toBe('method:OrderController.index#1');
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:index`));
+    expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
   });
 
   it('aliased controller resolves via controllerQualifiedName → edge emitted', async () => {

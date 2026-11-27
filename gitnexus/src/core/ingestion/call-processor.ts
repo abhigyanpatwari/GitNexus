@@ -362,7 +362,7 @@ export const processRoutesFromExtracted = async (
     // Method must live in the controller's own file (the legacy emitter only
     // accepted same-file method resolutions) and be owned by the controller class.
     const methodDefs = lookupOwnedControllerMethods(model.symbols, controllerDef, route.methodName);
-    let methodId = methodDefs[0]?.nodeId;
+    let methodId = methodDefs.length === 1 ? methodDefs[0]?.nodeId : undefined;
     if (!methodId && getProviderForFile(route.filePath)?.caseInsensitiveRouteMethods) {
       methodId = routeHandlerMethodCaseInsensitiveFallback(
         model.symbols,

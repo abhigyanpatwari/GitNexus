@@ -435,7 +435,7 @@ if (env('X')) {
     expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
-  it('require_once in different host files never suppress each other', () => {
+  it('require_once in different host files shares PHP process-wide once state', () => {
     const hostA = extractBindings(
       `<?php
 $app->router->group(['prefix' => 'a'], function ($router) {
@@ -455,7 +455,7 @@ $app->router->group(['prefix' => 'b'], function ($router) {
     const files = new Set(['bootstrap/a.php', 'bootstrap/b.php', 'routes/web.php']);
     const forward = resolvePhpRouterRequireBindings(files, [...hostA, ...hostB]);
     const reversed = resolvePhpRouterRequireBindings(files, [...hostB, ...hostA]);
-    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['a', 'b']);
+    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['a']);
     expect(reversed).toEqual(forward);
   });
 
@@ -675,6 +675,52 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     // Guarded bare require does not populate the host included set, so the later
     // require_once may-context remains (contract: every context the file may load under).
     expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
+  it('a caught try throw does not guard a later unconditional require', () => {
+    const source = `<?php
+try { throw new Exception(); } catch (Throwable $e) {}
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('cross-host require_once skips after an unguarded load in another host', () => {
+    const apiBindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'routes/api.php',
+    );
+    const webBindings = extractBindings(
+      `<?php
+require __DIR__ . '/web.php';
+`,
+      'routes/web.php',
+    );
+    const bootstrapBindings = extractBindings(
+      `<?php
+require __DIR__ . '/routes/api.php';
+$app->router->group(['prefix' => 'v2'], function ($router) {
+  require_once __DIR__ . '/routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const files = new Set(['bootstrap/app.php', 'routes/api.php', 'routes/web.php']);
+    const map = resolvePhpRouterRequireBindings(files, [
+      ...bootstrapBindings,
+      ...apiBindings,
+      ...webBindings,
+    ]);
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
   it('a return inside a group closure only guards the rest of that closure', () => {

@@ -711,9 +711,10 @@ interface LanguageProviderConfig {
   readonly extractTextRoutes?: (filePath: string, content: string) => ExtractedRoute[];
 
   /**
-   * Whether controller route handler method lookup falls back ASCII
-   * case-insensitively on exact miss or ambiguity (for languages with
-   * case-insensitive method dispatch).
+   * Whether same-file controller method resolution may fall back to a unique
+   * ASCII case-insensitive `Method` when there is no unique exact owned match
+   * (0 or >1 exact definitions). Route CALLS edges use the same policy as
+   * handler-symbol stamping.
    */
   readonly caseInsensitiveRouteMethods?: boolean;
 

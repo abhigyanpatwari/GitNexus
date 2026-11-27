@@ -91,14 +91,19 @@ export function resolvePhpRouterRequireBindings(
   type Edge = { host: string; target: string; binding: ExtractedRouteRequireBinding };
   const edges: Edge[] = [];
   const required = new Set<string>();
+  /** PHP `require_once` skip state is process-wide, not per host file. */
+  const loadedForOnce = new Set<string>();
   for (const host of [...byHost.keys()].sort()) {
     /** Routes file definitely loaded by an earlier unguarded require in this host. */
     const included = new Set<string>();
     for (const binding of byHost.get(host)!.sort(compareBindingPosition)) {
       const target = binding.requiredPath.replace(/\\/g, '/');
       if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
-      if (binding.once && included.has(target)) continue;
-      if (binding.unguarded) included.add(target);
+      if (binding.once && (included.has(target) || loadedForOnce.has(target))) continue;
+      if (binding.unguarded) {
+        included.add(target);
+        loadedForOnce.add(target);
+      }
       edges.push({ host, target, binding });
       required.add(target);
     }

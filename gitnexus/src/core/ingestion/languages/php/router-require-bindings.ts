@@ -113,6 +113,19 @@ const MUST_RUN_CONTAINER_TYPES = new Set([
   'finally_clause',
 ]);
 
+/** `throw` inside a try that has a catch clause is handled; execution may continue after the try. */
+function throwIsCaughtByTry(node: SyntaxNode): boolean {
+  let current: SyntaxNode | null = node.parent;
+  while (current) {
+    if (current.type === 'catch_clause' || current.type === 'finally_clause') return false;
+    if (current.type === 'try_statement') {
+      return (current.children ?? []).some((child) => child.type === 'catch_clause');
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
 /** Ids of nodes that contain an exit outside any nested deferred scope. */
 function collectMayExit(root: SyntaxNode): Set<number> {
   const mayExit = new Set<number>();
@@ -126,6 +139,9 @@ function collectMayExit(root: SyntaxNode): Set<number> {
       continue;
     }
     if (EXIT_NODE_TYPES.has(frame.node.type)) {
+      if (frame.node.type === 'throw_expression' && throwIsCaughtByTry(frame.node)) {
+        continue;
+      }
       mayExit.add(frame.node.id);
       continue;
     }
