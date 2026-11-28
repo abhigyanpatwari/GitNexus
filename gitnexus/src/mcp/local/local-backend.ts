@@ -7110,7 +7110,7 @@ export class LocalBackend {
     // every hunk below an inserted or removed line on the wrong symbol.
     const fileHashes = await loadIndexedFileHashes(repo.lbugPath);
     const indexedImages = fileHashes
-      ? await classifyIndexedImages(diffCwd, scope, fileHashes, fileDiffs, preImages)
+      ? await classifyIndexedImages(diffCwd, selection.scope, fileHashes, fileDiffs, preImages)
       : { preImage: new Map<FileDiff, DiffHunk[]>(), neither: [] };
     const rangeDiffs = fileDiffs.map((fileDiff) => {
       const hunks = indexedImages.preImage.get(fileDiff);
