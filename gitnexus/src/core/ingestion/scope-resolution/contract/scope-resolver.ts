@@ -2273,6 +2273,10 @@ export interface ScopeResolver {
    * module, preventing shared pipeline code (`phase.ts`) from naming individual
    * languages.
    *
+   * TypeScript and JavaScript use it to pull the other ECMAScript language's
+   * files their imports reach into their pass (#4252), so `.ts` → `.js` and
+   * `.js` → `.ts` imports resolve and bind.
+   *
    * Default: undefined (use only `primaryFilePaths`).
    */
   readonly collectScopeContextPaths?: (options: {
@@ -2282,6 +2286,19 @@ export interface ScopeResolver {
     readonly allScannedPaths: ReadonlySet<string>;
     readonly resolutionConfig: unknown;
   }) => Set<string>;
+
+  /**
+   * What `collectScopeContextPaths` reads besides parse-phase facts.
+   *
+   * - `'primary-files'` (default): every primary file's source is read up
+   *   front and handed to the hook as `entryFileContents` (Vue traces its
+   *   import closure from source).
+   * - `'none'`: the hook walks only `preExtractedByPath`, so no source is read
+   *   for it; the provider's normal source-read policy
+   *   (`postExtractSourceTextPolicy` / `requiresPostExtractSourceText`) then
+   *   decides what is read for primary and context files alike.
+   */
+  readonly scopeContextSourceText?: 'primary-files' | 'none';
 
   /**
    * Optional post-resolution hook for emitting language-specific graph edges

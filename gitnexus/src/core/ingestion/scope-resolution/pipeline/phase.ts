@@ -426,7 +426,31 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
         let scopeFilePaths: Set<string>;
         let contents: Map<string, string>;
-        if (provider.collectScopeContextPaths !== undefined) {
+        if (
+          provider.collectScopeContextPaths !== undefined &&
+          provider.scopeContextSourceText === 'none'
+        ) {
+          // A hook that walks only parse-phase facts needs no source text, so
+          // the provider's normal source-read policy still decides what is read
+          // — for the primary files and the context files alike.
+          await loadStoreFor(new Set(primaryFilePaths));
+          scopeFilePaths = provider.collectScopeContextPaths({
+            primaryFilePaths,
+            preExtractedByPath,
+            entryFileContents: new Map(),
+            allScannedPaths,
+            resolutionConfig,
+          });
+          const primarySet = new Set(primaryFilePaths);
+          await loadStoreFor(new Set([...scopeFilePaths].filter((p) => !primarySet.has(p))));
+          const pathsToRead = selectScopeSourcePathsToRead(
+            provider,
+            [...scopeFilePaths],
+            preExtractedByPath,
+            resolutionConfig,
+          );
+          contents = await readFileContents(ctx.repoPath, pathsToRead);
+        } else if (provider.collectScopeContextPaths !== undefined) {
           // Context hooks consume worker facts too. Load primary records before
           // the hook, or a disk-backed run needlessly re-extracts those files.
           await loadStoreFor(new Set(primaryFilePaths));

@@ -18,6 +18,7 @@ import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { collectEcmaCrossLanguageContext } from './ecma-scope-context.js';
 import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { tsQualifiedTypeLookupSpelling } from './interpret.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
@@ -105,6 +106,16 @@ const typescriptScopeResolver: ScopeResolver = {
   ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeTsResolveImportTarget(),
+  // Pull the JavaScript files this pass's files import into its file universe,
+  // so cross-language imports resolve and bind (#4252).
+  collectScopeContextPaths: (options) =>
+    collectEcmaCrossLanguageContext(
+      typescriptScopeResolver.resolveImportTarget,
+      SupportedLanguages.TypeScript,
+      options,
+    ),
+  // The walk reads parse-phase imports only; keep the normal source-read policy.
+  scopeContextSourceText: 'none',
   moduleExports: typescriptModuleExports,
 
   // Threaded into `resolveImportTarget` so tsconfig path aliases

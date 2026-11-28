@@ -38,6 +38,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { collectEcmaCrossLanguageContext } from '../typescript/ecma-scope-context.js';
 import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
 import { javascriptProvider } from '../typescript.js';
 import { jsMergeBindings } from './merge-bindings.js';
@@ -71,6 +72,16 @@ const javascriptScopeResolver: ScopeResolver = {
   ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeJsResolveImportTarget(),
+  // Pull the TypeScript files this pass's files import into its file universe,
+  // so cross-language imports resolve and bind (#4252).
+  collectScopeContextPaths: (options) =>
+    collectEcmaCrossLanguageContext(
+      javascriptScopeResolver.resolveImportTarget,
+      SupportedLanguages.JavaScript,
+      options,
+    ),
+  // The walk reads parse-phase imports only; keep the normal source-read policy.
+  scopeContextSourceText: 'none',
   moduleExports: typescriptModuleExports,
 
   // JavaScript resolution reads the same declared inputs TypeScript does —
