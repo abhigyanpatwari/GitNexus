@@ -10,8 +10,25 @@ import {
 import { splitQualifiedName } from './qualified-name.js';
 import { isOverloadableCallable } from './callable-labels.js';
 
+/** Stable identity for a source range within one file. */
+export function sourceRangeKey(range: Range): string {
+  return `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
+}
+
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
+
+/** Keep the same expression while stepping out through grouping parentheses. */
+export function outerParenthesizedExpression(node: SyntaxNode): SyntaxNode {
+  for (
+    let parent = node.parent;
+    parent?.type === 'parenthesized_expression';
+    parent = node.parent
+  ) {
+    node = parent;
+  }
+  return node;
+}
 
 /**
  * Qualify a name by its enclosing `mod_item` scope, so two same-tail items nested
@@ -173,6 +190,8 @@ export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
  * concrete-typedef ranges the loop's separate typedef guard consumes.
  */
 export interface DefinitionPreScan {
+  /** Matches rejected by the provider cannot claim a name or emit a definition. */
+  readonly skippedMatches?: ReadonlySet<QueryMatchLike>;
   /**
    * Keys claimed by any non-value capture — consulted by `Const`/`Static`/
    * `Variable`. Includes `Property`, so an annotated Python attribute still
@@ -235,9 +254,20 @@ export const buildDefinitionPreScan = (
   matches: readonly QueryMatchLike[],
   provider: LanguageProvider,
 ): DefinitionPreScan => {
+  let skippedMatches: Set<QueryMatchLike> | undefined;
   const nonValue = new Set<string>();
   const callable = new Set<string>();
   const concreteTypedefRanges = new Set<string>();
+  const recordNameClaim = (
+    definition: SyntaxNode,
+    name: SyntaxNode | undefined,
+    label: NodeLabel,
+  ) => {
+    if (!name || isValueDefinitionLabel(label)) return;
+    const key = `${definition.startIndex}:${name.text}`;
+    nonValue.add(key);
+    if (isOverloadableCallable(label)) callable.add(key);
+  };
   for (const match of matches) {
     // ONE capture-map build per match feeds both suppression sets. These used
     // to be two independent passes over `matches` (each rebuilding this object)
@@ -254,21 +284,18 @@ export const buildDefinitionPreScan = (
       concreteTypedefRanges.add(nodeRangeKey(definitionNode));
     }
 
-    // No `@name` capture means nothing a lower-ranked capture could collide
-    // with — a value or property pattern always binds a name. Checked before
-    // `getLabelFromCaptures` so a nameless match never pays for label
-    // resolution (which can reach a provider's `labelOverride`).
     const nameNode = captureMap['name'];
-    if (nameNode === undefined) continue;
-
+    if (!nameNode && !provider.shouldSkipDefinitionCapture) continue;
     const label = getLabelFromCaptures(captureMap, provider);
-    if (label === null || isValueDefinitionLabel(label)) continue;
-
-    const key = `${definitionNode.startIndex}:${nameNode.text}`;
-    nonValue.add(key);
-    if (isOverloadableCallable(label)) callable.add(key);
+    if (label === null) continue;
+    if (provider.shouldSkipDefinitionCapture?.(captureMap, label)) {
+      skippedMatches ??= new Set();
+      skippedMatches.add(match);
+      continue;
+    }
+    recordNameClaim(definitionNode, nameNode, label);
   }
-  return { nonValue, callable, concreteTypedefRanges };
+  return { nonValue, callable, concreteTypedefRanges, skippedMatches };
 };
 
 /**
@@ -995,10 +1022,7 @@ export const findEnclosingClassInfo = (
    * binding wrapper, an enclosing callable, an anonymous ordinal). Null falls
    * through to the generic derivation.
    */
-  resolveContainerTypeOwner?: (
-    container: SyntaxNode,
-    filePath: string,
-  ) => { readonly name: string; readonly label: NodeLabel } | null,
+  resolveContainerTypeOwner?: LanguageProvider['resolveContainerTypeOwner'],
   resolveDetachedOwnerName?: LanguageProvider['resolveDetachedOwnerName'],
 ): EnclosingClassInfo | null => {
   let current = node.parent;
@@ -1065,6 +1089,7 @@ export const findEnclosingClassInfo = (
       resolveEnclosingOwner(current) === current
     ) {
       const syntheticOwner = resolveContainerTypeOwner(current, filePath);
+      if (syntheticOwner === false) return null;
       if (syntheticOwner !== null) {
         return {
           classId: generateId(syntheticOwner.label, `${filePath}:${syntheticOwner.name}`),
@@ -1101,6 +1126,7 @@ export const findEnclosingClassInfo = (
       // class-like node is minted under, so owner id == node id.
       if (resolveContainerTypeOwner !== undefined) {
         const containerOwner = resolveContainerTypeOwner(current, filePath);
+        if (containerOwner === false) return null;
         if (containerOwner !== null) {
           return {
             classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),

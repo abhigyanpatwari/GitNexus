@@ -54,7 +54,7 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
-import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
+import { typescriptScopeResolver } from '../typescript/scope-resolver.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
@@ -112,8 +112,7 @@ const vueScopeResolver: ScopeResolver = {
   // Adapter: typescriptArityCompatibility uses (def, callsite); contract is (callsite, def).
   arityCompatibility: (callsite, def) => typescriptArityCompatibility(def, callsite),
 
-  buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+  buildMro: typescriptScopeResolver.buildMro,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

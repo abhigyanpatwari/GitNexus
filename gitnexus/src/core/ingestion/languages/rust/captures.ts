@@ -59,7 +59,10 @@ export function emitRustScopeCaptures(
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
-      grouped[tag] = nodeToCapture(tag, c.node);
+      grouped[tag] =
+        tag === '@declaration.type-parameters'
+          ? rustTypeListCapture(tag, c.node)
+          : nodeToCapture(tag, c.node);
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
@@ -229,6 +232,20 @@ export function emitRustScopeCaptures(
   return out;
 }
 
+/** Hide nested block comments before the shared type-list reader scans their punctuation. */
+function rustTypeListCapture(tag: string, node: SyntaxNode): Capture {
+  const capture = nodeToCapture(tag, node);
+  if (!capture.text.includes('/*')) return capture;
+  let start = 0;
+  let text = '';
+  for (const comment of node.descendantsOfType('block_comment')) {
+    if (!comment.text.includes('/*', 2)) continue;
+    text += capture.text.slice(start, comment.startIndex - node.startIndex) + ' ';
+    start = comment.endIndex - node.startIndex;
+  }
+  return start === 0 ? capture : { ...capture, text: text + capture.text.slice(start) };
+}
+
 /**
  * Synthesize `@reference.inherits` captures from Rust trait `impl` blocks so
  * the registry-primary scope-resolution path can emit the IMPLEMENTS edge for
@@ -282,7 +299,10 @@ function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
       ...(traitArguments === null
         ? {}
         : {
-            '@reference.type-arguments': nodeToCapture('@reference.type-arguments', traitArguments),
+            '@reference.type-arguments': rustTypeListCapture(
+              '@reference.type-arguments',
+              traitArguments,
+            ),
           }),
     });
   });
