@@ -213,18 +213,30 @@ function variant(
       .getChildren(parsed.moduleScope)
       .find((id) => resolved.indexes.scopeTree.getScope(id)?.kind === 'Function');
     if (fn === undefined) continue;
+    const namespaces = list.filter(
+      (entry) => ('targetFiles' in entry ? entry.via : entry).kind === 'namespace',
+    );
+    const remaining = new Map<ImportEdge['atRange'], number>();
+    for (const entry of namespaces) {
+      const range = 'targetFiles' in entry ? entry.via.atRange : entry.atRange;
+      const files = 'targetFiles' in entry ? entry.targetFiles.length : 1;
+      remaining.set(range, (remaining.get(range) ?? 0) + files);
+    }
+    for (const [range, files] of remaining) remaining.set(range, Math.ceil(files / 2));
     out.set(
       fn,
-      list
-        .filter((entry) => ('targetFiles' in entry ? entry.via : entry).kind === 'namespace')
-        .map((entry) =>
-          'targetFiles' in entry
-            ? {
-                via: { ...entry.via },
-                targetFiles: entry.targetFiles.slice(0, Math.ceil(entry.targetFiles.length / 2)),
-              }
-            : entry,
-        ),
+      namespaces.flatMap((entry): ImportEntry[] => {
+        const range = 'targetFiles' in entry ? entry.via.atRange : entry.atRange;
+        const count = remaining.get(range) ?? 0;
+        if (count === 0) return [];
+        if ('targetFiles' in entry) {
+          const targetFiles = entry.targetFiles.slice(0, count);
+          remaining.set(range, count - targetFiles.length);
+          return [{ via: { ...entry.via }, targetFiles }];
+        }
+        remaining.set(range, count - 1);
+        return [entry];
+      }),
     );
   }
   return out;
@@ -381,7 +393,30 @@ describe.skipIf(!swiftAvailable)('ImportVisibility readers: grouped and per-file
         .flatMap((p) => p.localDefs)
         .filter((def) => isClassLike(def.type))
         .map((def) => def.qualifiedName ?? '');
-      const entries = variant(kind, entriesOf(resolved.indexes), resolved, typeNames);
+      const original = entriesOf(resolved.indexes);
+      const entries = variant(kind, original, resolved, typeNames);
+      if (kind === 'lexical') {
+        const input = writtenOut(original, resolved.indexes);
+        const rebound = writtenOut(entries, resolved.indexes);
+        for (const parsed of resolved.parsedFiles.filter((file) =>
+          file.filePath.startsWith('App/'),
+        )) {
+          const fn = resolved.indexes.scopeTree
+            .getChildren(parsed.moduleScope)
+            .find((id) => resolved.indexes.scopeTree.getScope(id)?.kind === 'Function');
+          expect(fn).toBeDefined();
+          for (const module of MODULES) {
+            const targetsAt = (edges: readonly ImportEdge[]) =>
+              edges
+                .filter((edge) => edge.kind === 'namespace' && edge.localName === module)
+                .map((edge) => edge.targetFile);
+            const targets = targetsAt(input.get(parsed.moduleScope) ?? []);
+            expect(targetsAt(rebound.get(fn!) ?? [])).toEqual(
+              targets.slice(0, Math.ceil(targets.length / 2)),
+            );
+          }
+        }
+      }
       const groupedForm = { ...resolved.indexes, imports: createGroupedImportVisibility(entries) };
       const perFileForm = {
         ...resolved.indexes,
