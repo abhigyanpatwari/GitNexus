@@ -20,10 +20,11 @@ export function computeKotlinArityMetadata(fnNode: SyntaxNode): KotlinArityMetad
   if (hasVararg) parameterTypes = [...parameterTypes, 'vararg'];
 
   const required = params.filter((p) => !p.isOptional && !p.isVariadic).length;
+  // Keep each position: an opaque callback must not erase a nullable nominal sibling.
   const declaredParameterTypes =
     !hasVararg &&
-    params.some((p) => p.rawType?.endsWith('?')) &&
-    params.every((p) => p.rawType && kotlinNominalType(p.rawType) !== null)
+    params.some((p) => p.rawType?.endsWith('?') && kotlinNominalType(p.rawType) !== null) &&
+    params.every((p) => p.rawType)
       ? params.map((p) => p.rawType!)
       : undefined;
   return {

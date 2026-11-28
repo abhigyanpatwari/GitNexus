@@ -1,6 +1,7 @@
 // Only nominal types can acquire an outer '?' without changing precedence.
 // Tokenize escaped names whole so punctuation inside them stays part of the name.
-const typeToken = /`[^`\r\n]+`|[_\p{ID_Start}][\p{ID_Continue}]*|[^\s]/gu;
+const typeName = /`[^`\r\n]+`|[_\p{ID_Start}][\p{ID_Continue}]*/u;
+const typeToken = new RegExp(typeName.source + String.raw`|[^\s]`, 'gu');
 const nameStart = /^[_`\p{ID_Start}]/u;
 
 export function kotlinNominalType(spelling: string): string | null {
@@ -41,4 +42,16 @@ export function kotlinNominalType(spelling: string): string | null {
     previous = token;
   }
   return needsName || depth !== 0 ? null : tokens.join('');
+}
+
+// Match entire qualified or escaped names. Skip in/out projections followed by their type.
+const namePart = `(?:${typeName.source})`;
+const nullableNames = new RegExp(
+  String.raw`(?<![\p{ID_Continue}])(?!(?:in|out)\s+(?=${namePart}))${namePart}(?:\s*\.\s*${namePart})*(?:\s*\?)?`,
+  'gu',
+);
+
+/** Only substitute inside a type whose nominal structure this provider can validate. */
+export function kotlinNullableTypePattern(type: string): RegExp | undefined {
+  return type.includes('?') && kotlinNominalType(type) !== null ? nullableNames : undefined;
 }

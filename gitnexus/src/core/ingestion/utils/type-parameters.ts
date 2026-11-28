@@ -227,27 +227,29 @@ const numericLiteral =
 function* opaqueSpans(text: string, start: number) {
   let lastCommentEnd = start;
   const hasApostrophe = text.includes("'");
-  for (let i = start; i < text.length; i++) {
+  let cursor = start;
+  while (cursor < text.length) {
+    const i = cursor++;
     const ch = text[i];
     const end = ch === '/' ? endOfComment(text, i) : undefined;
     if (end !== undefined) {
       yield { start: i, end, comment: true };
       lastCommentEnd = end;
-      i = end - 1;
+      cursor = end;
     } else if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
       yield { start: i, end: i + 2, comment: false };
-      i++;
+      cursor = i + 2;
     } else if (hasApostrophe && ch >= '0' && ch <= '9') {
       numericLiteral.lastIndex = i;
-      if (numericLiteral.test(text)) i = numericLiteral.lastIndex - 1;
+      if (numericLiteral.test(text)) cursor = numericLiteral.lastIndex;
     } else if (ch === '"' || ch === "'" || ch === '`') {
       let end = i + 1;
-      for (; end < text.length && text[end] !== ch; end++) {
-        if (text[end] === '\\') end++;
+      while (end < text.length && text[end] !== ch) {
+        end += text[end] === '\\' ? 2 : 1;
       }
       if (end < text.length && !isLifetimePair(text, i, end, lastCommentEnd)) {
         yield { start: i, end: end + 1, comment: false };
-        i = end;
+        cursor = end + 1;
       }
     }
   }
@@ -300,12 +302,14 @@ function isLifetimePair(text: string, start: number, end: number, lastCommentEnd
   // If the apparent closing quote is another lifetime or lies in a comment
   // after a separator, the outer scanner must see the intervening tokens.
   let separator = false;
-  for (let i = name.lastIndex; i < end; i++) {
+  let cursor = name.lastIndex;
+  while (cursor < end) {
+    const i = cursor++;
     if (/\s/u.test(text[i])) continue;
     const after = text[i] === '/' ? endOfComment(text, i) : undefined;
     if (after !== undefined) {
       if (after > end) return separator && after < text.length;
-      i = after - 1;
+      cursor = after;
     } else {
       separator = '<,:&+='.includes(text[i]);
     }

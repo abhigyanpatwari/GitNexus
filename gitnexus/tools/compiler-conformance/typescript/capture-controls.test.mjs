@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { compareCodeUnits } from '../compare.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -18,7 +19,7 @@ function synthesizedCaptureFingerprint() {
   const files = readdirSync(root, { recursive: true, encoding: 'utf8' })
     .filter((file) => file.startsWith('typescript-') && /\.tsx?$/.test(file))
     .map((file) => file.split(path.sep).join('/'))
-    .sort();
+    .sort(compareCodeUnits);
   const tags = [
     '@reference.inherits',
     '@type-binding.destructured',

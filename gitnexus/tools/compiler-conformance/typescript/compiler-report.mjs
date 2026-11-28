@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { compareCodeUnits } from '../compare.mjs';
 import { compilerImportTrace } from './import-trace.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 import { existsSync, globSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -197,7 +198,11 @@ export function compilerReport(root, expectedDiagnostics = [], inventory = false
         { ...options, inventory },
       );
     }
-    assert.deepEqual(diagnostics.sort(), expectedDiagnostics, 'TypeScript diagnostics for ' + root);
+    assert.deepEqual(
+      diagnostics.toSorted(compareCodeUnits),
+      expectedDiagnostics.toSorted(compareCodeUnits),
+      'TypeScript diagnostics for ' + root,
+    );
     return result;
   });
 }

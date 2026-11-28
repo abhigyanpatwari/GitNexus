@@ -109,6 +109,7 @@ const csharpScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => csharpArityCompatibility(def, callsite),
 
   qualifiedHeritageTypePattern: csharpQualifiedHeritageTypePattern,
+  needsHeritageTypeNormalization: (type) => type.includes('['),
   specializeNullableHeritageFormal: specializeCsharpNullableFormal,
   normalizeNullableHeritageSignature: normalizeCsharpNullableSignature,
 

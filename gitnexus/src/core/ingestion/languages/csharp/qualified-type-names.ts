@@ -10,6 +10,7 @@
  * constructor resolver can break a same-tail collision (`new B.Foo()` with both
  * `A.Foo` and `B.Foo`) by matching the explicit qualifier against the sidecar.
  */
+import { renderCsharpHeritageType } from './heritage-type-shape.js';
 import { isCsharpReservedTypeKeyword } from './identifiers.js';
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
@@ -66,11 +67,9 @@ export function populateCsharpNamespacePrefixes(parsed: ParsedFile): void {
   }
 }
 
-const globalQualifier = /(?<![.\p{ID_Continue}])global\s*::/gu;
 const qualifiedNames =
   /[_\p{ID_Start}][\p{ID_Continue}]*(?:\s*(?:\.|::)\s*[_\p{ID_Start}][\p{ID_Continue}]*)*/gu;
 const nullableQualifiedNames = new RegExp(qualifiedNames.source + String.raw`(?:\s*\?)?`, 'gu');
-const namedComposite = /^[\p{ID_Continue}\s.<>,\[\]()]+$/u;
 
 export function isStableCsharpTypeName(name: string): boolean {
   return /^global\s*::/u.test(name) || isCsharpReservedTypeKeyword(name);
@@ -83,15 +82,15 @@ function stableType(
   bindings?: ReadonlyMap<string, string | null>,
   shadowed?: ReadonlySet<string>,
 ): boolean {
-  // A nullable suffix can follow a name or its completed type-argument list.
-  const grammar = type.replace(globalQualifier, '.').replace(/(?<=[\p{ID_Continue}>])\s*\?/gu, '');
-  if (!namedComposite.test(grammar)) return false;
-  for (const [name] of type.matchAll(qualifiedNames)) {
-    if (isStableCsharpTypeName(name)) continue;
-    const actual = shadowed?.has(name) ? undefined : bindings?.get(name);
-    if (actual === undefined || (actual !== null && !stableType(actual))) return false;
-  }
-  return true;
+  // Check complete type operands instead of guessing what a '?' annotates
+  // from its preceding character. Tuple element labels and aliases cannot bind formals.
+  return (
+    renderCsharpHeritageType(type, (name) => {
+      if (isStableCsharpTypeName(name)) return { name };
+      const actual = shadowed?.has(name) ? undefined : bindings?.get(name);
+      return actual !== undefined && (actual === null || stableType(actual)) ? { name } : undefined;
+    }) !== undefined
+  );
 }
 
 /** In a global-qualified signature, keep every qualified name as one token. */

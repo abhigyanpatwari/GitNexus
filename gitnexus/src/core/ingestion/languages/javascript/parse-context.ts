@@ -4,7 +4,7 @@ import { nodePackageIsEsm, type NodeWorkspacePackages } from '../typescript/work
 // A lexical prefilter avoids tagging a file for ordinary digits inside modern
 // numbers or identifiers. Comments and strings can match; AST capture still
 // requires an actual legacy numeric property before publishing any evidence.
-const possibleLegacyNumber = /(?<![\p{ID_Continue}$\u200c\u200d.])0\d/u;
+const possibleLegacyNumber = /(?<![\p{ID_Continue}\p{Join_Control}$.])0\d/u;
 
 /** Only a legacy decimal/octal token can make a parse result depend on package format. */
 export function javascriptParseContext(

@@ -609,12 +609,19 @@ describe('C# nullable heritage specialization', () => {
       'global::Packet<int>?',
     );
     expect(specializeCsharpNullableFormal(owner, 'T', box)).toBeNull();
+    expect(specializeCsharpNullableFormal(constrained, 'T', 'global::Box<(int,int)>')).toBe(
+      'global::Box<(int,int)>',
+    );
+    expect(specializeCsharpNullableFormal(constrained, 'T', 'global::Box<int>[]')).toBe(
+      'global::Box<int>[]?',
+    );
+    expect(specializeCsharpNullableFormal(constrained, 'V', 'int[]')).toBeNull();
     for (const type of [
       'global::Box<Local>',
       'global::Box<,int>',
       'global::Box<int,,int>',
-      'global::Box<(int,int)>',
-      'global::Box<int>[]',
+      'global::Box<(int,)>',
+      'global::Box<int>[n]',
     ]) {
       expect(specializeCsharpNullableFormal(constrained, 'T', type)).toBeNull();
     }

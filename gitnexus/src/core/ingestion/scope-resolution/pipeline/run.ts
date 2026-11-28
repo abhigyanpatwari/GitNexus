@@ -24,7 +24,10 @@
  */
 
 import v8 from 'node:v8';
-import type { HeritageSubstitutions } from '../../heritage-substitutions.js';
+import {
+  needsScopedHeritageArguments,
+  type HeritageSubstitutions,
+} from '../../heritage-substitutions.js';
 import type {
   CallResultAssignmentSite,
   ParsedFile,
@@ -469,7 +472,7 @@ interface ScopedHeritageEdge {
   childDef: string;
   baseDef: string;
   scope: ScopeId;
-  nullable: boolean;
+  needsScope: boolean;
 }
 
 /**
@@ -570,6 +573,8 @@ function preEmitInheritanceEdges(
     if (site.typeArguments !== undefined) {
       recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
     }
+    const needsScope =
+      substitutions !== undefined && needsScopedHeritageArguments(site.typeArguments, provider);
     substitutions?.registerBase(
       callerGraphId,
       targetGraphId,
@@ -577,6 +582,7 @@ function preEmitInheritanceEdges(
       site.typeArguments,
       callerClass,
       provider,
+      needsScope,
     );
     if (scopedEdges && site.typeArguments?.length && targetDef.typeParameters?.length) {
       scopedEdges.push({
@@ -585,7 +591,7 @@ function preEmitInheritanceEdges(
         childDef: callerClass.nodeId,
         baseDef: targetDef.nodeId,
         scope: site.inScope,
-        nullable: site.typeArguments.some((arg) => arg.includes('?')),
+        needsScope,
       });
     }
   }
@@ -1376,7 +1382,7 @@ export function runScopeResolution(
     const nullableChildren = new Set<string>();
     const nullableAncestors = new Set<string>();
     for (const edge of scopedEdges ?? []) {
-      if (!edge.nullable) continue;
+      if (!edge.needsScope) continue;
       nullableChildren.add(edge.childDef);
       nullableAncestors.add(edge.baseDef);
       for (const ancestor of mroByClassDefId.get(edge.baseDef) ?? [])

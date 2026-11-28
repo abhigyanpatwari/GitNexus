@@ -8,55 +8,13 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { bindsTypeParameter, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 
 import { isStableCsharpTypeName } from './qualified-type-names.js';
-import { typeApplicationArguments } from '../../utils/template-arguments.js';
+import {
+  csharpScalarType,
+  renderCsharpHeritageType,
+  type NominalName,
+} from './heritage-type-shape.js';
 
 export const csharpParameterMode = /^(?:ref|out|in|this)\s+/u;
-
-interface NominalName {
-  name: string;
-  reference?: boolean;
-}
-const nominalType =
-  /^((?:global\s*::\s*)?@?[_\p{ID_Start}][_\p{ID_Continue}]*(?:\s*\.\s*@?[_\p{ID_Start}][_\p{ID_Continue}]*)*)(?:\s*(<[\s\S]*>))?\s*(\?)?$/u;
-
-// A scalar may still be namespace-qualified or carry a nullable suffix.
-export function csharpScalarType(type: string): { name: string; nullable: boolean } | undefined {
-  if (type.includes('<')) return undefined;
-  const match = nominalType.exec(type.trim());
-  return match ? { name: match[1]!.replace(/\s+/gu, ''), nullable: Boolean(match[3]) } : undefined;
-}
-
-/** Preserve the arguments and outer suffix of a named C# type application. */
-export function csharpConstructedType(
-  type: string,
-  resolveName: (name: string) => NominalName | undefined = (name) => ({ name }),
-): string | undefined {
-  if (!type.includes('<')) return undefined;
-  const render = (spelling: string, depth: number): string | undefined => {
-    if (depth > 64) return undefined;
-    const match = nominalType.exec(spelling.trim());
-    if (!match) return undefined;
-    const name = resolveName(match[1]!.replace(/\s+/gu, ''));
-    if (!name) return undefined;
-    let result = name.name;
-    const list = match[2];
-    if (list) {
-      const args = typeApplicationArguments(list);
-      // The shared splitter omits empty entries; malformed slots cannot prove an identity.
-      if (!args || args.join(',').replace(/\s+/gu, '') !== list.slice(1, -1).replace(/\s+/gu, ''))
-        return undefined;
-      const rendered: string[] = [];
-      for (const arg of args) {
-        const value = render(arg, depth + 1);
-        if (!value) return undefined;
-        rendered.push(value);
-      }
-      result += '<' + rendered.join(',') + '>';
-    }
-    return match[3] && !name.reference ? result + '?' : result;
-  };
-  return render(type, 0);
-}
 
 interface NullableConstraints {
   valueParameters?: string[];
@@ -91,11 +49,22 @@ export function specializeCsharpNullableFormal(
   actual: string,
 ): string | null {
   const constraints = owner.templateConstraints as NullableConstraints | undefined;
+  if (/\]\s*\??$/u.test(actual)) {
+    // Every array is a reference type, even when its element is a nullable value.
+    if (constraints?.valueParameters?.includes(formal)) return null;
+    return (
+      renderCsharpHeritageType(
+        actual,
+        (name) => (isStableCsharpTypeName(name) ? { name } : undefined),
+        true,
+      ) ?? null
+    );
+  }
   if (actual.includes('<')) {
     const value = constraints?.valueParameters?.includes(formal);
     const reference = constraints?.referenceParameters?.includes(formal);
     if (!value && !reference) return null;
-    const stable = csharpConstructedType(actual, (name) =>
+    const stable = renderCsharpHeritageType(actual, (name) =>
       isStableCsharpTypeName(name) ? { name } : undefined,
     );
     if (!stable) return null;
@@ -163,7 +132,18 @@ export const normalizeCsharpNullableSignature: NonNullable<
   ScopeResolver['normalizeNullableHeritageSignature']
 > = (type, declaration) => {
   const builtin = type.replace(/(?<![\p{ID_Continue}.@:])\b(string|object)\s*\?/gu, '$1');
-  if (!declaration) return builtin;
+  if (!declaration) {
+    const mode = csharpParameterMode.exec(builtin)?.[0] ?? '';
+    const operand = builtin.slice(mode.length);
+    const composite =
+      operand.includes('[') &&
+      renderCsharpHeritageType(operand, (name) =>
+        isStableCsharpTypeName(name) ? { name } : undefined,
+      );
+    return composite ? mode + composite : builtin;
+  }
+  const mode = csharpParameterMode.exec(builtin)?.[0] ?? '';
+  const operand = builtin.slice(mode.length);
   const { scope, indexes } = declaration;
   const resolveName = (spelling: string, includeValues: boolean): NominalName | undefined => {
     if (isCsharpReservedTypeKeyword(spelling)) {
@@ -207,6 +187,23 @@ export const normalizeCsharpNullableSignature: NonNullable<
     if (bindsTypeParameter(scope, name, indexes)) return undefined;
     const claim = lookupNameClaim(scope, name, indexes, { purpose: 'type' });
     if (claim.status !== 'resolved' || !claim.bindings.length) return undefined;
+    if (/[[(]/u.test(operand)) {
+      // Import edges identify a target file and a simple exported name. A file
+      // declaring that name in two namespaces cannot establish a bare alias's
+      // target inside this structural type by choosing the first declaration.
+      for (const imported of claim.imports) {
+        if (imported.kind !== 'alias') continue;
+        let target: string | undefined;
+        for (const id of indexes.qualifiedNames.get(imported.targetExportedName)) {
+          const def = indexes.defs.get(id);
+          if (def?.filePath !== imported.targetFile) continue;
+          const named = nominalIdentity(def, true, indexes)?.name;
+          if (!named) continue;
+          if (target && target !== named) return undefined;
+          target = named;
+        }
+      }
+    }
     let identity: NominalName | undefined;
     for (const { def } of claim.bindings) {
       const candidate = nominalIdentity(def, includeValues, indexes);
@@ -220,8 +217,6 @@ export const normalizeCsharpNullableSignature: NonNullable<
     }
     return identity;
   };
-  const mode = csharpParameterMode.exec(builtin)?.[0] ?? '';
-  const operand = builtin.slice(mode.length);
   const scalar = csharpScalarType(operand);
   if (scalar) {
     const resolved = resolveName(scalar.name, true);
@@ -239,19 +234,23 @@ export const normalizeCsharpNullableSignature: NonNullable<
       ? builtin
       : null;
   }
-  if (builtin.includes('<')) {
+  if (/[<[(]/u.test(operand)) {
     let grounded = true;
-    const constructed = csharpConstructedType(operand, (name) => {
-      const resolved = resolveName(name, true);
-      if (resolved) return resolved;
-      if (
-        !name.startsWith('global::') &&
-        !bindsTypeParameter(scope, canonicalName(name), indexes)
-      ) {
-        grounded = false;
-      }
-      return { name };
-    });
+    const constructed = renderCsharpHeritageType(
+      operand,
+      (name) => {
+        const resolved = resolveName(name, true);
+        if (resolved) return resolved;
+        if (
+          !name.startsWith('global::') &&
+          !bindsTypeParameter(scope, canonicalName(name), indexes)
+        ) {
+          grounded = false;
+        }
+        return { name };
+      },
+      true,
+    );
     if (constructed) return grounded ? mode + constructed : null;
   }
   return builtin.replace(

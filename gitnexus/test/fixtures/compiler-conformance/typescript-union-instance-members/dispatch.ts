@@ -40,3 +40,24 @@ export function incompatible(value: WordOverloads | OtherOverloads) {
 }
 
 export function directStatic() { return Both.render(); }
+
+class StaticField extends Base {
+  static render = 1;
+}
+class DeepField extends StaticField {}
+class InstanceField {
+  render = 0;
+}
+
+export function unionStaticField(value: StaticField | Other) { return value.render(); }
+export function inheritedStaticField(value: DeepField | Other) { return value.render(); }
+export function directStaticField(value: StaticField) { return value.render(); }
+export function instanceFieldBlocks(value: Other | InstanceField) { return value.render(); }
+
+class StaticBase {
+  static draw() { return 1; }
+}
+class InstanceShadow extends StaticBase {
+  draw = 2;
+}
+export function staticDispatch() { return InstanceShadow.draw(); }

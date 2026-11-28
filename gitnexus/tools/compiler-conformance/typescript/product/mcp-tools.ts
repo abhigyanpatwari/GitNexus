@@ -1,5 +1,6 @@
 import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
 import { compilerReport } from '../compiler-report.mjs';
+import { compareCodeUnits } from '../../../../src/lib/utils.js';
 import diagnostics from '../diagnostics.json' with { type: 'json' };
 import { SyntaxKind } from 'typescript/unstable/ast';
 import assert from 'node:assert/strict';
@@ -210,7 +211,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
         'function_expression_tool',
         'js_ping',
         'manifest_tool',
-      ].sort(),
+      ].sort(compareCodeUnits),
     );
     const tools = new Map(
       getNodesByLabelFull(result, 'Tool').map((tool) => [tool.name, tool.properties]),

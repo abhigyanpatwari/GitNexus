@@ -1,5 +1,6 @@
 import { Minimatch } from 'minimatch';
 import path from 'node:path';
+import { compareCodeUnits } from '../../../../lib/utils.js';
 import { makeScopeId } from 'gitnexus-shared';
 import type {
   BindingRef,
@@ -35,6 +36,14 @@ const nullChecksByScopeTree = new WeakMap<
   ScopeResolutionIndexes['scopeTree'],
   Map<string, false | 'mixed'>
 >();
+
+/** Preserve the code-unit order of the serialized IDs, including numeric program indices. */
+export function compareGlobalProjectIds(
+  left: string | number | undefined,
+  right: string | number | undefined,
+): number {
+  return compareCodeUnits(String(left), String(right));
+}
 
 function strictNullChecks(project: TsconfigScope | string): boolean {
   return typeof project === 'string' || (project.strictNullChecks ?? project.strict ?? true);
@@ -409,9 +418,13 @@ export function bindGlobalDeclarations(
     const projectKey = JSON.stringify(
       visibleProjects
         .map((project) => (typeof project === 'string' ? project : programIds.get(project)))
-        .sort(),
+        .sort(compareGlobalProjectIds),
     );
-    const namespace = JSON.stringify(['typescript-global', projectKey, [...shadowed].sort()]);
+    const namespace = JSON.stringify([
+      'typescript-global',
+      projectKey,
+      [...shadowed].sort(compareCodeUnits),
+    ]);
     if (!namespaces.has(namespace)) {
       let shared = agreedByProjects.get(projectKey) ?? symbols;
       if (visibleProjects.length > 1 && !agreedByProjects.has(projectKey)) {

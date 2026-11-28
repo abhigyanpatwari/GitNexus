@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { compareCodeUnits, compareStringTuples } from '../compare.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -68,7 +69,10 @@ export async function checkCommonJsForwarding() {
     ]) {
       if (names.has(value)) expected.push([caller, 'source.ts', names.get(value)]);
     }
-    assert.deepEqual(observed.sort(), expected.sort());
+    assert.deepEqual(
+      observed.toSorted(compareStringTuples),
+      expected.toSorted(compareStringTuples),
+    );
   } finally {
     rmSync(emitted, { recursive: true, force: true });
   }
@@ -126,7 +130,10 @@ export async function checkNativeEsmExports() {
     const { graph } = await runPipelineFromRepo(src, () => {}, {
       onScopeResolved({ parsedFiles, indexes }) {
         for (const file of parsedFiles) {
-          exportsByFile.set(file.filePath, [...typescriptModuleExports(file).keys()].sort());
+          exportsByFile.set(
+            file.filePath,
+            [...typescriptModuleExports(file).keys()].sort(compareCodeUnits),
+          );
           if (!file.filePath.includes('/empty.')) continue;
           const writes = file.referenceSites.filter(
             (site) => site.kind === 'write' && site.name === 'value',
@@ -161,7 +168,7 @@ export async function checkNativeEsmExports() {
         actual.push([caller.properties.name, callee.filePath, callee.name]);
       }
       assert.deepEqual(
-        actual.sort(),
+        actual.toSorted(compareStringTuples),
         [
           ['useAlias', apiFile, api.renamed.name],
           ['useDefault', apiFile, api.default.name],
@@ -220,6 +227,12 @@ export async function checkNodeModuleFormat() {
   }
 }
 
+export function emittedDiagnosticCodes(output) {
+  return Array.from(output.matchAll(/error TS(\d+):/g), ([, code]) => Number(code)).sort(
+    (left, right) => left - right,
+  );
+}
+
 // The checker returns recovery signatures for conflicting star exports and a
 // structural function type for the wrapped default. Node can observe the
 // actual exported values without guessing a declaration from that signature.
@@ -257,8 +270,11 @@ export async function checkModuleValues() {
     });
     if (build.error) throw build.error;
     assert.equal(build.status, 2, build.stderr || build.stdout);
-    const codes = [...build.stdout.matchAll(/error TS(\d+):/g)].map((m) => m[1]).sort();
-    assert.deepEqual(codes, ['2308', '2308', '2308', '2308', '2308', '2693'], build.stdout);
+    assert.deepEqual(
+      emittedDiagnosticCodes(build.stdout),
+      [2308, 2308, 2308, 2308, 2308, 2693],
+      build.stdout,
+    );
     writeFileSync(path.join(emitted, 'package.json'), '{"type":"module"}');
     const load = (module) =>
       import(pathToFileURL(path.join(emitted, barrels, module + '.js')).href);

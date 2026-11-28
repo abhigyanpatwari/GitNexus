@@ -16,7 +16,7 @@ import { gitCommitAll } from '../helpers/incremental-test-repo.js';
 
 const legacySource = 'const obj = { [077]() {} }; function use() { obj[077](); }';
 const jsxSource = 'const obj = { [077]() { return <i />; } }; function use() { obj[077](); }';
-const ordinarySource = 'const timestamp2026 = 1000 + .005;';
+const ordinarySource = 'const timestamp2026 = 1000 + .005, x\u200c077 = 0, x\u200d077 = 0;';
 
 it.each([
   ['script.js', legacySource],

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { compareCodeUnits } from '../../src/lib/utils.js';
 import type { GraphRelationship } from 'gitnexus-shared';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 
@@ -92,7 +93,7 @@ export function getNodesByLabel(result: PipelineResult, label: string): string[]
   result.graph.forEachNode((n) => {
     if (n.label === label) names.push(n.properties.name);
   });
-  return names.sort();
+  return names.sort(compareCodeUnits);
 }
 
 /** Get graph nodes by label with full properties (for parameterTypes assertions). */

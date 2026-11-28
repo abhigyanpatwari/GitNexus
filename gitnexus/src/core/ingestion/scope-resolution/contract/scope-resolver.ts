@@ -1815,7 +1815,7 @@ export interface ScopeResolver {
     site: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
-    isStaticOnly: (method: SymbolDefinition) => boolean,
+    isStaticOnly: (member: SymbolDefinition) => boolean,
   ) => SymbolDefinition | null | undefined;
 
   /**
@@ -1831,6 +1831,8 @@ export interface ScopeResolver {
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
+    /** When the receiver side is known, exclude members on the opposite side. */
+    excludeMember?: (member: SymbolDefinition) => boolean,
   ) => ReceiverMemberResolution | undefined;
 
   /** Identify the binary declaration of a call with no workspace receiver
@@ -2041,6 +2043,9 @@ export interface ScopeResolver {
     bindings: ReadonlyMap<string, string | null>,
     shadowed?: ReadonlySet<string>,
   ) => RegExp | undefined;
+
+  /** This composite requires the provider’s canonical spelling for heritage comparison. */
+  readonly needsHeritageTypeNormalization?: (type: string) => boolean;
 
   /** Specialize an outer nullable formal according to its declaration's constraints. */
   readonly specializeNullableHeritageFormal?: (

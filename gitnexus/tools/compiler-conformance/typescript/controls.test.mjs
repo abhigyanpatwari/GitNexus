@@ -16,8 +16,9 @@ import {
   checkModuleValues,
   checkNativeEsmExports,
   checkNodeModuleFormat,
+  emittedDiagnosticCodes,
 } from './module-values.mjs';
-import { compareReports } from '../compare.mjs';
+import { compareCodeUnits, compareReports, compareStringTuples } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
 import {
   compareProject,
@@ -207,6 +208,22 @@ test('an unchecked shadowed receiver cannot acquire the typed receiver’s publi
   );
 });
 
+test('conformance orders diagnostic codes numerically and identifiers by UTF-16 code unit', () => {
+  assert.deepEqual(
+    emittedDiagnosticCodes('error TS10: x\nerror TS2: y\nerror TS10: z'),
+    [2, 10, 10],
+  );
+  const rows = [['é'], ['a,b', 'x'], ['Z'], ['a', 'b,x'], ['e\u0301'], ['z']];
+  assert.deepEqual(rows.toSorted(compareStringTuples), [
+    ['Z'],
+    ['a', 'b,x'],
+    ['a,b', 'x'],
+    ['e\u0301'],
+    ['z'],
+    ['é'],
+  ]);
+});
+
 test('runtime module exports agree with the JavaScript emitted by TypeScript', checkModuleValues);
 
 test('published calls preserve signed numeric keys with grouped operands', async () => {
@@ -234,7 +251,7 @@ test('published calls preserve signed numeric keys with grouped operands', async
   const calls = Array.from(graph.iterRelationshipsByType('CALLS'), ({ sourceId, targetId }) => [
     graph.getNode(sourceId).properties.name,
     graph.getNode(targetId).properties.name,
-  ]).sort();
+  ]).sort(compareStringTuples);
   assert.deepEqual(calls, [
     [callNegative.name, runtimeKeys[0]],
     [callPositive.name, runtimeKeys[1]],
@@ -379,7 +396,7 @@ test('distinct qualified local classes keep their graph IDs when preceding lines
     return pipeline.graph.nodes
       .filter((node) => node.label === 'Class' && node.properties.name === 'Helper')
       .map((node) => node.id)
-      .sort();
+      .sort(compareCodeUnits);
   }
   const ids = await classIds('');
   assert.equal(new Set(ids).size, 2);
@@ -689,7 +706,7 @@ test('module ownership exposes conflict candidates and marks erased file depende
   const candidates = ['def:left.ts#2:7:Function:publish', 'def:right.ts#1:7:Function:publish'];
   for (const barrel of ['ambiguous.ts', 'reversed.ts']) {
     const conflict = conflicts.find((outcome) => outcome.filePath === barrel);
-    assert.deepEqual(conflict && [...conflict.candidateIds].sort(), candidates);
+    assert.deepEqual(conflict && [...conflict.candidateIds].sort(compareCodeUnits), candidates);
   }
   const imports = [...graph.iterRelationshipsByType('IMPORTS')];
   for (const file of ['types.ts', 'type-star.ts', 'type-namespace.ts']) {

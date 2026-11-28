@@ -12,7 +12,7 @@ export function representativeUnionOwner(
   site: ReferenceSite,
   indexes: ScopeResolutionIndexes,
   model: SemanticModel,
-  staticOnly: (method: SymbolDefinition) => boolean,
+  staticOnly: (member: SymbolDefinition) => boolean,
 ): SymbolDefinition | null | undefined {
   const spelling = receiver.declaredSpelling ?? receiver.rawName;
   if (site.kind !== 'call' || !spelling.includes('|')) return undefined;
@@ -37,7 +37,8 @@ export function representativeUnionOwner(
     if (!owner) return undefined;
     let method: SymbolDefinition | undefined;
     for (const id of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
-      if (model.fields.lookupAllByOwner(id, site.name).length) return null;
+      if (model.fields.lookupAllByOwner(id, site.name).some((field) => !staticOnly(field)))
+        return null;
       const methods = model.methods
         .lookupAllByOwner(id, site.name)
         .filter((method) => !staticOnly(method));

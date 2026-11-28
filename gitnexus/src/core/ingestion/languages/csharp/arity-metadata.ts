@@ -22,11 +22,8 @@ import { csharpMethodConfig } from '../../method-extractors/configs/csharp.js';
 import { withoutTypeComments } from '../../utils/type-parameters.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
-import {
-  csharpConstructedType,
-  csharpParameterMode,
-  csharpScalarType,
-} from './nullable-heritage.js';
+import { csharpParameterMode } from './nullable-heritage.js';
+import { csharpScalarType, renderCsharpHeritageType } from './heritage-type-shape.js';
 
 interface CsharpArityMetadata {
   readonly declaredParameterTypes?: readonly string[];
@@ -54,7 +51,7 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
       const scalar = csharpScalarType(raw);
       const spelling = scalar
         ? scalar.name + (scalar.nullable ? '?' : '')
-        : csharpConstructedType(raw);
+        : renderCsharpHeritageType(raw);
       const mode = csharpParameterMode.exec(p.type)?.[0] ?? '';
       if (spelling && mode + spelling !== p.type) {
         declaredParameterTypes ??= [...types];

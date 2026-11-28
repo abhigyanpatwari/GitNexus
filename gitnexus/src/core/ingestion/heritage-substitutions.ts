@@ -19,11 +19,23 @@ export function specializeNamedNullableOperand(actual: string): string | null {
   return actual.endsWith('?') ? actual : `${actual}?`;
 }
 
+export function needsScopedHeritageArguments(
+  args: readonly string[] | undefined,
+  provider: ScopeResolver | undefined,
+): boolean {
+  return (
+    provider?.specializeNullableHeritageFormal !== undefined &&
+    args?.some((arg) => arg.includes('?') || provider.needsHeritageTypeNormalization?.(arg)) ===
+      true
+  );
+}
+
 interface NullableOwner {
   declaration: SymbolDefinition;
   specialize?: ScopeResolver['specializeNullableHeritageFormal'];
   qualifiedPattern?: ScopeResolver['qualifiedHeritageTypePattern'];
   normalize?: ScopeResolver['normalizeNullableHeritageSignature'];
+  needsNormalization?: ScopeResolver['needsHeritageTypeNormalization'];
 }
 
 const namedType =
@@ -125,6 +137,7 @@ export class HeritageSubstitutions {
     args: readonly string[] | undefined,
     childDef?: SymbolDefinition,
     provider?: ScopeResolver,
+    needsScope = needsScopedHeritageArguments(args, provider),
   ) {
     const parameters = def.typeParameters;
     if (!parameters?.length || !args || args.length > parameters.length) return;
@@ -133,11 +146,7 @@ export class HeritageSubstitutions {
     if (provider?.specializeNullableHeritageFormal || provider?.qualifiedHeritageTypePattern) {
       this.registerNullableOwner(base, def, provider);
       if (childDef) this.registerNullableOwner(child, childDef, provider);
-      if (
-        childDef &&
-        provider.specializeNullableHeritageFormal &&
-        args.some((arg) => arg.includes('?'))
-      ) {
+      if (childDef && provider.specializeNullableHeritageFormal && needsScope) {
         this.nullableEdges.add(key);
       }
     }
@@ -185,6 +194,7 @@ export class HeritageSubstitutions {
       declaration,
       specialize: provider.specializeNullableHeritageFormal,
       normalize: provider.normalizeNullableHeritageSignature,
+      needsNormalization: provider.needsHeritageTypeNormalization,
       qualifiedPattern: provider.qualifiedHeritageTypePattern,
     });
   }
@@ -263,13 +273,22 @@ export class HeritageSubstitutions {
       const metadata = this.nullableOwners.get(owner);
       const context = path ? metadata : undefined;
       const normalize = path?.normalize;
-      if (!exact.length || (!bindings?.size && !normalize)) return exact;
+      const completed = !normalize && metadata?.needsNormalization;
+      if (
+        !exact.length ||
+        (!bindings?.size && !normalize && (!completed || !exact.some(completed)))
+      )
+        return exact;
       const local = this.methodParameters.get(method);
       const specialized: string[] = [];
       for (const type of exact) {
         const result = specializeType(type, bindings, local, context, metadata?.qualifiedPattern);
         if (result === null) return null;
-        const normalized = normalize ? normalize(result) : result;
+        // Direct generic methods can contain a completed type even when the
+        // base arguments themselves need no declaration-scoped normalization.
+        const canonical =
+          normalize ?? (completed && completed(result) ? metadata?.normalize : undefined);
+        const normalized = canonical ? canonical(result) : result;
         if (normalized === null) return null;
         specialized.push(normalized);
       }

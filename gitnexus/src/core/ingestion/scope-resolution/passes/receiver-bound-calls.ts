@@ -2735,6 +2735,7 @@ function emitReceiverBoundCallsInPass(
           site,
           scopes,
           model,
+          separateReceiverKinds ? excludeFromClass : undefined,
         );
         if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
         providerSelectedMember = languageResolution?.kind === 'resolved';
@@ -3306,6 +3307,7 @@ function emitReceiverBoundCallsInPass(
             site,
             scopes,
             model,
+            excludeFromInstance,
           );
           if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
           providerSelectedMember = languageResolution?.kind === 'resolved';
@@ -4284,21 +4286,27 @@ function pickFirstNonStaticOnly(
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
   provider: ReceiverBoundProviderSubset,
-  excludeMethod = provider.isStaticOnly,
+  excludeMember = provider.isStaticOnly,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | typeof STATIC_ONLY_FILTERED | undefined {
   const rawOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (rawOverloads.length === 0) {
-    // Non-callable member (field / property / variable) — ACCESSES
-    // write/read sites target these too. Static-only filtering doesn't
-    // apply to fields, so delegate straight to `lookupFieldByOwner`.
-    return model.fields.lookupFieldByOwner(ownerId, memberName);
+    const fields = model.fields.lookupAllByOwner(ownerId, memberName);
+    if (!fields.length) return undefined;
+    // Only a field on the receiver's side can shadow an inherited method.
+    if (
+      site.kind === 'call' &&
+      provider.languageProvider?.separateStaticAndInstanceMethods &&
+      excludeMember
+    )
+      return fields.find((field) => !excludeMember(field)) ?? STATIC_ONLY_FILTERED;
+    return fields[0];
   }
   let overloads: readonly SymbolDefinition[] = rawOverloads;
   let filteredAny = false;
-  if (excludeMethod !== undefined) {
+  if (excludeMember !== undefined) {
     const survivors: SymbolDefinition[] = [];
     for (const candidate of rawOverloads) {
-      if (excludeMethod(candidate) === true) {
+      if (excludeMember(candidate) === true) {
         filteredAny = true;
         continue;
       }

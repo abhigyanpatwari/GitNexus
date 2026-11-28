@@ -508,6 +508,7 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   site,
   indexes,
   model,
+  excludeMember,
 ) => {
   if (receiverTypeIsOutOfScope(owner, site, indexes))
     return { kind: 'inapplicable', candidateIds: [] };
@@ -523,13 +524,21 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
     (!argumentsByCall.has(site) && !evidenceByCall.has(site) && !site.argumentTypes.some(isNullish))
   )
     return undefined;
-  let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
+  const methodsOnReceiver = (id: string) => {
+    const methods = model.methods.lookupAllByOwner(id, name);
+    return excludeMember && methods.length
+      ? methods.filter((method) => !excludeMember(method))
+      : methods;
+  };
+  let methods = methodsOnReceiver(owner.nodeId);
   if (!methods.length) {
-    if (model.fields.lookupAllByOwner(owner.nodeId, name).length) return undefined;
+    const hasShadowingField = (id: string) =>
+      model.fields.lookupAllByOwner(id, name).some((field) => !excludeMember?.(field));
+    if (hasShadowingField(owner.nodeId)) return undefined;
     for (const ancestor of indexes.methodDispatch.mroFor(owner.nodeId)) {
-      methods = model.methods.lookupAllByOwner(ancestor, name);
+      methods = methodsOnReceiver(ancestor);
       if (methods.length) break;
-      if (model.fields.lookupAllByOwner(ancestor, name).length) return undefined;
+      if (hasShadowingField(ancestor)) return undefined;
     }
   }
   const signatures = methods.filter((def) => def.isOverloadSignature);
