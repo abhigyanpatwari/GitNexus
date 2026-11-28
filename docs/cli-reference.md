@@ -9,6 +9,7 @@ Everyday commands:
 ```bash
 gitnexus setup                   # Configure MCP for detected editors (one-time; -c to select)
 gitnexus analyze [path]          # Index a repository (or update a stale index)
+gitnexus analyze --all           # Re-index all registered checkouts sequentially
 gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus mcp                     # Start MCP server (stdio; one server PER CLIENT) — all indexed repos
 gitnexus mcp --http              # Start MCP server (Streamable HTTP + SSE) — ONE server, many clients
@@ -83,6 +84,7 @@ The token may be set in the shell, `.env.local`, or `.env` in the working direct
 ## All analyze flags
 
 ```bash
+gitnexus analyze --all --index-only  # Refresh all registered checkouts without generating agent files
 gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
 gitnexus analyze --no-parse-cache # Full rebuild that re-parses every source file
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data

@@ -75,6 +75,7 @@ let dimsEnvCaptured = false;
 program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
+  .option('--all', 'Re-index the current checkout of every registered repository')
   .option('--watch', 'Keep the index current with serialized incremental refreshes')
   .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
   .option('-f, --force', 'Force graph and FTS rebuild; unchanged parser output may be reused')
@@ -297,7 +298,12 @@ program
       process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
     }
   })
-  .action(async (inputPath, options) => {
+  .action(async (inputPath, options, command: Command) => {
+    if (options.all) {
+      const { analyzeAllCommand } = await import('./analyze-all.js');
+      await analyzeAllCommand(inputPath, command);
+      return;
+    }
     // The connected continuation only publishes the writer's prepared graph
     // and embeds it. Its analyzer receipt is never used: the graph writer has
     // already finalized provenance. Keep the native check, without repeating
