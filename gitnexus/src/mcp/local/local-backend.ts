@@ -80,12 +80,14 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
-  parseDiffHunksResult,
+  parseDiffWithPreImage,
   coalesceHunksByPath,
   hunksOverlapRange,
   findGitRootByDotGit,
   getCanonicalRepoRoot,
   getGitRoot,
+  type DiffHunk,
+  type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from '../../server/grep-params.js';
@@ -136,6 +138,7 @@ import {
 } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { metadataMatchesGraph, selectVectorGeneration } from '../../storage/vector-generation.js';
+import { classifyIndexedImages, loadIndexedFileHashes } from '../../storage/indexed-image.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
@@ -7061,7 +7064,7 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const { files: fileDiffs, unparsedGitHeaders } = parseDiffHunksResult(diffOutput);
+    const { files: fileDiffs, unparsedGitHeaders, preImages } = parseDiffWithPreImage(diffOutput);
 
     if (fileDiffs.length === 0) {
       // Git printed a diff but none of it parsed: no `diff --git` / `+++`
@@ -7102,9 +7105,24 @@ export class LocalBackend {
     // the gate look complete.
     let queryDegraded = unparsedGitHeaders > 0;
 
+    // Map each file with the side of the diff the index holds (#4136). After
+    // analyze-then-edit that is the OLD side: the post-image ranges would land
+    // every hunk below an inserted or removed line on the wrong symbol.
+    const fileHashes = await loadIndexedFileHashes(repo.lbugPath);
+    const indexedImages = fileHashes
+      ? await classifyIndexedImages(diffCwd, selection.scope, fileHashes, fileDiffs, preImages)
+      : { preImage: new Map<FileDiff, DiffHunk[]>(), neither: [] };
+    const rangeDiffs = fileDiffs.map((fileDiff) => {
+      const hunks = indexedImages.preImage.get(fileDiff);
+      return hunks ? { ...fileDiff, hunks } : fileDiff;
+    });
+    // An index that holds neither side (analyzed at a third revision) fits no
+    // ranges: the rows below may name the wrong symbols, so withhold a verdict.
+    if (indexedImages.neither.length > 0) queryDegraded = true;
+
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
-    const hunksByPath = coalesceHunksByPath(fileDiffs);
+    const hunksByPath = coalesceHunksByPath(rangeDiffs);
     // The graph may still use the pre-rename path, while the caller check
     // needs the destination in the selected post-image.
     const { getQueryProviderForFile, isIndexedSourceFile } = await loadQueryProviders();

@@ -1221,6 +1221,51 @@ describe('coalesceHunks', () => {
     }
   });
 
+  // #4136: a pre-image insertion is the empty range {g+1, g}, "between lines g
+  // and g+1". Merging must keep it claiming exactly the symbols that span the
+  // gap: never the one-line symbol beside it.
+  it('keeps empty insertion gaps exact when merged with ranges and each other', () => {
+    const cases = [
+      [{ startLine: 5, endLine: 4 }],
+      [
+        { startLine: 5, endLine: 4 },
+        { startLine: 6, endLine: 7 },
+      ],
+      [
+        { startLine: 6, endLine: 7 },
+        { startLine: 5, endLine: 4 },
+        { startLine: 5, endLine: 4 },
+      ],
+      [
+        { startLine: 5, endLine: 4 },
+        { startLine: 5, endLine: 6 },
+      ],
+      [
+        { startLine: 2, endLine: 4 },
+        { startLine: 5, endLine: 4 },
+        { startLine: 9, endLine: 8 },
+      ],
+      [
+        { startLine: 1, endLine: 2 },
+        { startLine: 4, endLine: 3 },
+        { startLine: 4, endLine: 5 },
+        { startLine: 8, endLine: 7 },
+      ],
+    ];
+    const overlapsRaw = (raw: { startLine: number; endLine: number }[], s: number, e: number) =>
+      raw.some((h) => s <= h.endLine && e >= h.startLine);
+    for (const raw of cases) {
+      const merged = coalesceHunks(raw);
+      for (let s = 0; s <= 10; s++) {
+        for (let e = s; e <= 10; e++) {
+          expect(hunksOverlapRange(merged, s, e), `${JSON.stringify(raw)} [${s},${e}]`).toBe(
+            overlapsRaw(raw, s, e),
+          );
+        }
+      }
+    }
+  });
+
   it('does not mutate its input', () => {
     const raw = [
       { startLine: 1, endLine: 1 },
