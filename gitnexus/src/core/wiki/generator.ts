@@ -120,6 +120,10 @@ export interface WikiOptions {
   useSavedTree?: boolean;
   /** Output language for generated documentation (e.g. 'english', 'chinese', 'spanish') */
   lang?: string;
+  /** Regenerate only modules that failed in the previous run */
+  retryFailed?: boolean;
+  /** If true, include error details in the failed modules log */
+  includeFailedDetails?: boolean;
 }
 
 export interface WikiMeta {
@@ -130,9 +134,16 @@ export interface WikiMeta {
   moduleFiles: Record<string, string[]>;
   moduleTree: ModuleTreeNode[];
   /** Pages that must be retried even when fromCommit is still current. */
-  failedModules?: string[];
+  failedModules?: FailedModule[];
   /** A regrouping a run started and did not complete. */
   regrouping?: PendingRegrouping;
+}
+
+export interface FailedModule {
+  name: string;
+  error: string;
+  /** ISO timestamp when the failure occurred. */
+  timestamp: string;
 }
 
 /**
@@ -163,7 +174,7 @@ export type ProgressCallback = (phase: string, percent: number, detail?: string)
 export interface WikiRunResult {
   pagesGenerated: number;
   mode: 'full' | 'incremental' | 'up-to-date';
-  failedModules: string[];
+  failedModules: FailedModule[];
   moduleTree?: ModuleTreeNode[];
 }
 
@@ -207,9 +218,11 @@ export class WikiGenerator {
   private llmConfig: LLMConfig;
   private maxTokensPerModule: number;
   private concurrency: number;
+  private retryFailed: boolean;
+  private includeFailedDetails: boolean;
   private options: WikiOptions;
   private onProgress: ProgressCallback;
-  private failedModules: string[] = [];
+  private failedModules: FailedModule[] = [];
 
   constructor(
     repoPath: string,
@@ -227,6 +240,8 @@ export class WikiGenerator {
     this.llmConfig = llmConfig;
     this.maxTokensPerModule = options.maxTokensPerModule ?? DEFAULT_MAX_TOKENS_PER_MODULE;
     this.concurrency = options.concurrency ?? 3;
+    this.retryFailed = options.retryFailed ?? false;
+    this.includeFailedDetails = options.includeFailedDetails ?? false;
     const progressFn = onProgress || (() => {});
     this.onProgress = (phase, percent, detail) => {
       if (percent > 0) this.lastPercent = percent;
@@ -235,6 +250,7 @@ export class WikiGenerator {
   }
 
   private lastPercent = 0;
+  private failedModuleErrors: Map<string, string> = new Map();
 
   /**
    * Create streaming options that report LLM progress to the progress bar.
@@ -349,6 +365,8 @@ export class WikiGenerator {
    */
   async run(): Promise<WikiRunResult> {
     this.failedModules = [];
+    // Initialize error tracking for failed modules
+    this.failedModuleErrors = new Map<string, string>();
     await fs.mkdir(this.wikiDir, { recursive: true });
 
     const existingMeta = await this.loadWikiMeta();
@@ -376,6 +394,27 @@ export class WikiGenerator {
       // Still regenerate the HTML viewer in case it's missing
       await this.ensureHTMLViewer();
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
+    }
+
+    // If retryFailed mode, filter to only regenerate failed modules
+    if (this.retryFailed && existingMeta?.failedModules?.length) {
+      this.onProgress(
+        'incremental',
+        5,
+        `Retry mode: regenerating ${existingMeta.failedModules.length} failed module(s)...`,
+      );
+      // Log failed module details if configured
+      if (this.includeFailedDetails) {
+        for (const fm of existingMeta.failedModules) {
+          this.onProgress('incremental', 5, `  Failed: ${fm.name} - ${fm.error}`);
+        }
+      }
+    } else if (this.retryFailed && !existingMeta?.failedModules?.length) {
+      this.onProgress(
+        'incremental',
+        5,
+        'Retry mode: no failed modules from previous run, running full generation...',
+      );
     }
 
     // Force mode: regenerate every page, from a new grouping unless the saved
@@ -414,7 +453,7 @@ export class WikiGenerator {
         }
         result = await this.incrementalUpdate(existingMeta, currentCommit);
       } else {
-        result = await this.fullGeneration(currentCommit);
+        result = await this.fullGeneration(currentCommit, existingMeta);
       }
     } finally {
       releaseWikiDbPin();
@@ -445,6 +484,7 @@ export class WikiGenerator {
 
   private async fullGeneration(
     currentCommit: string,
+    meta?: WikiMeta,
     regroup?: Regrouping,
   ): Promise<WikiRunResult> {
     let pagesGenerated = 0;
@@ -477,15 +517,48 @@ export class WikiGenerator {
       ));
     pagesGenerated = 0;
 
+    // If retryFailed mode, filter to only regenerate failed modules
+    const failedModuleNames = new Set(
+      (meta?.failedModules ?? [])
+        .filter((fm: FailedModule) => fm.error != null)
+        .map((fm: FailedModule) => fm.name),
+    );
+
+    // If retryFailed mode, filter moduleTree to only include failed modules
+    // and preserve previously generated pages for non-failed modules
+    let effectiveModuleTree = moduleTree;
+    if (this.retryFailed && failedModuleNames.size > 0) {
+      effectiveModuleTree = moduleTree.filter((node) => failedModuleNames.has(node.name));
+      this.onProgress(
+        'incremental',
+        5,
+        `Retry mode: regenerating ${failedModuleNames.size} failed module(s)...`,
+      );
+      // Log failed module details if configured
+      if (this.includeFailedDetails) {
+        for (const fm of meta?.failedModules ?? []) {
+          if (failedModuleNames.has(fm.name)) {
+            this.onProgress('incremental', 5, `  Failed: ${fm.name} - ${fm.error}`);
+          }
+        }
+      }
+    } else if (this.retryFailed && failedModuleNames.size === 0) {
+      this.onProgress(
+        'incremental',
+        5,
+        'Retry mode: no failed modules from previous run, running full generation...',
+      );
+    }
+
     // If reviewOnly mode, save tree and stop for user to review/edit
     if (this.options.reviewOnly) {
-      await this.saveModuleTree(moduleTree);
+      await this.saveModuleTree(effectiveModuleTree);
       this.onProgress('review', 30, 'Module tree ready for review');
       const reviewResult: WikiRunResult = {
         pagesGenerated: 0,
         mode: 'full',
         failedModules: [],
-        moduleTree,
+        moduleTree: effectiveModuleTree,
       };
       return reviewResult;
     }
@@ -493,7 +566,7 @@ export class WikiGenerator {
     if (regroup) await this.removeStalePages(moduleTree, currentCommit, regroup);
 
     // Phase 2: Generate module pages (parallel with concurrency limit)
-    const totalModules = this.countModules(moduleTree);
+    const totalModules = this.countModules(effectiveModuleTree);
     let modulesProcessed = 0;
 
     const reportProgress = (moduleName?: string) => {
@@ -507,7 +580,7 @@ export class WikiGenerator {
 
     // Flatten tree into layers: leaves first, then parents
     // Leaves can run in parallel; parents must wait for their children
-    const { leaves, parents } = this.flattenModuleTree(moduleTree);
+    const { leaves, parents } = this.flattenModuleTree(effectiveModuleTree);
 
     // Process all leaf modules in parallel
     pagesGenerated += await this.runParallel(leaves, async (node) => {
@@ -521,7 +594,12 @@ export class WikiGenerator {
         reportProgress(node.name);
         return 1;
       } catch (err: any) {
-        this.failedModules.push(node.name);
+        this.failedModules.push({
+          name: node.name,
+          error: err.message,
+          timestamp: new Date().toISOString(),
+        });
+        this.failedModuleErrors.set(node.name, err.message);
         reportProgress(`Failed: ${node.name}`);
         return 0;
       }
@@ -529,8 +607,16 @@ export class WikiGenerator {
 
     // Process parent modules sequentially (they depend on child docs)
     for (const node of parents) {
-      if (node.children?.some((child) => this.failedModules.includes(child.name))) {
-        this.failedModules.push(node.name);
+      if (node.children?.some((child) => this.failedModules.some((fm) => fm.name === child.name))) {
+        this.failedModules.push({
+          name: node.name,
+          error: this.failedModuleErrors.get(node.name) || 'Unknown error',
+          timestamp: new Date().toISOString(),
+        });
+        this.failedModuleErrors.set(
+          node.name,
+          this.failedModuleErrors.get(node.name) || 'Unknown error',
+        );
         reportProgress(`Failed: ${node.name}`);
         continue;
       }
@@ -544,28 +630,38 @@ export class WikiGenerator {
         pagesGenerated++;
         reportProgress(node.name);
       } catch (err: any) {
-        this.failedModules.push(node.name);
+        this.failedModules.push({
+          name: node.name,
+          error: err.message,
+          timestamp: new Date().toISOString(),
+        });
+        this.failedModuleErrors.set(node.name, err.message);
         reportProgress(`Failed: ${node.name}`);
       }
     }
 
-    // Phase 3: Generate overview
-    this.onProgress('overview', 88, 'Generating overview page...');
-    await this.generateOverview(moduleTree);
-    pagesGenerated++;
+    // Phase 3: Generate overview (only if we generated some pages or if this is not a retry)
+    const shouldGenerateOverview = this.retryFailed ? pagesGenerated > 0 : true;
+    if (shouldGenerateOverview) {
+      this.onProgress('overview', 88, 'Generating overview page...');
+      await this.generateOverview(effectiveModuleTree);
+      pagesGenerated++;
+    }
 
     // Save metadata
     this.onProgress('finalize', 95, 'Saving metadata...');
-    const moduleFiles = this.extractModuleFiles(moduleTree);
-    await this.saveModuleTree(moduleTree);
+    const moduleFiles = this.extractModuleFiles(effectiveModuleTree);
+    await this.saveModuleTree(effectiveModuleTree);
     await this.saveWikiMeta({
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
       lang: this.effectiveLang(),
       moduleFiles,
-      moduleTree,
-      failedModules: [...this.failedModules],
+      moduleTree: effectiveModuleTree,
+      failedModules: this.includeFailedDetails
+        ? [...this.failedModules]
+        : this.failedModules.filter((fm) => fm.error != null),
     });
 
     this.onProgress('done', 100, 'Wiki generation complete');
@@ -1094,10 +1190,7 @@ export class WikiGenerator {
     if (pending?.commit === currentCommit && !this.options.useSavedTree) {
       this.onProgress('incremental', 10, 'Completing the regrouping of an interrupted run...');
       // The recorded regrouping already lists the pages it keeps.
-      const fullResult = await this.fullGeneration(currentCommit, {
-        meta: existingMeta,
-        changedFiles: [],
-      });
+      const fullResult = await this.fullGeneration(currentCommit, existingMeta);
       return { ...fullResult, mode: 'incremental' };
     }
     if (pending) existingMeta = await this.abandonRegrouping(existingMeta, pending);
@@ -1110,7 +1203,7 @@ export class WikiGenerator {
     if (changedFiles === null) {
       this.onProgress('incremental', 10, 'Branch diverged, running full generation...');
       await this.removeFailedPages(existingMeta);
-      const fullResult = await this.fullGeneration(currentCommit);
+      const fullResult = await this.fullGeneration(currentCommit, existingMeta);
       return { ...fullResult, mode: 'incremental' };
     }
 
@@ -1128,7 +1221,7 @@ export class WikiGenerator {
     this.onProgress('incremental', 10, `${changedFiles.length} files changed`);
 
     // Determine affected modules
-    const affectedModules = new Set(existingMeta.failedModules ?? []);
+    const affectedModules = new Set<string>(existingMeta.failedModules?.map((fm) => fm.name) ?? []);
     const newFiles: string[] = [];
     // A file no module lists is new when the graph indexes it and its path did
     // not exist at the last generation. An edit to a file a reviewed tree left
@@ -1161,10 +1254,7 @@ export class WikiGenerator {
         15,
         'Significant new files detected, running full generation...',
       );
-      const fullResult = await this.fullGeneration(currentCommit, {
-        meta: existingMeta,
-        changedFiles,
-      });
+      const fullResult = await this.fullGeneration(currentCommit, existingMeta);
       return { ...fullResult, mode: 'incremental' };
     }
 
@@ -1214,7 +1304,12 @@ export class WikiGenerator {
         );
         return 1;
       } catch (err: any) {
-        this.failedModules.push(node.name);
+        this.failedModules.push({
+          name: node.name,
+          error: err.message,
+          timestamp: new Date().toISOString(),
+        });
+        this.failedModuleErrors.set(node.name, err.message);
         incProcessed++;
         return 0;
       }
@@ -1224,8 +1319,16 @@ export class WikiGenerator {
     const parents = affectedNodes.filter((node) => node.children?.length);
     pagesGenerated += await this.runParallel(leaves, regenerateNode);
     for (const node of parents) {
-      if (node.children?.some((child) => this.failedModules.includes(child.name))) {
-        this.failedModules.push(node.name);
+      if (node.children?.some((child) => this.failedModules.some((fm) => fm.name === child.name))) {
+        this.failedModules.push({
+          name: node.name,
+          error: this.failedModuleErrors.get(node.name) || 'Unknown error',
+          timestamp: new Date().toISOString(),
+        });
+        this.failedModuleErrors.set(
+          node.name,
+          this.failedModuleErrors.get(node.name) || 'Unknown error',
+        );
         continue;
       }
       await removePage(node);
@@ -1261,8 +1364,8 @@ export class WikiGenerator {
    * would leave that page as it is and drop the retry.
    */
   private async removeFailedPages(meta: WikiMeta): Promise<void> {
-    for (const name of meta.failedModules ?? []) {
-      const node = this.findModule(meta.moduleTree, name);
+    for (const fm of meta.failedModules ?? []) {
+      const node = this.findModule(meta.moduleTree, fm.name);
       if (node) await fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
     }
   }
@@ -1749,11 +1852,20 @@ export class WikiGenerator {
     const kept = new Set(pending.keptPages);
     const { leaves, parents } = this.flattenModuleTree(meta.moduleTree);
     const gone = [...leaves, ...parents].filter((node) => !kept.has(node.slug));
+    const previousFailedModules: FailedModule[] = [...(meta.failedModules ?? [])];
+    const goneFailedModules = gone
+      .filter((node) => this.failedModules.some((fm) => fm.name === node.name))
+      .map((node) => {
+        const existing = previousFailedModules.find((fm) => fm.name === node.name);
+        return {
+          name: node.name,
+          error: existing?.error || this.failedModuleErrors.get(node.name) || 'Unknown error',
+          timestamp: existing?.timestamp || new Date().toISOString(),
+        };
+      });
     const previous: WikiMeta = {
       ...meta,
-      failedModules: [
-        ...new Set([...(meta.failedModules ?? []), ...gone.map((node) => node.name)]),
-      ],
+      failedModules: [...new Set([...previousFailedModules, ...goneFailedModules])],
     };
     delete previous.regrouping;
     return previous;

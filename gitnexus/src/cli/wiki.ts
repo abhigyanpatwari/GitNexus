@@ -54,6 +54,10 @@ export interface WikiCommandOptions {
   lang?: string;
   allowInsecureConnection?: string;
   maxCompletionTokens?: string;
+  /** Regenerate only modules that failed in the previous run */
+  retryFailed?: boolean;
+  /** Include error details in the failed modules log */
+  includeFailedDetails?: boolean;
 }
 
 function isLocalProvider(
@@ -676,6 +680,8 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     concurrency: options?.concurrency ? parseInt(options.concurrency, 10) : undefined,
     reviewOnly: options?.review,
     lang: options?.lang,
+    retryFailed: options?.retryFailed,
+    includeFailedDetails: options?.includeFailedDetails,
   };
 
   const generator = new WikiGenerator(
@@ -806,10 +812,13 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
       if (continueResult.failedModules && continueResult.failedModules.length > 0) {
         console.log(`\n  Failed modules (${continueResult.failedModules.length}):`);
-        for (const mod of continueResult.failedModules) {
-          console.log(`    - ${mod}`);
+        for (const fm of continueResult.failedModules) {
+          console.log(`    - ${fm.name}: ${fm.error}`);
         }
-        console.log('  Re-run to retry failed modules (pages will be regenerated).\n');
+        const retryMsg = options?.includeFailedDetails
+          ? 'Re-run with `--retry-failed --include-failed-details` to regenerate only the failed modules with error details.\n'
+          : 'Re-run with `--retry-failed` to regenerate only the failed modules.\n';
+        console.log(retryMsg);
         process.exitCode = 1;
         return;
       }
@@ -839,10 +848,13 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
     if (result.failedModules && result.failedModules.length > 0) {
       console.log(`\n  Failed modules (${result.failedModules.length}):`);
-      for (const mod of result.failedModules) {
-        console.log(`    - ${mod}`);
+      for (const fm of result.failedModules) {
+        console.log(`    - ${fm.name}: ${fm.error}`);
       }
-      console.log('  Re-run to retry failed modules (pages will be regenerated).');
+      const retryMsg = options?.includeFailedDetails
+        ? 'Re-run with `--retry-failed --include-failed-details` to regenerate only the failed modules with error details.'
+        : 'Re-run with `--retry-failed` to regenerate only the failed modules.';
+      console.log(retryMsg);
       console.log('');
       process.exitCode = 1;
       return;
