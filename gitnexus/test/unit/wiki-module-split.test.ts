@@ -434,6 +434,29 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
     for (const prompt of pagePrompts) expect(prompt).not.toContain('source truncated');
   });
 
+  it('fits source and all four graph sections into a leaf prompt with oversized references', async () => {
+    const wikiPrompts = await import('../../src/core/wiki/prompts.js');
+    const { estimateTokensSafe, promptTokenBudget } =
+      await import('../../src/core/wiki/prompt-budget.js');
+    const { DEFAULT_CONTEXT_WINDOW } = await import('../../src/core/wiki/llm-client.js');
+    const references = 'reference '.repeat(50_000);
+    vi.spyOn(wikiPrompts, 'formatCallEdges').mockReturnValue(references);
+    vi.spyOn(wikiPrompts, 'formatProcesses').mockReturnValue(references);
+
+    const { prompts } = await buildTree({ 'src/example.ts': 500 }, 500, false);
+    const leaves = prompts.filter((prompt) => prompt.includes('## Source Code'));
+    expect(leaves).toHaveLength(1);
+    const [leaf] = leaves;
+    expect(estimateTokensSafe(leaf)).toBeLessThanOrEqual(
+      promptTokenBudget(DEFAULT_CONTEXT_WINDOW, 1000, wikiPrompts.MODULE_SYSTEM_PROMPT),
+    );
+    expect(leaf).toContain('x'.repeat(500));
+    for (const label of ['Internal calls', 'Outgoing calls', 'Incoming calls', 'Execution flows']) {
+      expect(leaf).toContain(`${label}: reference`);
+    }
+    expect(leaf).toContain('clarifies the architecture');
+  });
+
   it('gives no split page the slug of the overview or the empty slug', async () => {
     // `資料` has no ASCII letter or digit, so its pages' slugs come from their
     // directories alone.

@@ -117,6 +117,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'wiki|--timeout <seconds>': 'help.option.wiki.timeout',
   'wiki|--retries <n>': 'help.option.wiki.retries',
   'wiki|--max-completion-tokens <n>': 'help.option.wiki.maxCompletionTokens',
+  'wiki|--context-window <n>': 'help.option.wiki.contextWindow',
   'wiki|--allow-insecure-connection <host>': 'help.option.wiki.allowInsecureConnection',
   'wiki|--gist': 'help.option.wiki.gist',
   'wiki|-v, --verbose': 'help.option.verbose',

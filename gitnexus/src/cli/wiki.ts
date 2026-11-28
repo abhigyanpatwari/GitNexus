@@ -54,6 +54,7 @@ export interface WikiCommandOptions {
   lang?: string;
   allowInsecureConnection?: string;
   maxCompletionTokens?: string;
+  contextWindow?: string;
 }
 
 function isLocalProvider(
@@ -266,6 +267,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   let retries: number | undefined;
   let allowedInsecureHttpHosts: string[] | undefined;
   let maxCompletionTokens: number | undefined;
+  let contextWindow: number | undefined;
   try {
     timeoutSeconds =
       options?.timeout === undefined
@@ -285,6 +287,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         : parseIntegerOption(options.maxCompletionTokens, '--max-completion-tokens', {
             minimum: 1,
           });
+    contextWindow =
+      options?.contextWindow === undefined
+        ? undefined
+        : parseIntegerOption(options.contextWindow, '--context-window', { minimum: 1 });
   } catch (error) {
     console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;
@@ -373,6 +379,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       isReasoningModel: options?.reasoningModel,
       allowedInsecureHttpHosts,
       maxTokens: maxCompletionTokens,
+      contextWindow,
     });
   } catch (error) {
     console.log(`  Error: ${(error as Error).message}\n`);

@@ -1,4 +1,5 @@
 import { logger } from '../logger.js';
+import { minContextWindow } from './prompt-budget.js';
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 /**
  * LLM Client for Wiki Generation
@@ -65,6 +66,8 @@ export interface LLMConfig {
   baseUrl: string;
   model: string;
   maxTokens: number;
+  /** Model context window in tokens; wiki prompts are budgeted to fit it. */
+  contextWindow?: number;
   temperature: number;
   /** Provider type — controls auth header behaviour */
   provider?: LLMProvider;
@@ -141,6 +144,25 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     (reuseSavedHttpConfig ? savedConfig.apiKey : undefined) ||
     '';
 
+  const maxTokens =
+    readOverrideMaxCompletionTokens(overrides?.maxTokens) ??
+    readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
+    readConfiguredMaxCompletionTokens(savedConfig.maxCompletionTokens) ??
+    DEFAULT_MAX_COMPLETION_TOKENS;
+  const configuredContextWindow =
+    readOverrideContextWindow(overrides?.contextWindow) ??
+    readEnvContextWindow(process.env[LLM_CONTEXT_WINDOW_ENV]) ??
+    readConfiguredContextWindow(savedConfig.contextWindow);
+  if (configuredContextWindow !== undefined) {
+    assertContextWindowFits(configuredContextWindow, maxTokens);
+  }
+  // The default window assumes the default completion limit. When only the
+  // completion limit is raised, grow the default by the same amount so the
+  // prompt keeps the room it had.
+  const contextWindow =
+    configuredContextWindow ??
+    DEFAULT_CONTEXT_WINDOW + Math.max(0, maxTokens - DEFAULT_MAX_COMPLETION_TOKENS);
+
   return {
     apiKey,
     baseUrl:
@@ -164,11 +186,8 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
             : savedProvider === 'anthropic'
               ? ANTHROPIC_DEFAULT_MODEL
               : '')),
-    maxTokens:
-      readOverrideMaxCompletionTokens(overrides?.maxTokens) ??
-      readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
-      readConfiguredMaxCompletionTokens(savedConfig.maxCompletionTokens) ??
-      DEFAULT_MAX_COMPLETION_TOKENS,
+    maxTokens,
+    contextWindow,
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider,
     apiVersion:
@@ -182,6 +201,19 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       overrides?.allowedInsecureHttpHosts ??
       parseLLMAllowedInsecureHttpHosts(process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV]),
   };
+}
+
+/** Reject a window too small to hold the completion plus any prompt at all. */
+function assertContextWindowFits(contextWindow: number, maxCompletionTokens: number): void {
+  const minimum = minContextWindow(maxCompletionTokens);
+  if (contextWindow < minimum) {
+    throw new Error(
+      `Context window (${contextWindow} tokens) must be at least ${minimum} with ` +
+        `${maxCompletionTokens} max completion tokens. Raise --context-window ` +
+        `(or ${LLM_CONTEXT_WINDOW_ENV}, or "contextWindow" in ~/.gitnexus/config.json) ` +
+        `or lower --max-completion-tokens.`,
+    );
+  }
 }
 
 /**
@@ -207,6 +239,8 @@ function isTimeoutLikeError(err: unknown): boolean {
 export const LLM_ALLOW_INSECURE_CONNECTION_ENV = 'GITNEXUS_ALLOW_INSECURE_CONNECTION';
 export const LLM_MAX_COMPLETION_TOKENS_ENV = 'GITNEXUS_MAX_COMPLETION_TOKENS';
 export const DEFAULT_MAX_COMPLETION_TOKENS = 16_384;
+export const LLM_CONTEXT_WINDOW_ENV = 'GITNEXUS_CONTEXT_WINDOW';
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 function readOverrideMaxCompletionTokens(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -233,6 +267,35 @@ function readConfiguredMaxCompletionTokens(value: unknown): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
     throw new Error('maxCompletionTokens in ~/.gitnexus/config.json must be a positive integer');
+  }
+  return value;
+}
+
+function readOverrideContextWindow(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error('--context-window must be a positive integer');
+  }
+  return value;
+}
+
+function readEnvContextWindow(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`${LLM_CONTEXT_WINDOW_ENV} must be a positive integer`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || String(parsed) !== trimmed) {
+    throw new Error(`${LLM_CONTEXT_WINDOW_ENV} is too large`);
+  }
+  return parsed;
+}
+
+function readConfiguredContextWindow(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error('contextWindow in ~/.gitnexus/config.json must be a positive integer');
   }
   return value;
 }
@@ -454,6 +517,19 @@ export async function callLLM(
     ) {
       throw new Error(
         `Azure content filter blocked this request. The prompt triggered content policy. Details: ${errorText.slice(0, 300)}`,
+      );
+    }
+
+    // Context-length overflow: say how to fix it instead of only echoing the API text.
+    if (
+      response.status === 400 &&
+      /context.{0,10}(length|window)|too many tokens|maximum context/i.test(errorText)
+    ) {
+      throw new Error(
+        `LLM API error (400): ${errorText.slice(0, 500)}\n` +
+          `The prompt is larger than the model's context window. Set the real window with ` +
+          `--context-window <tokens> (or ${LLM_CONTEXT_WINDOW_ENV}, or "contextWindow" in ` +
+          `~/.gitnexus/config.json) so GitNexus can shrink wiki prompts to fit.`,
       );
     }
 

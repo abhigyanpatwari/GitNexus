@@ -376,6 +376,8 @@ export const en = {
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
   'help.option.wiki.maxCompletionTokens':
     'Max completion tokens for each LLM request (default: 16384)',
+  'help.option.wiki.contextWindow':
+    'Model context window in tokens; wiki prompts are trimmed to fit (default: 128000)',
   'help.option.wiki.allowInsecureConnection':
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',

@@ -43,6 +43,13 @@ GITNEXUS_MAX_COMPLETION_TOKENS=131072 gitnexus wiki
 # Or set "maxCompletionTokens": 131072 in ~/.gitnexus/config.json
 # Precedence: flag, then the environment variable, then the config file.
 
+# Tell GitNexus the model's context window so prompts are trimmed to fit (default: 128000)
+gitnexus wiki --context-window 32768
+GITNEXUS_CONTEXT_WINDOW=32768 gitnexus wiki
+# Or set "contextWindow": 32768 in ~/.gitnexus/config.json (same precedence as above).
+# The window must be at least the completion limit + 6000 tokens; smaller values are rejected.
+# If you raise only the completion limit, the default window grows by the same amount.
+
 # Allow a specific LAN/self-hosted HTTP LLM host (HTTPS is preferred for remote endpoints)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
 # Or set a comma-separated host allowlist:
@@ -94,6 +101,11 @@ Increase `--max-completion-tokens` within your model's supported limit before re
 Truncated grouping or overview responses also fail the run; batched grouping retains its
 directory-based fallback. Incomplete runs are not published with `--gist`.
 Use `--force` to replace incomplete pages already saved by an older version.
+
+The context window must be a positive integer. GitNexus keeps each prompt within the window
+minus the completion limit, the system prompt and a safety margin: grouping falls back to
+batches, and module sources, child summaries and overview edges are trimmed. If the provider
+still answers `400` with a context-length error, lower `--context-window` to the model's real limit.
 
 For safety, `http://` LLM base URLs are allowed by default only for loopback hosts (`localhost`, `127.0.0.1`, `::1`). `--allow-insecure-connection` and `GITNEXUS_ALLOW_INSECURE_CONNECTION` accept exact hostnames or IP addresses only; do not include schemes, ports, paths, credentials, or wildcards.
 
