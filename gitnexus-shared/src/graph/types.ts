@@ -196,6 +196,12 @@ export type RelationshipType =
    *  Lets Cypher queries trace which beans the container injects into a given
    *  consumer, complementing the structural `IMPLEMENTS` heritage edges. */
   | 'INJECTS'
+  /** Callable scope -> acquired binding; the target spans its acquisition site. */
+  | 'OWNS_RESOURCE'
+  /** Callable scope -> context manager whose exit protocol runs at the end of its suite. */
+  | 'MANAGES_CONTEXT'
+  /** Resource or manager -> explicit teardown call or enclosing context-manager suite. */
+  | 'CLEANUP_AT'
   /** Spring activation constraint. Source = a conditional Bean/configuration
    *  Class or factory Method; target = the referenced configuration Property
    *  when statically identifiable, otherwise an Annotation evidence node.

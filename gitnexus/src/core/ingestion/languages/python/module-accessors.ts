@@ -1,3 +1,4 @@
+import type { PythonResourceLifetime } from './resource-lifetime.js';
 import type { CaptureMatch, ParsedFile } from 'gitnexus-shared';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
@@ -35,6 +36,7 @@ export interface PythonCallResultAssignmentFact {
 /** One plain-data snapshot preserves both Python capture consumers. */
 export interface PythonCaptureSideChannel {
   readonly kind: 'python-capture';
+  readonly resourceLifetimes?: readonly PythonResourceLifetime[];
   readonly subtypeDispatch?: PythonSubtypeDispatchSideChannel;
   readonly moduleAccessors: readonly PythonModuleAccessorFact[];
   readonly callResultAssignments: readonly PythonCallResultAssignmentFact[];
@@ -42,11 +44,20 @@ export interface PythonCaptureSideChannel {
   readonly literalAll?: readonly string[];
 }
 
+const lifetimesByFile = new Map<string, PythonResourceLifetime[]>();
+
+export function recordPythonResourceLifetime(filePath: string, fact: PythonResourceLifetime): void {
+  const existing = lifetimesByFile.get(filePath);
+  if (existing) existing.push(fact);
+  else lifetimesByFile.set(filePath, [fact]);
+}
+
 const accessorsByFile = new Map<string, Map<string, PythonModuleAccessorFact>>();
 const assignmentsByFile = new Map<string, Map<string, PythonCallResultAssignmentFact>>();
 const literalAllByFile = new Map<string, readonly string[]>();
 
 export function beginPythonModuleAccessorCapture(filePath: string): void {
+  lifetimesByFile.delete(filePath);
   accessorsByFile.delete(filePath);
   assignmentsByFile.delete(filePath);
   literalAllByFile.delete(filePath);
@@ -282,16 +293,19 @@ export function collectPythonCaptureSideChannel(
   const subtypeDispatch = collectPythonSubtypeDispatchSideChannel(filePath);
   const moduleAccessors = [...(accessorsByFile.get(filePath)?.values() ?? [])];
   const callResultAssignments = [...(assignmentsByFile.get(filePath)?.values() ?? [])];
+  const resourceLifetimes = lifetimesByFile.get(filePath);
   const literalAll = literalAllByFile.get(filePath);
   if (
     subtypeDispatch === undefined &&
     moduleAccessors.length === 0 &&
     callResultAssignments.length === 0 &&
-    literalAll === undefined
+    literalAll === undefined &&
+    resourceLifetimes === undefined
   )
     return undefined;
   return {
     kind: 'python-capture',
+    ...(resourceLifetimes && { resourceLifetimes }),
     ...(subtypeDispatch === undefined ? {} : { subtypeDispatch }),
     moduleAccessors,
     callResultAssignments,

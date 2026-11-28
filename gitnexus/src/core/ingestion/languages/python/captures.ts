@@ -34,6 +34,7 @@ import {
   synthesizeConstructorFieldTypeBindings,
   synthesizeReceiverTypeBinding,
 } from './receiver-binding.js';
+import { pythonResourceLifetime } from './resource-lifetime.js';
 import { synthesizeDependsReferences } from './depends-references.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -53,6 +54,7 @@ import {
   beginPythonModuleAccessorCapture,
   recordPythonLiteralAll,
   recordPythonModuleAccessor,
+  recordPythonResourceLifetime,
   synthesizePythonCallResultAssignment,
 } from './module-accessors.js';
 import { synthesizePythonInstanceFieldCaptures } from './instance-fields.js';
@@ -142,6 +144,7 @@ export function emitPythonScopeCaptures(
   }
 
   const out: CaptureMatch[] = [];
+  const captureLifetimes = notebookSegments === undefined && parseText.includes('yield');
   const dependsCalleeSites = new Set<string>();
 
   for (const captures of expandPythonScopeMatches(rawMatches)) {
@@ -253,6 +256,10 @@ export function emitPythonScopeCaptures(
       const fnNode = scopeNode.type === 'function_definition' ? scopeNode : null;
       if (fnNode !== null) {
         recordPythonModuleAccessor(filePath, fnNode, subtypeLineMapper);
+        if (captureLifetimes) {
+          const lifetime = pythonResourceLifetime(fnNode);
+          if (lifetime) recordPythonResourceLifetime(filePath, lifetime);
+        }
         const parameterNames = computePythonArityMetadata(fnNode).parameterNames;
         if (parameterNames.length > 0) {
           grouped['@scope.lexical-names'] = syntheticCapture(
