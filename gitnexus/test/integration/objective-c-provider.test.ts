@@ -214,7 +214,7 @@ async function analyzeObjectiveCRepo(
   options: { force?: boolean } = {},
 ): Promise<string[]> {
   const logs: string[] = [];
-  const readerBudget = getEffectiveBufferPoolSize();
+  const hintlessPool = getEffectiveBufferPoolSize();
   await runFullAnalysis(
     repoRoot,
     {
@@ -228,7 +228,7 @@ async function analyzeObjectiveCRepo(
       onLog: (message) => logs.push(message),
     },
   );
-  expect(getEffectiveBufferPoolSize()).toBe(readerBudget);
+  expect(getEffectiveBufferPoolSize()).toBe(hintlessPool);
   return logs;
 }
 

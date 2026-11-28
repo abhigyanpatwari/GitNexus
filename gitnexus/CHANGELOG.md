@@ -14,6 +14,10 @@ All notable changes to GitNexus will be documented in this file.
 - **MCP `query` / `context` / `impact` / `cypher` always attach a ref-carrying `staleness` field** — object results include it even when `status` is `current`. Absence is no longer the freshness signal: read `staleness.status` (`behind`/`diverged` vs `current`/`unknown`) and `branch`/`lastCommit` for which index answered. `list_repos` and the HTTP repo routes are unchanged (still omit `staleness` when current; the ref is top-level) (#3291, #3293)
 - **MCP `query` keeps one `process_symbols` row per `(id, process_id)`** — a symbol in more than one execution flow stays on each process card, and `symbol_count` is the number of those emitted rows after `max_symbols`. A `repo` of `@<group>` returns `{ group, query, results, per_repo }` and does not include `process_symbols`; `results[].symbol_count` is that member's post-slice count, and a `service` prefix counts only attaches under the prefix. Query `@<group>/<memberPath>` for that member's attach rows (#3351)
 
+### Fixed
+
+- **Read-only database buffer pool is bounded by the container limit and the query memory budget** — the default pool of each read-only database is sized from the cgroup-aware memory limit and kept under `GITNEXUS_QUERY_MAX_RSS_MB`, which stops pool growth from pushing the process to the container limit (a 1 GiB container now gets 384 MiB instead of 2 GiB). Writable opens keep min(2 GiB, 80% of memory), now counting the container limit. Each open database also holds fixed native memory outside the pool, so large indexes in ~1 GiB containers can still exceed the guard. `GITNEXUS_LBUG_BUFFER_POOL_SIZE` still overrides (#4211)
+
 ## [1.6.12] - 2026-09-12
 
 ### Added

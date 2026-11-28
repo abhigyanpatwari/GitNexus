@@ -38,7 +38,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   loadVectorExtension: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('../../src/core/lbug/lbug-config.js', () => ({
+vi.mock('../../src/core/lbug/lbug-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/lbug/lbug-config.js')>()),
   createLbugDatabase: vi.fn(),
   toNativeSafePath: vi.fn((p: string) => p),
   LBUG_MAX_DB_SIZE: 1024,
@@ -196,6 +197,26 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     expect(readOnlyDb1.close).toHaveBeenCalled();
     expect(writableDb.close).toHaveBeenCalled();
     expect(fs.rename).not.toHaveBeenCalled();
+  });
+
+  it('reports writable CHECKPOINT exhaustion as a writer failure', async () => {
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const engineError = new Error('Buffer pool is full');
+    const writableDb = makeMockDb();
+    connectionQueryMock
+      .mockRejectedValueOnce(new Error("Couldn't replay shadow pages under read-only mode"))
+      .mockResolvedValueOnce({ getAll: vi.fn().mockResolvedValue([]), close: vi.fn() })
+      .mockRejectedValueOnce(engineError);
+    vi.mocked(createLbugDatabase).mockReturnValueOnce(makeMockDb()).mockReturnValueOnce(writableDb);
+
+    const failure = initLbug('test-writer-pool-full', '/tmp/test-writer-pool-full/lbug');
+    await expect(failure).rejects.toMatchObject({
+      message: expect.stringContaining('writer buffer pool'),
+      cause: engineError,
+    });
+    expect(connectionQueryMock).toHaveBeenLastCalledWith('CHECKPOINT');
+    expect(writableDb.close).toHaveBeenCalled();
+    expect(createLbugDatabase).toHaveBeenCalledTimes(2);
   });
 
   it('quarantines WAL and reopens read-only when the Ladybug shadow sidecar is missing', async () => {

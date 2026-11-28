@@ -21,7 +21,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   loadFTSExtension: async () => false,
   loadVectorExtension: async () => false,
 }));
-vi.mock('../../src/core/lbug/query-memory-guard.js', () => ({
+vi.mock('../../src/core/lbug/query-memory-guard.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/lbug/query-memory-guard.js')>()),
   queryMemoryGuard: { begin, end },
 }));
 

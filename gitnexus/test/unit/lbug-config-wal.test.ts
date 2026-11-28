@@ -17,9 +17,25 @@ import {
   _setOsPageSizeForTests,
   bufferPoolExhaustionRemedy,
 } from '../../src/core/lbug/lbug-config.js';
+import { QUERY_MAX_RSS_ENV } from '../../src/core/lbug/query-memory-guard.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
 const DEFAULT_THRESHOLD = 64 * 1024 * 1024;
+
+// The default pool is sized from effective memory and, for read-only opens,
+// the query memory budget. Pin "no container limit", the default budget and no
+// pool override so the pool expectations below depend only on the stubbed
+// os.totalmem, also on a CI runner inside a memory-limited cgroup.
+const pinUnconstrainedHost = (): (() => void) => {
+  const desc = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
+  Object.defineProperty(process, 'constrainedMemory', { configurable: true, value: () => 0 });
+  vi.stubEnv(QUERY_MAX_RSS_ENV, undefined);
+  vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', undefined);
+  return () => {
+    if (desc) Object.defineProperty(process, 'constrainedMemory', desc);
+    else delete (process as { constrainedMemory?: unknown }).constrainedMemory;
+  };
+};
 
 describe('isWalCorruptionError', () => {
   it.each([
@@ -241,8 +257,16 @@ describe('createLbugDatabase buffer pool size (#2557)', () => {
   // Pin a 4 KiB page so every expectation below is host-independent — on a
   // 16 KiB-page Apple Silicon runner the #2631 granule scaling would
   // otherwise multiply them by 4.
-  beforeEach(() => _setOsPageSizeForTests(4096));
-  afterEach(() => _setOsPageSizeForTests(undefined));
+  let restoreHost: () => void;
+  beforeEach(() => {
+    _setOsPageSizeForTests(4096);
+    restoreHost = pinUnconstrainedHost();
+  });
+  afterEach(() => {
+    _setOsPageSizeForTests(undefined);
+    restoreHost();
+    vi.unstubAllEnvs();
+  });
 
   const bufferPoolArg = (Database: ReturnType<typeof vi.fn>): unknown => Database.mock.calls[0][1];
 
@@ -337,10 +361,16 @@ describe('adaptive buffer pool hint', () => {
   const MiB = 1024 * 1024;
   const bufferPoolArg = (Database: ReturnType<typeof vi.fn>): unknown => Database.mock.calls[0][1];
 
-  beforeEach(() => _setOsPageSizeForTests(4096));
+  let restoreHost: () => void;
+  beforeEach(() => {
+    _setOsPageSizeForTests(4096);
+    restoreHost = pinUnconstrainedHost();
+  });
   afterEach(() => {
     setBufferPoolSizeHint(undefined);
     _setOsPageSizeForTests(undefined);
+    restoreHost();
+    vi.unstubAllEnvs();
   });
 
   describe('estimateBufferPool', () => {
@@ -458,9 +488,14 @@ describe('page-size-scaled buffer pool sizing (#2631)', () => {
   const GiB = 1024 * MiB;
   const bufferPoolArg = (Database: ReturnType<typeof vi.fn>): unknown => Database.mock.calls[0][1];
 
+  let restoreHost: () => void;
+  beforeEach(() => {
+    restoreHost = pinUnconstrainedHost();
+  });
   afterEach(() => {
     setBufferPoolSizeHint(undefined);
     _setOsPageSizeForTests(undefined);
+    restoreHost();
     vi.unstubAllEnvs();
   });
 
@@ -549,6 +584,20 @@ describe('bufferPoolExhaustionRemedy (#2631)', () => {
 
   const EXHAUSTION =
     'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!';
+
+  it('names the writable pool the COPY ran with, not the smaller reader pool', () => {
+    _setOsPageSizeForTests(4096);
+    const restoreHost = pinUnconstrainedHost();
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(1024 * 1024 * 1024);
+    try {
+      // 1 GiB: writer min(2 GiB, 80%) = 819 MiB; reader 384 MiB.
+      expect(bufferPoolExhaustionRemedy(EXHAUSTION)).toContain('(819 MiB)');
+    } finally {
+      totalmemSpy.mockRestore();
+      restoreHost();
+      vi.unstubAllEnvs();
+    }
+  });
 
   it('names the override knob for the exhaustion error', () => {
     _setOsPageSizeForTests(4096);

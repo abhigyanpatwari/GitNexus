@@ -90,6 +90,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -165,6 +168,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -233,6 +239,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -302,6 +311,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => {
         throw new Error('should not be called');
       }),
@@ -366,6 +378,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -441,6 +456,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
     }));
     const openLbugConnectionMock = vi.fn(async () => ({ db, conn }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -519,6 +537,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     mockFsForInit('/tmp/gitnexus-lbug-checkpoint-lifecycle/lbug');
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -581,6 +602,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     mockFsForInit('/tmp/gitnexus-lbug-query-lifecycle/lbug');
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -636,6 +660,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     mockFsForInit('/tmp/gitnexus-lbug-sync-close-lifecycle/lbug');
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -702,6 +729,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     mockFsForInit('/tmp/gitnexus-lbug-array-error-lifecycle/lbug');
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -768,6 +798,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       const dbPath = '/tmp/gitnexus-lbug-fts-create-drain/lbug';
       mockFsForInit(dbPath);
       vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+        readBufferPoolExhaustionRemedy: () => undefined,
+        withReadBufferPoolRemedy: (err: unknown) => err,
+        keepPoolErrorAsIs: (err: unknown) => err,
         openLbugConnection: vi.fn(async () => ({ db, conn })),
         closeLbugConnection: vi.fn(async () => {}),
         isDbBusyError: vi.fn(() => false),
@@ -862,6 +895,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     mockFsForInit('/tmp/gitnexus-lbug-stream-lifecycle/lbug');
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
@@ -943,6 +979,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     mockFsForInit('/tmp/gitnexus-lbug-stream-error-lifecycle/lbug');
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),

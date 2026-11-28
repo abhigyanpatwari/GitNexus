@@ -24,6 +24,11 @@ import { queryMemoryGuard } from './query-memory-guard.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
+  keepPoolErrorAsIs,
+  readBufferPoolExhaustionRemedy,
+  withReadBufferPoolRemedy,
+  withWritableRecoveryPoolContext,
+  isPoolErrorSettled,
   sleep,
   throwIfStorageVersionMismatch,
   toNativeSafePath,
@@ -666,7 +671,7 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
       });
       return;
     }
-    throw err;
+    throw withWritableRecoveryPoolContext(err);
   } finally {
     if (db) await db.close().catch(() => {});
   }
@@ -777,6 +782,15 @@ function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
 type InitLbugAttempt = { status: 'done'; reopened: boolean } | { status: 'retry'; error: Error };
 
 function ladybugUnavailableError(repoId: string, err: Error | undefined): Error {
+  // A pool too small to open this index is not a rebuild in progress.
+  // (Opens with an explicit reservation rethrow raw before reaching here.)
+  const remedy = err ? readBufferPoolExhaustionRemedy(err.message) : undefined;
+  if (remedy) {
+    if (err && isPoolErrorSettled(err)) return err;
+    return keepPoolErrorAsIs(
+      new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, { cause: err }),
+    );
+  }
   return new Error(
     `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
       `Retry later. (${err?.message || 'unknown error'})`,
@@ -1003,7 +1017,9 @@ async function doInitLbug(
       dbCache.set(cacheKey, shared);
     } catch (err: unknown) {
       const lastError = err instanceof Error ? err : new Error(String(err));
-      if (artifactOptions) throw lastError;
+      // Marked like reserved-lane query errors: the env knob does not resize
+      // the reservation, so an outer read-only wrapper must not blame it.
+      if (artifactOptions) throw keepPoolErrorAsIs(lastError);
 
       // Not retryable: the on-disk file's storage version doesn't change
       // on its own. Fail immediately with an actionable message.
@@ -1482,7 +1498,10 @@ export const executeParameterized = async (
           cause: err,
         });
       }
-      throw err;
+      // An explicit reservation (the vector lane) is not resized by the env
+      // knob the remedy names, so its errors pass through unchanged, also
+      // through an outer read-only withLbugDb.
+      throw entry.artifactOptions ? keepPoolErrorAsIs(err) : withReadBufferPoolRemedy(err);
     } finally {
       // Close the native QueryResult cursor(s) before returning the connection —
       // getAll() drains rows but does not release the native cursor, so without

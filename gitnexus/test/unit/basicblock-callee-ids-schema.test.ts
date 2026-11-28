@@ -168,6 +168,9 @@ const makeConfigMock = () => {
   };
   const db: FakeDb = { close: vi.fn(async () => {}) };
   const mock = {
+    readBufferPoolExhaustionRemedy: () => undefined,
+    withReadBufferPoolRemedy: (err: unknown) => err,
+    keepPoolErrorAsIs: (err: unknown) => err,
     openLbugConnection: vi.fn(async () => ({ db, conn })),
     closeLbugConnection: async (handle: { conn: FakeConn; db: FakeDb }) => {
       await handle.conn.close();

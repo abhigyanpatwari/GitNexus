@@ -68,6 +68,8 @@ import {
   isWalCorruptionError,
   throwIfStorageVersionMismatch,
   bufferPoolExhaustionRemedy,
+  withReadBufferPoolRemedy,
+  withWritableRecoveryPoolContext,
   openLbugConnection,
   sleep,
   toNativeSafePath,
@@ -714,7 +716,7 @@ const recoverReadOnlyViaWritableOpen = async (
           ' or re-run `gitnexus analyze` on a writable filesystem to rebuild the index.',
       );
     }
-    throw openErr;
+    throw withWritableRecoveryPoolContext(openErr);
   }
   let missingShadowError: unknown;
   let probeSucceeded = false;
@@ -733,7 +735,7 @@ const recoverReadOnlyViaWritableOpen = async (
     if (!probeSucceeded && isMissingShadowSidecarError(err)) {
       missingShadowError = err;
     } else {
-      throw err;
+      throw withWritableRecoveryPoolContext(err);
     }
   } finally {
     await closeLbugConnection(writable);
@@ -859,7 +861,10 @@ export const withLbugDb = async <T>(
       // reopen cycle would only add 4-5s of tail latency without changing
       // the outcome (both layers consult the same isDbBusyError matcher).
       if (!isDbBusyError(err) || isOpenRetryExhausted(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
-        throw err;
+        // Read-only opens here are hintless. Exhaustion in writable recovery
+        // or a separately reserved vector pool comes back marked so the
+        // reader-pool remedy is not attached.
+        throw readOnly ? withReadBufferPoolRemedy(err) : err;
       }
       // Close stale connection inside the session lock to prevent race conditions
       // with concurrent operations that might acquire the lock between cleanup steps

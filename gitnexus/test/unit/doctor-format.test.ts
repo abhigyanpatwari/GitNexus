@@ -13,6 +13,10 @@ import type { StaleBranchSlot } from '../../src/storage/stale-branch-slots.js';
 import { setCliLanguage, t, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
 import { createTempDir } from '../helpers/test-db.js';
+import os from 'node:os';
+import { _setOsPageSizeForTests } from '../../src/core/lbug/lbug-config.js';
+import { QUERY_MAX_RSS_ENV } from '../../src/core/lbug/query-memory-guard.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 const nativeProbeState = vi.hoisted(() => ({
   vectorLoaded: true,
@@ -294,6 +298,67 @@ describe('doctor page-size lines (#1231, #2424 review)', () => {
 describe('doctor pool-size line (#2631)', () => {
   const MiB = 1024 * 1024;
 
+  describe('through doctorCommand in a 1 GiB container', () => {
+    let restoreConstrained: () => void;
+
+    const renderPoolLine = async (): Promise<string | undefined> => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      await doctorCommand();
+      return log.mock.calls
+        .map((args) => args.map(String).join(' '))
+        .find((line) => line.includes('pool size'));
+    };
+
+    afterEach(() => {
+      restoreConstrained();
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      _setOsPageSizeForTests(undefined);
+    });
+
+    const runIn1GiBContainer = () => {
+      _setOsPageSizeForTests(4096);
+      vi.stubEnv(QUERY_MAX_RSS_ENV, undefined);
+      vi.spyOn(os, 'totalmem').mockReturnValue(64 * 1024 * MiB);
+      const desc = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
+      Object.defineProperty(process, 'constrainedMemory', {
+        configurable: true,
+        value: () => 1024 * MiB,
+      });
+      restoreConstrained = () => {
+        if (desc) Object.defineProperty(process, 'constrainedMemory', desc);
+        else delete (process as { constrainedMemory?: unknown }).constrainedMemory;
+      };
+    };
+
+    it('prints the writer and reader pools', async () => {
+      runIn1GiBContainer();
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', undefined);
+      expect(await renderPoolLine()).toBe(
+        `  ${padDisplayEnd('pool size', 10)}819 MiB writers, 384 MiB readers`,
+      );
+    });
+
+    it('warns once about an invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE', async () => {
+      runIn1GiBContainer();
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', 'abc');
+      const cap = _captureLogger();
+      try {
+        await renderPoolLine();
+        const warnings = cap
+          .records()
+          .filter(
+            (r) =>
+              typeof r.msg === 'string' &&
+              r.msg.includes('Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+          );
+        expect(warnings).toHaveLength(1);
+      } finally {
+        cap.restore();
+      }
+    });
+  });
+
   it('prints the hintless pool in MiB with no env note when the env var is unset', () => {
     expect(poolSizeDoctorLine(2048 * MiB, undefined)).toBe(
       `  ${padDisplayEnd('pool size', 10)}2048 MiB`,
@@ -309,6 +374,12 @@ describe('doctor pool-size line (#2631)', () => {
   it('labels the 0 sentinel as the native default instead of "0 MiB"', () => {
     expect(poolSizeDoctorLine(0, '0')).toBe(
       `  ${padDisplayEnd('pool size', 10)}native 80% of RAM (env override)`,
+    );
+  });
+
+  it('names the writer and reader pools when the read-only default is smaller', () => {
+    expect(poolSizeDoctorLine(819 * MiB, undefined, 384 * MiB)).toBe(
+      `  ${padDisplayEnd('pool size', 10)}819 MiB writers, 384 MiB readers`,
     );
   });
 });

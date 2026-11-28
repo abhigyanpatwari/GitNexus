@@ -42,6 +42,9 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
+  readBufferPoolExhaustionRemedy: () => undefined,
+  withReadBufferPoolRemedy: (err: unknown) => err,
+  keepPoolErrorAsIs: (err: unknown) => err,
   // A fresh fake Database per call so distinct dbPaths get distinct entries
   // and closeOne's db.close() resolves per repo.
   createLbugDatabase: vi.fn(() => ({

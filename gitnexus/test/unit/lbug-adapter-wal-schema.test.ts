@@ -190,6 +190,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -248,6 +251,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -309,6 +315,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => fsMock);
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof firstConn; db: typeof firstDb }) => {
         await handle.conn.close();
@@ -367,6 +376,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -408,7 +420,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     await adapter.closeLbug();
   });
 
-  it('replays dirty shadow pages with a temporary writable open before read-only serving', async () => {
+  it.each(['success', 'open', 'checkpoint'])('handles WAL recovery at %s', async (stage) => {
     vi.resetModules();
 
     const dbPath = '/tmp/gitnexus-lbug-readonly-shadow-replay/lbug';
@@ -416,13 +428,17 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       "Runtime exception: Couldn't replay shadow pages under read-only mode. Please re-open the database with read-write mode to replay shadow pages.",
     );
     const queryResult = { getAll: vi.fn(async () => []), close: vi.fn() };
+    const writerError = new Error('Buffer pool is full');
     const readOnlyConn1 = {
       query: vi.fn().mockRejectedValueOnce(shadowReplayError),
       close: vi.fn(async () => {}),
     };
     const readOnlyDb1 = { close: vi.fn(async () => {}) };
     const writableConn = {
-      query: vi.fn(async () => queryResult),
+      query: vi.fn(async (query: string) => {
+        if (stage === 'checkpoint' && query === 'CHECKPOINT') throw writerError;
+        return queryResult;
+      }),
       close: vi.fn(async () => {}),
     };
     const writableDb = { close: vi.fn(async () => {}) };
@@ -433,14 +449,19 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const readOnlyDb2 = { close: vi.fn(async () => {}) };
     const openLbugConnectionMock = vi
       .fn()
-      .mockResolvedValueOnce({ db: readOnlyDb1, conn: readOnlyConn1 })
-      .mockResolvedValueOnce({ db: writableDb, conn: writableConn })
-      .mockResolvedValueOnce({ db: readOnlyDb2, conn: readOnlyConn2 });
+      .mockResolvedValueOnce({ db: readOnlyDb1, conn: readOnlyConn1 });
+    if (stage === 'open') {
+      openLbugConnectionMock.mockRejectedValueOnce(writerError);
+    } else {
+      openLbugConnectionMock.mockResolvedValueOnce({ db: writableDb, conn: writableConn });
+    }
+    openLbugConnectionMock.mockResolvedValueOnce({ db: readOnlyDb2, conn: readOnlyConn2 });
     const ensureMock = vi.fn(async () => false);
 
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
-    vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+    vi.doMock('../../src/core/lbug/lbug-config.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../src/core/lbug/lbug-config.js')>()),
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: {
         conn: typeof readOnlyConn1;
@@ -472,9 +493,23 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 
-    await expect(adapter.withLbugDb(dbPath, async () => 'ok', { readOnly: true })).resolves.toBe(
-      'ok',
-    );
+    const operation = vi.fn(async () => 'ok');
+    const read = adapter.withLbugDb(dbPath, operation, { readOnly: true });
+    if (stage !== 'success') {
+      await expect(read).rejects.toMatchObject({
+        message: expect.stringContaining('writer buffer pool'),
+        cause: writerError,
+      });
+      expect(openLbugConnectionMock).toHaveBeenCalledTimes(2);
+      expect(operation).not.toHaveBeenCalled();
+      if (stage === 'checkpoint') {
+        expect(writableConn.query).toHaveBeenLastCalledWith('CHECKPOINT');
+        expect(writableConn.close).toHaveBeenCalled();
+        expect(writableDb.close).toHaveBeenCalled();
+      }
+      return;
+    }
+    await expect(read).resolves.toBe('ok');
 
     expect(openLbugConnectionMock).toHaveBeenNthCalledWith(1, expect.anything(), dbPath, {
       readOnly: true,
@@ -528,6 +563,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => fsMock);
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof readOnlyConn; db: typeof readOnlyDb }) => {
         await handle.conn.close();
@@ -585,6 +623,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -713,6 +754,9 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
     vi.doMock('fs/promises', () => fsMock);
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof firstConn; db: typeof firstDb }) => {
         await handle.conn.close();
