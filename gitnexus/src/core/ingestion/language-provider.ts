@@ -97,6 +97,12 @@ export interface ExtractedRouteRequireBinding {
   appliesContext: boolean;
   /** True only when the require runs whenever the code before it in the same host ran. */
   unguarded: boolean;
+  /**
+   * True when the require is inside a function or other body that does not run
+   * just because its file was loaded. Such an edge must not hide that file's
+   * own entry walk.
+   */
+  deferred: boolean;
 }
 
 /** User route configuration handed to provider route hooks on the main thread. */

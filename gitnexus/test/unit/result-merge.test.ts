@@ -186,6 +186,7 @@ describe('mergeResult', () => {
       once: false,
       appliesContext: true,
       unguarded: true,
+      deferred: false,
     };
     const second = {
       filePath: 'bootstrap/app.php',
@@ -201,6 +202,7 @@ describe('mergeResult', () => {
       once: false,
       appliesContext: true,
       unguarded: true,
+      deferred: false,
     };
     mergeResult(target, { ...emptyResult(), routeRequireBindings: [first] });
     mergeResult(target, emptyResult());

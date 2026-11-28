@@ -432,6 +432,8 @@ interface WalkFrame {
   /** Composed router-group context, or null outside any group. */
   group: ComposedRouteGroupContext | null;
   mustRun: boolean;
+  /** Inside a function or other body that does not run when the file loads. */
+  deferred: boolean;
 }
 
 /**
@@ -456,14 +458,18 @@ export function extractPhpRouterRequireBindings(
     for (const child of children) {
       // Try/catch bodies may skip. `finally` runs once the try is reached,
       // except when `exit` or `die` in the try or catch ends the request first.
+      // The `if` condition runs whenever the `if` is reached. The body and
+      // `elseif` conditions do not.
       const runs = skippedByForwardGoto(child, gotoSkips)
         ? false
         : isTry && child.type === 'finally_clause'
           ? finallyRuns
           : isTry && child.type === 'catch_clause'
             ? false
-            : childMustRun;
-      ordered.push({ node: child, group, mustRun: runs });
+            : node.type === 'if_statement' && child.type === 'parenthesized_expression'
+              ? mustRun
+              : childMustRun;
+      ordered.push({ node: child, group, mustRun: runs, deferred: frame.deferred });
       if (SEQUENTIAL_BLOCK_TYPES.has(node.type) && statementExitsUnconditionally(child)) break;
       if (!isTry || child.type !== 'finally_clause') {
         if (mayExit.has(child.id)) childMustRun = false;
@@ -472,10 +478,10 @@ export function extractPhpRouterRequireBindings(
     for (let i = ordered.length - 1; i >= 0; i--) walk.push(ordered[i]);
   };
 
-  const walk: WalkFrame[] = [{ node: tree.rootNode, group: null, mustRun: true }];
+  const walk: WalkFrame[] = [{ node: tree.rootNode, group: null, mustRun: true, deferred: false }];
   while (walk.length > 0) {
     const frame = walk.pop()!;
-    const { node, group, mustRun } = frame;
+    const { node, group, mustRun, deferred } = frame;
 
     const arg = requireArgument(node);
     if (arg !== undefined) {
@@ -496,6 +502,7 @@ export function extractPhpRouterRequireBindings(
           once: isOnceRequire(node),
           appliesContext: group !== null,
           unguarded: mustRun,
+          deferred,
         });
       }
       continue;
@@ -512,14 +519,14 @@ export function extractPhpRouterRequireBindings(
           'lumen',
         );
         // Lumen runs the group closure immediately, so it inherits mustRun.
-        walk.push({ node: body, group: inner, mustRun });
+        walk.push({ node: body, group: inner, mustRun, deferred });
       }
       continue;
     }
 
     if (DEFERRED_SCOPE_TYPES.has(node.type)) {
       // Runs later, if at all, and under whatever group is active then.
-      pushChildren({ node, group: null, mustRun: false }, node.children ?? []);
+      pushChildren({ node, group: null, mustRun: false, deferred: true }, node.children ?? []);
       continue;
     }
 

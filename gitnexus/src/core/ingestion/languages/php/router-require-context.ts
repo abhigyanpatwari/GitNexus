@@ -111,7 +111,9 @@ export function resolvePhpRouterRequireBindings(
   const outgoing = new Map<string, Edge[]>();
   const required = new Set<string>();
   for (const edge of edges) {
-    required.add(edge.target);
+    // A require inside a function does not run when the host file is loaded,
+    // so it must not remove that target from the entry walk.
+    if (!edge.binding.deferred) required.add(edge.target);
     const list = outgoing.get(edge.host);
     if (list) list.push(edge);
     else outgoing.set(edge.host, [edge]);

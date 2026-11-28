@@ -127,6 +127,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         once: false,
         appliesContext: true,
         unguarded: true,
+        deferred: false,
       },
       {
         filePath: 'bootstrap/app.php',
@@ -142,6 +143,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         once: false,
         appliesContext: true,
         unguarded: true,
+        deferred: false,
       },
     ];
     const map = resolvePhpRouterRequireBindings(files, bindings);
@@ -181,6 +183,7 @@ describe('applyPhpRouterRequireContexts', () => {
         once: false,
         appliesContext: true,
         unguarded: true,
+        deferred: false,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -241,6 +244,7 @@ describe('applyPhpRouterRequireContexts', () => {
         once: false,
         appliesContext: true,
         unguarded: true,
+        deferred: false,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -284,6 +288,7 @@ describe('applyPhpRouterRequireContexts', () => {
         once: false,
         appliesContext: true,
         unguarded: true,
+        deferred: false,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -700,6 +705,57 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     )
       .get('routes/web.php')
       ?.map((ctx) => ctx.prefix);
+
+  it('a require in an if condition counts as already run', () => {
+    const source = `<?php
+if (require_once __DIR__ . '/../routes/web.php') {}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a require in an elseif condition does not count as already run', () => {
+    const source = `<?php
+if ($c) {
+} elseif (require_once __DIR__ . '/../routes/web.php') {
+}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(false);
+    expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
+  it('a deferred require does not hide the entry file that loads its host', () => {
+    const a = extractBindings(
+      `<?php
+$router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/b.php';
+});
+`,
+      'routes/a.php',
+    );
+    const b = extractBindings(
+      `<?php
+function later() {
+  require __DIR__ . '/a.php';
+}
+`,
+      'routes/b.php',
+    );
+    const map = resolvePhpRouterRequireBindings(new Set(['routes/a.php', 'routes/b.php']), [
+      ...a,
+      ...b,
+    ]);
+    expect(b.some((binding) => binding.deferred)).toBe(true);
+    expect(map.get('routes/b.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
 
   it('a require on the right of && does not count as already run', () => {
     expect(
