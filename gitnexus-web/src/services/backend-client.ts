@@ -1192,13 +1192,31 @@ export const startAnalyze = async (request: {
   return response.json() as Promise<{ jobId: string; status: string }>;
 };
 
-/** Poll analysis job status. */
-export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
+/** A running analyze job from `GET /api/analyze`. */
+export interface ActiveAnalyzeJob extends JobStatus {
+  /** Matches `BackendRepo.id` when the job re-analyzes an indexed repo. */
+  repoId?: string;
+  /** Ending (failed, complete or cancel pending) but its worker still holds the slot. */
+  stopping: boolean;
+}
+
+/** List analyze jobs holding the analyze slot (the server runs one at a time). */
+export const fetchActiveAnalyzeJobs = async (): Promise<ActiveAnalyzeJob[]> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/analyze`, {}, 5_000);
+  await assertOk(response);
+  const { jobs } = (await response.json()) as { jobs: ActiveAnalyzeJob[] };
+  return jobs;
+};
+
+type AnalyzeJobStatus = JobStatus & Pick<ActiveAnalyzeJob, 'repoId'>;
+
+/** Poll analysis job status, including the repo ID once the job completes. */
+export const getAnalyzeStatus = async (jobId: string): Promise<AnalyzeJobStatus> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze/${encodeURIComponent(jobId)}`,
   );
   await assertOk(response);
-  return response.json() as Promise<JobStatus>;
+  return response.json() as Promise<AnalyzeJobStatus>;
 };
 
 /** Fetch the ops / execution metrics snapshot. */

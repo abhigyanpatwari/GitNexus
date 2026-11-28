@@ -1,14 +1,18 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Header } from '../../src/components/Header';
 import {
+  BackendError,
   deleteRepo,
+  fetchActiveAnalyzeJobs,
   fetchRepos,
+  getAnalyzeStatus,
   startAnalyze,
   streamAnalyzeProgress,
 } from '../../src/services/backend-client';
-import type { BackendRepo } from '../../src/services/backend-client';
+import type { ActiveAnalyzeJob, BackendRepo } from '../../src/services/backend-client';
+import { ACTIVE_ANALYZE_POLL_MS } from '../../src/hooks/useActiveAnalyzeJobs';
 
 vi.mock('../../src/hooks/useAppState', () => ({
   useAppState: () => ({
@@ -41,7 +45,9 @@ vi.mock('../../src/services/backend-client', async (importOriginal) => {
   return {
     ...actual,
     deleteRepo: vi.fn(),
+    fetchActiveAnalyzeJobs: vi.fn(),
     fetchRepos: vi.fn(),
+    getAnalyzeStatus: vi.fn(),
     startAnalyze: vi.fn(),
     streamAnalyzeProgress: vi.fn(),
   };
@@ -52,6 +58,13 @@ vi.mock('react-i18next', () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       if (key === 'header:repositories') return 'Repositories';
       if (key === 'header:active') return 'Active';
+      if (key === 'header:analyzingPercent') return `Analyzing ${options?.percent}%`;
+      if (key === 'header:stopping') return 'Stopping…';
+      if (key === 'header:ready') return 'Ready';
+      if (key === 'errors:analyzeBusy')
+        return `${options?.repoName} is still being analyzed (${options?.percent}%)`;
+      if (key === 'errors:analyzeStopping')
+        return `The analysis worker for ${options?.repoName} is stopping`;
       if (key === 'header:reanalyzeRepo') return `Re-analyze ${options?.repoName ?? ''}`;
       if (key === 'header:reanalyzingRepo')
         return `Re-analyzing ${options?.repoName ?? ''}: ${options?.message ?? ''}`;
@@ -82,6 +95,7 @@ function makeRepo(index: number): BackendRepo {
 describe('Header', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -323,5 +337,264 @@ describe('Header', () => {
     const label = screen.getByText(/^Re-analyzing /);
     expect(label.textContent).toMatch(/^Re-analyzing reels:/);
     expect(label.textContent).not.toContain('/ws/b/reels');
+  });
+
+  describe('analyze status (#1584)', () => {
+    const runningJob = (overrides: Partial<ActiveAnalyzeJob> = {}): ActiveAnalyzeJob => ({
+      id: 'job-running',
+      status: 'analyzing',
+      repoName: 'repo-1',
+      repoId: 'id-1',
+      progress: { phase: 'parsing', percent: 42.4, message: 'Parsing' },
+      startedAt: 0,
+      stopping: false,
+      ...overrides,
+    });
+    const repos = (): BackendRepo[] => [
+      { ...makeRepo(0), id: 'id-0' },
+      { ...makeRepo(1), id: 'id-1' },
+    ];
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('badges the repo being analyzed with its progress and blocks new analyses', async () => {
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([runningJob()]);
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+      const badge = await screen.findByTestId('repo-status-analyzing');
+      expect(badge).toHaveTextContent('Analyzing 42%');
+      expect(badge.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+      expect(screen.getAllByTestId('repo-status-analyzing')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Analyze new' })).toBeDisabled();
+      for (const button of screen.getAllByTestId('repo-switcher-reanalyze')) {
+        expect(button).toBeDisabled();
+      }
+    });
+
+    it('shows Stopping, not progress, for a job that is ending but still holds the slot', async () => {
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([
+        runningJob({ status: 'analyzing', stopping: true }),
+      ]);
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+      const badge = await screen.findByTestId('repo-status-analyzing');
+      expect(badge).toHaveTextContent('Stopping…');
+      expect(badge).not.toHaveTextContent('42%');
+      expect(screen.getByRole('button', { name: 'Analyze new' })).toBeDisabled();
+    });
+
+    it('shows Ready once the running job completes and refreshes the repo list', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      const onReposChanged = vi.fn();
+      render(<Header availableRepos={repos()} onReposChanged={onReposChanged} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith('job-running');
+      expect(screen.queryByTestId('repo-status-analyzing')).not.toBeInTheDocument();
+      const ready = screen.getByTestId('repo-status-ready');
+      expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+      expect(screen.getByRole('button', { name: 'Analyze new' })).toBeEnabled();
+      expect(onReposChanged).toHaveBeenCalledWith(repos());
+    });
+
+    it('shows Ready on reopen for a job that finished while the switcher was closed', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      render(<Header availableRepos={repos()} />);
+      const trigger = screen.getByTestId('repo-switcher-trigger');
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
+
+      fireEvent.click(trigger); // close: polling stops while the job finishes
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 5));
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith('job-running');
+      const ready = screen.getByTestId('repo-status-ready');
+      expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+    });
+
+    it('shows Ready when a cloning job only gains a repo ID on completion', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockResolvedValueOnce([runningJob({ status: 'cloning', repoId: undefined })])
+        .mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      const onReposChanged = vi.fn();
+      const { rerender } = render(
+        <Header availableRepos={repos().slice(0, 1)} onReposChanged={onReposChanged} />,
+      );
+      const trigger = screen.getByTestId('repo-switcher-trigger');
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1);
+      fireEvent.click(trigger);
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith('job-running');
+      expect(onReposChanged).toHaveBeenCalledWith(repos());
+      rerender(<Header availableRepos={repos()} onReposChanged={onReposChanged} />);
+      const ready = screen.getByTestId('repo-status-ready');
+      expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+    });
+
+    it('does not show Ready when the job that left the list failed', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'failed' });
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(screen.queryByTestId('repo-status-analyzing')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('repo-status-ready')).not.toBeInTheDocument();
+    });
+
+    it('retries the outcome lookup after a transient failure and still shows Ready', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus)
+        .mockRejectedValueOnce(new BackendError('Network down', 0, 'network'))
+        .mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+      expect(screen.queryByTestId('repo-status-ready')).not.toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('repo-status-ready')).toBeInTheDocument();
+    });
+
+    it('does not poll while the tab is hidden', async () => {
+      vi.useFakeTimers();
+      const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+      try {
+        render(<Header availableRepos={repos()} />);
+
+        fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+        await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 3));
+
+        expect(fetchActiveAnalyzeJobs).not.toHaveBeenCalled();
+      } finally {
+        hidden.mockRestore();
+      }
+    });
+
+    it('pauses polling for Retry-After when rate-limited, then recovers', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockRejectedValueOnce(new BackendError('Too many requests', 429, 'rate_limited', 10_000))
+        .mockResolvedValue([runningJob()]);
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 3));
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('repo-status-analyzing')).not.toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
+    });
+
+    it('clears a 409 after a poll finds that the slot is free', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockImplementation(async () => []);
+      vi.mocked(startAnalyze).mockRejectedValue(
+        new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
+      );
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      fireEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(getAnalyzeStatus).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('describes a terminal worker holding the slot as stopping', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([runningJob({ status: 'failed', stopping: true })]);
+      vi.mocked(startAnalyze).mockRejectedValue(
+        new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
+      );
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      fireEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The analysis worker for repo-1 is stopping',
+      );
+    });
+
+    it('names the competing job after a 409 and clears the alert when it completes', async () => {
+      vi.useFakeTimers();
+      const competingJob = runningJob({ repoName: 'other-repo', repoId: 'id-x' });
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([competingJob])
+        .mockResolvedValueOnce([competingJob])
+        .mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...competingJob, status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      vi.mocked(startAnalyze).mockRejectedValue(
+        new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
+      );
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      fireEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'other-repo is still being analyzed (42%)',
+      );
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 2));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith(competingJob.id);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
   });
 });

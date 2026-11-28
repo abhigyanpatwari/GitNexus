@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next';
-import { BackendError } from '../services/backend-client';
+import { BackendError, fetchActiveAnalyzeJobs } from '../services/backend-client';
 
 export function formatBackendError(error: unknown, t: TFunction): string {
   if (error instanceof BackendError) {
@@ -28,4 +28,23 @@ export function formatBackendError(error: unknown, t: TFunction): string {
   }
 
   return error instanceof Error ? error.message : t('errors:unknown');
+}
+
+/**
+ * Message for a failed analyze start. A 409 means another job holds the
+ * server's single analyze slot, so name that job instead of showing the raw
+ * "already in progress (job <id>)" text (#1584).
+ */
+export async function formatAnalyzeStartError(error: unknown, t: TFunction): Promise<string> {
+  if (error instanceof BackendError && error.status === 409) {
+    const [job] = await fetchActiveAnalyzeJobs().catch(() => []);
+    if (job?.repoName) {
+      if (job.stopping) return t('errors:analyzeStopping', { repoName: job.repoName });
+      return t('errors:analyzeBusy', {
+        repoName: job.repoName,
+        percent: Math.round(job.progress.percent),
+      });
+    }
+  }
+  return formatBackendError(error, t);
 }

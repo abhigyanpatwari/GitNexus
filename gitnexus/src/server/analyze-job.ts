@@ -165,6 +165,15 @@ export class JobManager {
     return this.jobs.get(id);
   }
 
+  /**
+   * Jobs holding the single analyze slot: the same check `createJob` uses to
+   * reject with "already in progress", so a terminal job whose worker has not
+   * exited yet is included.
+   */
+  listSlotHolders(): AnalyzeJob[] {
+    return this.listJobs().filter((job) => this.isSlotOccupied(job));
+  }
+
   /** Return a snapshot of all tracked jobs for inspection. */
   listJobs(): AnalyzeJob[] {
     return Array.from(this.jobs.values());

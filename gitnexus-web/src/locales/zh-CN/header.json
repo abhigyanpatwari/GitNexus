@@ -1,6 +1,9 @@
 {
   "repositories": "仓库",
   "active": "当前",
+  "analyzingPercent": "分析中 {{percent}}%",
+  "stopping": "正在停止…",
+  "ready": "就绪",
   "reanalyzing": "正在重新分析...",
   "reanalyzeRepo": "重新分析 {{repoName}}",
   "deleteRepo": "删除 {{repoName}}",

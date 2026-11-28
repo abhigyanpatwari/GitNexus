@@ -1,6 +1,9 @@
 {
   "repositories": "Repositories",
   "active": "active",
+  "analyzingPercent": "Analyzing {{percent}}%",
+  "stopping": "Stopping…",
+  "ready": "Ready",
   "reanalyzing": "Re-analyzing...",
   "reanalyzeRepo": "Re-analyze {{repoName}}",
   "deleteRepo": "Delete {{repoName}}",
