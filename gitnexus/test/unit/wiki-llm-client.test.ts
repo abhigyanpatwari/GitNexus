@@ -212,6 +212,7 @@ describe('resolveLLMConfig max completion tokens', () => {
 
   it('rejects a context window too small for the completion limit', async () => {
     vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '');
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '');
     await mockSavedConfig({});
     await expect(resolveLLMConfig({ contextWindow: 8192 })).rejects.toThrow(
       'Context window (8192 tokens) must be at least',

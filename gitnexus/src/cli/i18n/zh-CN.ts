@@ -342,7 +342,7 @@ export const zhCN = {
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',
   'help.option.wiki.maxCompletionTokens': '每次 LLM 请求的最大 completion token 数（默认：16384）',
   'help.option.wiki.contextWindow':
-    'Model context window in tokens; wiki prompts are trimmed to fit (default: 128000)',
+    '用于裁剪 Wiki 提示词的模型上下文窗口大小（token 数，默认：128000）',
   'help.option.wiki.allowInsecureConnection':
     '允许 http:// LLM base URL 使用的精确主机（逗号分隔；推荐使用 HTTPS）',
   'help.option.wiki.gist': '生成后发布 Wiki 为公开 GitHub Gist',
