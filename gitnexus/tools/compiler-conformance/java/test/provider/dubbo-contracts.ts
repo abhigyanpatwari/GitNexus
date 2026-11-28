@@ -154,6 +154,23 @@ describe('Dubbo cross-repository source facts', () => {
         );
       });
 
+  it('decodes Java escape sequences in a static service group', () => {
+    for (const [escaped, group] of [
+      [String.raw`team\'blue`, "team'blue"],
+      [String.raw`team\sblue`, 'team blue'],
+      [String.raw`team\047blue`, "team'blue"],
+      [String.raw`team\\sblue`, String.raw`team\sblue`],
+    ]) {
+      const annotation = `group = "${escaped}"`;
+      const [, providers, consumers] = sites(
+        CONSUMER.replace('group = "accounts"', annotation),
+        PROVIDER.replace('group = "accounts"', annotation),
+      );
+      assert.equal(providers.find((site) => site.method === 'list')?.group, group, escaped);
+      assert.equal(consumers.find((site) => site.method === 'list')?.group, group, escaped);
+    }
+  });
+
   it('preserves a literal dollar sign in a top-level interface name', () => {
     const rename = (source: string) => source.replaceAll('Account', 'Account$V');
     const [api, provider, consumer] = sites(

@@ -173,7 +173,17 @@ function referenceIsShadowed(
 function literal(node: Node | undefined): string | null {
   if (!node || node.type !== 'string_literal') return null;
   try {
-    const value: unknown = JSON.parse(node.text);
+    // Consume whole escapes so a doubled backslash stays literal.
+    const jsonLiteral = node.text.replace(
+      /\\(?:([0-3][0-7]{0,2}|[4-7][0-7]?)|.)/g,
+      (escape, octal?: string) => {
+        if (escape === "\\'") return "'";
+        if (escape === '\\s') return ' ';
+        if (octal === undefined) return escape;
+        return `\\u${Number.parseInt(octal, 8).toString(16).padStart(4, '0')}`;
+      },
+    );
+    const value: unknown = JSON.parse(jsonLiteral);
     return typeof value === 'string' && !/\$\{|\*/.test(value) ? value : null;
   } catch {
     return null;
