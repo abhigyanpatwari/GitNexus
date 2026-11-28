@@ -169,10 +169,11 @@ export function resolvePhpRouterRequireBindings(
       if (onChain(here, edge.target)) continue;
       if (edge.binding.once && current.has(edge.target)) continue;
       const ctx = composeContext(incoming, edge.binding);
-      const fresh = record(edge.target, ctx);
-      const loadKey = `${edge.target}\0${contextKey(ctx)}`;
+      record(edge.target, ctx);
+      const loadedKey = (files: Set<string>) => [...files].sort().join('\0');
       if (!edge.binding.unguarded) {
-        if (fresh) {
+        const loadKey = `${edge.target}\0${contextKey(ctx)}\0${loadedKey(current)}`;
+        if (!expansionLoads.has(loadKey)) {
           const after = expand(edge.target, ctx, here, current);
           rememberLoads(loadKey, current, after);
         }
@@ -180,8 +181,10 @@ export function resolvePhpRouterRequireBindings(
       }
       const next = new Set(current);
       next.add(edge.target);
-      if (!fresh) {
-        for (const file of expansionLoads.get(loadKey) ?? []) next.add(file);
+      const loadKey = `${edge.target}\0${contextKey(ctx)}\0${loadedKey(next)}`;
+      const cached = expansionLoads.get(loadKey);
+      if (cached) {
+        for (const file of cached) next.add(file);
         current = next;
         continue;
       }

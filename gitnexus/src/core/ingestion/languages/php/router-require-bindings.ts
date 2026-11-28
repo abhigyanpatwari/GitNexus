@@ -495,11 +495,16 @@ export function extractPhpRouterRequireBindings(
     const { node, group, mustRun } = frame;
     const isTry = node.type === 'try_statement';
     let childMustRun = mustRun && (isTry || MUST_RUN_CONTAINER_TYPES.has(node.type));
-    const finallyRuns = mustRun && !(isTry && exitSkipsFinally(node));
+    const finallyNeverRuns = isTry && straightLineEndsRequest(node);
+    const finallyCertain = mustRun && isTry && !exitSkipsFinally(node);
     const shortCircuitLeft =
       node.type === 'binary_expression' &&
       SHORT_CIRCUIT_OPERATORS.has((node.children ?? []).find((child) => !child.isNamed)?.text ?? '')
         ? (node.children ?? []).find((child) => child.isNamed)
+        : undefined;
+    const forInitializer =
+      node.type === 'for_statement'
+        ? (node.children ?? []).find((child) => child.isNamed && child.type !== 'for')
         : undefined;
     const alwaysEvaluated =
       node.type === 'conditional_expression'
@@ -510,7 +515,7 @@ export function extractPhpRouterRequireBindings(
     const ordered: WalkFrame[] = [];
     for (const child of children) {
       // `exit` / `die` skips `finally`, so requires there are not possible loads.
-      if (isTry && child.type === 'finally_clause' && !finallyRuns) continue;
+      if (isTry && child.type === 'finally_clause' && finallyNeverRuns) continue;
       // Try/catch bodies may skip. `finally` runs once the try is reached,
       // except when `exit` or `die` in the try or catch ends the request first.
       // The `if` condition runs whenever the `if` is reached. The body and
@@ -518,13 +523,13 @@ export function extractPhpRouterRequireBindings(
       const runs = skippedByForwardGoto(child, gotoSkips)
         ? false
         : isTry && child.type === 'finally_clause'
-          ? finallyRuns
+          ? finallyCertain
           : isTry && child.type === 'catch_clause'
             ? false
             : (node.type === 'if_statement' || node.type === 'while_statement') &&
                 child.type === 'parenthesized_expression'
               ? mustRun
-              : child === shortCircuitLeft || child === alwaysEvaluated
+              : child === shortCircuitLeft || child === alwaysEvaluated || child === forInitializer
                 ? mustRun
                 : childMustRun;
       ordered.push({ node: child, group, mustRun: runs, deferred: frame.deferred });

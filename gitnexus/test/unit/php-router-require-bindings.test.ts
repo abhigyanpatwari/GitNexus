@@ -570,6 +570,63 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toBeUndefined();
   });
 
+  it('a require in a for initializer counts as already run', () => {
+    const source = `<?php
+for (require_once __DIR__ . '/../routes/web.php'; false;) {}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a conditional exit still leaves the finally require as a possible load', () => {
+    const bindings = extractBindings(
+      `<?php
+try {
+  if ($flag) exit;
+} finally {
+  require_once __DIR__ . '/../routes/web.php';
+}
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings).toEqual([
+      expect.objectContaining({ requiredPath: 'routes/web.php', unguarded: false }),
+    ]);
+  });
+
+  it('a later entry still records a require_once the first entry had already loaded', () => {
+    const a = extractBindings(
+      `<?php
+require __DIR__ . '/../routes/web.php';
+require __DIR__ . '/../routes/mid.php';
+`,
+      'bootstrap/a.php',
+    );
+    const b = extractBindings(
+      `<?php
+require __DIR__ . '/../routes/mid.php';
+`,
+      'bootstrap/b.php',
+    );
+    const mid = extractBindings(
+      `<?php
+$router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/web.php';
+});
+`,
+      'routes/mid.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/a.php', 'bootstrap/b.php', 'routes/mid.php', 'routes/web.php']),
+      [...a, ...b, ...mid],
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toContain('api');
+  });
+
   it('a require passed as a call argument counts as already run', () => {
     const source = `<?php
 register(require_once __DIR__ . '/../routes/web.php');
