@@ -20,8 +20,14 @@ vi.mock('../../src/services/backend-client', async (importOriginal) => ({
 }));
 
 const Harness = () => {
-  const { setCurrentRepo, setGraph, setServerBaseUrl, setViewMode, setQueryServerConnected } =
-    useAppState();
+  const {
+    highlightedNodeIds,
+    setCurrentRepo,
+    setGraph,
+    setServerBaseUrl,
+    setViewMode,
+    setQueryServerConnected,
+  } = useAppState();
 
   return (
     <>
@@ -38,6 +44,7 @@ const Harness = () => {
       <button onClick={() => setCurrentRepo('repo-b')}>Switch repo</button>
       <button onClick={() => setQueryServerConnected(false)}>Disconnect</button>
       <button onClick={() => setQueryServerConnected(true)}>Reconnect</button>
+      <div data-testid="query-highlight-ids">{Array.from(highlightedNodeIds).join(', ')}</div>
       <StatusBar />
       <QueryFAB />
     </>
@@ -137,13 +144,17 @@ describe('query readiness', () => {
     expect(reopened.run).toBeEnabled();
   });
 
-  it('clears prior results when the next query fails its availability check', async () => {
-    vi.mocked(runQuery).mockResolvedValueOnce([{ message: 'previous query result' }]);
+  it('clears prior results and highlights when the next query fails its availability check', async () => {
+    const highlightedId = 'Function:src/index.ts:hello';
+    vi.mocked(runQuery).mockResolvedValueOnce([
+      { id: highlightedId, message: 'previous query result' },
+    ]);
     start();
     expect(await screen.findByTestId('status-ready')).toBeInTheDocument();
     const { input, run } = openQuery();
     fireEvent.click(run);
     expect(await screen.findByText('previous query result')).toBeInTheDocument();
+    expect(screen.getByTestId('query-highlight-ids')).toHaveTextContent(highlightedId);
 
     fireEvent.change(input, { target: { value: 'RETURN 2' } });
     vi.mocked(probeBackendStatus).mockResolvedValueOnce('unreachable');
@@ -152,6 +163,7 @@ describe('query readiness', () => {
     expect(await screen.findByTestId('status-query-unavailable')).toBeInTheDocument();
     expect(runQuery).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('previous query result')).not.toBeInTheDocument();
+    expect(screen.getByTestId('query-highlight-ids')).toBeEmptyDOMElement();
   });
 
   it('checks again on a repo switch instead of displaying the previous repo as ready', async () => {

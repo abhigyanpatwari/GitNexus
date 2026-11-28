@@ -106,7 +106,7 @@ export const QueryFAB = () => {
 
     try {
       if (!(await isDatabaseReady())) {
-        setQueryResult(null);
+        clearQueryHighlights();
         return;
       }
       const startTime = performance.now();
@@ -167,6 +167,7 @@ export const QueryFAB = () => {
     queryReadiness,
     graph,
     isDatabaseReady,
+    clearQueryHighlights,
     runQuery,
     setHighlightedNodeIds,
     setQueryResult,
