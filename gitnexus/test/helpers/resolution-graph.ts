@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { compareCodeUnits } from '../../src/lib/utils.js';
+import { compareCodeUnits } from '../../tools/compiler-conformance/compare.mjs';
 import type { GraphRelationship } from 'gitnexus-shared';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 
