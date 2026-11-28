@@ -63,7 +63,8 @@ describe('summarizeCompetingBindingDrops', () => {
     const outcomes = Array.from({ length: MAX_COMPETING_BINDING_NAMES + 1 }, (_, i) =>
       dropped(`name${i}`),
     );
-    const summary = summarizeCompetingBindingDrops(outcomes)!;
+    const summary = summarizeCompetingBindingDrops(outcomes);
+    if (!summary) throw new Error('expected a competing-binding summary');
     expect(Object.keys(summary.counts)).toHaveLength(MAX_COMPETING_BINDING_NAMES);
     expect(summary.totalSites).toBe(MAX_COMPETING_BINDING_NAMES + 1);
     expect(summary.omittedNames).toBe(1);
