@@ -160,9 +160,26 @@ export function moveCompilerRequiresFullRebuild(
   return (
     indexedWithCompiler !== true ||
     !indexedCompiler ||
-    indexedCompiler.version !== compiler.version ||
-    indexedCompiler.source !== compiler.source ||
-    indexedCompiler.fingerprint !== compiler.fingerprint
+    !sameMoveCompilerIdentity(indexedCompiler, compiler)
+  );
+}
+
+/**
+ * Strict-equality comparison of two Move compiler identities (#2661).
+ * Both sides must be present and agree on version, source and fingerprint;
+ * a missing identity never matches, mirroring the reuse gate's policy that
+ * an unstamped producer forces a rebuild.
+ */
+export function sameMoveCompilerIdentity(
+  left: MoveCompilerIdentity | undefined,
+  right: MoveCompilerIdentity | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.version === right.version &&
+    left.source === right.source &&
+    left.fingerprint === right.fingerprint
   );
 }
 

@@ -3,6 +3,7 @@ import {
   isMoveCompilerInputPath,
   moveCompilerRequiresFullRebuild,
   persistedMoveGraphRequiresCompiler,
+  sameMoveCompilerIdentity,
   shouldProvisionMoveFlowBeforeFastPath,
   type MoveCompilerIdentity,
   type MoveFlowReleaseSelection,
@@ -61,6 +62,18 @@ describe('Move incremental safety', () => {
     ).toBe(true);
     expect(moveCompilerRequiresFullRebuild(true, undefined, true, compiler())).toBe(false);
     expect(moveCompilerRequiresFullRebuild(false, compiler(), undefined, undefined)).toBe(false);
+  });
+
+  it('compares compiler identities strictly for checkpoint resume (#2661)', () => {
+    expect(sameMoveCompilerIdentity(compiler(), compiler())).toBe(true);
+    expect(sameMoveCompilerIdentity(compiler('2.1.0'), compiler())).toBe(false);
+    expect(sameMoveCompilerIdentity(compiler('2.0.0', 'explicit'), compiler())).toBe(false);
+    expect(
+      sameMoveCompilerIdentity(compiler('2.0.0', 'release', 'other-fingerprint'), compiler()),
+    ).toBe(false);
+    expect(sameMoveCompilerIdentity(undefined, compiler())).toBe(false);
+    expect(sameMoveCompilerIdentity(compiler(), undefined)).toBe(false);
+    expect(sameMoveCompilerIdentity(undefined, undefined)).toBe(false);
   });
 
   it('recognizes compiler-backed legacy metadata from recorded Move inputs', () => {
