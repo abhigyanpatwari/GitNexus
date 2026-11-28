@@ -807,7 +807,75 @@ require __DIR__ . '/../routes/web.php';
 `,
       'bootstrap/app.php',
     );
-    expect(bindings.some((b) => b.requiredPath === 'routes/web.php')).toBe(true);
+    expect(bindings.some((b) => b.requiredPath === 'routes/web.php' && b.unguarded)).toBe(true);
+  });
+
+  it('a require between a goto and its label is not a definite load', () => {
+    const source = `<?php
+goto done;
+require_once __DIR__ . '/../routes/web.php';
+done:
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(false);
+    expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
+  it('an else require is still extracted when the then branch returns', () => {
+    const bindings = extractBindings(
+      `<?php
+if ($c) return;
+else require __DIR__ . '/../routes/web.php';
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings).toEqual([
+      expect.objectContaining({ requiredPath: 'routes/web.php', unguarded: false }),
+    ]);
+  });
+
+  it('an imported Throwable catch handles a throw in that namespace', () => {
+    const source = `<?php
+namespace App;
+use Throwable;
+try { throw new Exception(); } catch (Throwable $e) {}
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a later unguarded require reuses nested loads from an earlier guarded walk', () => {
+    const bootstrap = extractBindings(
+      `<?php
+if ($c) {
+  require_once __DIR__ . '/../routes/mid.php';
+}
+require __DIR__ . '/../routes/mid.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const mid = extractBindings(
+      `<?php
+require __DIR__ . '/web.php';
+`,
+      'routes/mid.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/mid.php', 'routes/web.php']),
+      [...bootstrap, ...mid],
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toBeUndefined();
   });
 
   it('cross-host require_once skips after an unguarded load in another host', () => {

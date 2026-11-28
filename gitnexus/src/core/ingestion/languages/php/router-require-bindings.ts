@@ -8,6 +8,7 @@ import {
   isPhpRouteFile,
   type ComposedRouteGroupContext,
 } from './route-group.js';
+import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import {
   findRouteGroupClosureBody,
   foldPhpStringLiteral,
@@ -175,9 +176,67 @@ function inNamedNamespace(node: SyntaxNode): boolean {
 
 function catchIsUniversalThrowable(catchClause: SyntaxNode): boolean {
   const raw = catchTypeText(catchClause);
-  if (raw.replace(/^\\+/, '') !== 'Throwable') return false;
+  if (raw.replace(/^\\+/, '') !== 'Throwable' && !importsGlobalThrowable(catchClause, raw)) {
+    return false;
+  }
   if (raw.startsWith('\\')) return true;
-  return !inNamedNamespace(catchClause);
+  if (raw === 'Throwable' && !inNamedNamespace(catchClause)) return true;
+  return importsGlobalThrowable(catchClause, raw);
+}
+
+function namespaceIsBraced(node: SyntaxNode): boolean {
+  return (node.children ?? []).some(
+    (child) => child.type === 'compound_statement' || child.type === 'declaration_list',
+  );
+}
+
+/** `use` declarations that apply to this catch: the braced namespace, or the current semicolon-namespace segment. */
+function useDeclarationsForCatch(catchClause: SyntaxNode): SyntaxNode[] {
+  for (let current: SyntaxNode | null = catchClause.parent; current; current = current.parent) {
+    if (current.type === 'namespace_definition' && namespaceIsBraced(current)) {
+      const uses: SyntaxNode[] = [];
+      const stack = [...(current.children ?? [])];
+      while (stack.length > 0) {
+        const node = stack.pop()!;
+        if (node.type === 'namespace_definition') continue;
+        if (node.type === 'namespace_use_declaration') uses.push(node);
+        else for (const child of node.children ?? []) stack.push(child);
+      }
+      return uses;
+    }
+  }
+  let root: SyntaxNode = catchClause;
+  while (root.parent) root = root.parent;
+  const segment: SyntaxNode[] = [];
+  const walk = (current: SyntaxNode): boolean => {
+    if (current === catchClause) return true;
+    if (current.type === 'namespace_definition') {
+      if (!namespaceIsBraced(current)) segment.length = 0;
+      return false;
+    }
+    if (current.type === 'namespace_use_declaration') segment.push(current);
+    for (const child of current.children ?? []) {
+      if (walk(child)) return true;
+    }
+    return false;
+  };
+  walk(root);
+  return segment;
+}
+
+/** `use Throwable;` (or an alias of it) inside this namespace binds the catch type. */
+function importsGlobalThrowable(catchClause: SyntaxNode, localName: string): boolean {
+  if (!localName || localName.includes('\\')) return false;
+  for (const useNode of useDeclarationsForCatch(catchClause)) {
+    for (const match of splitNamespaceUseDeclaration(useNode)) {
+      if (match['@import.symbol-kind']?.text !== 'type') continue;
+      const local = match['@import.alias']?.text ?? match['@import.name']?.text;
+      if (local !== localName) continue;
+      const source = (match['@import.source']?.text ?? '').replace(/^\\+/, '');
+      if (source === 'Throwable') return true;
+    }
+  }
+  return false;
 }
 
 function tryCatchesAllThrows(tryNode: SyntaxNode): boolean {
@@ -278,6 +337,64 @@ function statementExitsUnconditionally(node: SyntaxNode): boolean {
   return inner?.type === 'throw_expression';
 }
 
+/**
+ * A forward `goto` skips statements between itself and its label. The label
+ * and everything after it still run. Backward gotos are loops, not skips.
+ */
+function forwardGotoSkipRanges(root: SyntaxNode): { from: number; to: number }[] {
+  const gotos: SyntaxNode[] = [];
+  const labels: SyntaxNode[] = [];
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.type === 'goto_statement') gotos.push(current);
+    else if (current.type === 'named_label_statement') labels.push(current);
+    for (const child of current.children ?? []) stack.push(child);
+  }
+  const functionScope = (node: SyntaxNode): SyntaxNode | null => {
+    let current: SyntaxNode | null = node;
+    while (current) {
+      if (
+        current.type === 'function_definition' ||
+        current.type === 'anonymous_function' ||
+        current.type === 'arrow_function' ||
+        current.type === 'method_declaration'
+      ) {
+        return current;
+      }
+      current = current.parent;
+    }
+    return null;
+  };
+  const ranges: { from: number; to: number }[] = [];
+  for (const gotoNode of gotos) {
+    const name = (gotoNode.children ?? []).find((child) => child.type === 'name')?.text;
+    if (!name) continue;
+    const scope = functionScope(gotoNode);
+    let label: SyntaxNode | null = null;
+    for (const candidate of labels) {
+      if (candidate.startIndex <= gotoNode.endIndex) continue;
+      const labelName = (candidate.children ?? []).find((child) => child.type === 'name')?.text;
+      if (labelName !== name || functionScope(candidate) !== scope) continue;
+      if (!label || candidate.startIndex < label.startIndex) label = candidate;
+    }
+    if (label) ranges.push({ from: gotoNode.endIndex, to: label.startIndex });
+  }
+  return ranges;
+}
+
+function skippedByForwardGoto(node: SyntaxNode, ranges: { from: number; to: number }[]): boolean {
+  return ranges.some((range) => node.startIndex >= range.from && node.endIndex <= range.to);
+}
+
+/** Later siblings are unreachable only inside a straight-line block. */
+const SEQUENTIAL_BLOCK_TYPES = new Set([
+  'program',
+  'compound_statement',
+  'namespace_definition',
+  'declaration_list',
+]);
+
 interface WalkFrame {
   node: SyntaxNode;
   /** Composed router-group context, or null outside any group. */
@@ -296,6 +413,7 @@ export function extractPhpRouterRequireBindings(
   const bindings: ExtractedRouteRequireBinding[] = [];
   const relHost = hostFilePath.replace(/\\/g, '/');
   const mayExit = collectMayExit(tree.rootNode);
+  const gotoSkips = forwardGotoSkipRanges(tree.rootNode);
 
   const pushChildren = (frame: WalkFrame, children: readonly SyntaxNode[]) => {
     const { node, group, mustRun } = frame;
@@ -304,14 +422,15 @@ export function extractPhpRouterRequireBindings(
     const ordered: WalkFrame[] = [];
     for (const child of children) {
       // Try/catch bodies may skip; `finally` always runs once the try statement is reached.
-      const runs =
-        isTry && child.type === 'finally_clause'
+      const runs = skippedByForwardGoto(child, gotoSkips)
+        ? false
+        : isTry && child.type === 'finally_clause'
           ? mustRun
           : isTry && child.type === 'catch_clause'
             ? false
             : childMustRun;
       ordered.push({ node: child, group, mustRun: runs });
-      if (statementExitsUnconditionally(child)) break;
+      if (SEQUENTIAL_BLOCK_TYPES.has(node.type) && statementExitsUnconditionally(child)) break;
       if (!isTry || child.type !== 'finally_clause') {
         if (mayExit.has(child.id)) childMustRun = false;
       }

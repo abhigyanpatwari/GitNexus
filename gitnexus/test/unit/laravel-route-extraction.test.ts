@@ -310,6 +310,25 @@ Route::middleware(['auth', 'verified'])
     );
   });
 
+  it('splits a fully qualified group controller into short and qualified names', () => {
+    const routes = extract(`<?php
+Route::group([
+    'controller' => \\App\\Http\\Controllers\\UserController::class,
+], function () {
+    Route::get('/qualified', 'show');
+});
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({
+        httpMethod: 'get',
+        routePath: '/qualified',
+        controllerName: 'UserController',
+        controllerQualifiedName: 'App.Http.Controllers.UserController',
+        methodName: 'show',
+      }),
+    );
+  });
+
   it('extracts named routes from fluent routes and named groups', () => {
     const routes = extract(`<?php
 Route::get('/login', [AuthController::class, 'login'])->name('login');

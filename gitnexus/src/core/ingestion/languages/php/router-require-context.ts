@@ -124,6 +124,8 @@ export function resolvePhpRouterRequireBindings(
   };
   const resolved = new Map<string, PhpRouteRequireContext[]>();
   const seen = new Map<string, Set<string>>();
+  /** Files an expansion of (target, context) loads beyond the set it was given. */
+  const expansionLoads = new Map<string, Set<string>>();
   const record = (file: string, ctx: PhpRouteRequireContext): boolean => {
     let keys = seen.get(file);
     if (!keys) {
@@ -143,8 +145,15 @@ export function resolvePhpRouterRequireBindings(
    * for that walk, after an earlier unguarded load of the same target.
    * Unguarded requires inline the target's bindings before later siblings.
    * A target context already recorded is not expanded again, so a diamond of
-   * requires stays proportional to distinct contexts rather than paths.
+   * requires stays proportional to distinct contexts rather than paths. The
+   * first walk still remembers which files that context loads, so a later
+   * unguarded require of the same target updates the caller's include set.
    */
+  const rememberLoads = (key: string, before: Set<string>, after: Set<string>) => {
+    const extra = new Set<string>();
+    for (const file of after) if (!before.has(file)) extra.add(file);
+    expansionLoads.set(key, extra);
+  };
   const expand = (
     file: string,
     incoming: PhpRouteRequireContext,
@@ -159,13 +168,23 @@ export function resolvePhpRouterRequireBindings(
       if (edge.binding.once && current.has(edge.target)) continue;
       const ctx = composeContext(incoming, edge.binding);
       const fresh = record(edge.target, ctx);
+      const loadKey = `${edge.target}\0${contextKey(ctx)}`;
       if (!edge.binding.unguarded) {
-        if (fresh) expand(edge.target, ctx, here, current);
+        if (fresh) {
+          const after = expand(edge.target, ctx, here, current);
+          rememberLoads(loadKey, current, after);
+        }
         continue;
       }
       const next = new Set(current);
       next.add(edge.target);
-      current = fresh ? expand(edge.target, ctx, here, next) : next;
+      if (!fresh) {
+        for (const file of expansionLoads.get(loadKey) ?? []) next.add(file);
+        current = next;
+        continue;
+      }
+      current = expand(edge.target, ctx, here, next);
+      rememberLoads(loadKey, next, current);
     }
     return current;
   };

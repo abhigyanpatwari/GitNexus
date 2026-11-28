@@ -291,13 +291,38 @@ function extractMiddlewareArg(
   return readMiddlewareTokensFromValue(target, kind);
 }
 
+/** Text of `Foo::class` or `\App\Foo::class`, including a qualified prefix. */
+function classConstantReferenceText(node: SyntaxNode): string | null {
+  const raw = node.text.replace(/\s+/g, '').replace(/::class$/i, '');
+  return raw || null;
+}
+
+/**
+ * A group `controller` value is a class reference. A qualified reference must
+ * not be used as the short-name lookup key; the short name is the last segment
+ * and the qualified name is the dot-joined form the registry stores.
+ */
+function inheritedClassController(raw: string | null): {
+  name: string | null;
+  qualified: string | null;
+} {
+  if (!raw) return { name: null, qualified: null };
+  const trimmed = raw.replace(/^\\+/, '');
+  if (!trimmed.includes('\\')) return { name: trimmed, qualified: null };
+  const parts = trimmed.split('\\').filter((part) => part.length > 0);
+  return {
+    name: parts[parts.length - 1] ?? trimmed,
+    qualified: normalizeQualifiedName(trimmed),
+  };
+}
+
 /** Extract Controller::class from arguments */
 function extractClassArg(argsNode: SyntaxNode | null): string | null {
   if (!argsNode) return null;
   for (const child of argsNode.children ?? []) {
     const target = child.type === 'argument' ? child.children?.[0] : child;
     if (target?.type === 'class_constant_access_expression') {
-      return target.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+      return classConstantReferenceText(target);
     }
   }
   return null;
@@ -669,8 +694,7 @@ export function parseRouteGroupArrayArgs(
           ctx.namePrefix = readPhpString(val) ?? null;
         } else if (key === 'controller') {
           if (val?.type === 'class_constant_access_expression') {
-            const raw = val.text.replace(/\s+/g, '').replace(/::class$/i, '');
-            ctx.controller = raw || null;
+            ctx.controller = classConstantReferenceText(val);
           }
         } else if (key === 'namespace') {
           const ns = readPhpString(val);
@@ -792,6 +816,9 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
       const actions = httpMethod === 'apiResource' ? API_RESOURCE_ACTIONS : RESOURCE_ACTIONS;
       const routeNameBase =
         routeName ?? joinRouteName(effective.namePrefix, routeNameBaseFromPath(routePath));
+      const inherited = target.controller ? null : inheritedClassController(effective.controller);
+      const controllerName = target.controller ?? inherited?.name ?? null;
+      const inlineQualified = target.controllerQualified ?? inherited?.qualified ?? null;
       for (const action of actions) {
         // A bare action inherits the group controller, which is a class
         // reference, so the route namespace must not prefix it.
@@ -801,10 +828,10 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           httpMethod,
           routePath,
           routeName: appendResourceActionName(routeNameBase, action),
-          controllerName: target.controller ?? effective.controller,
+          controllerName,
           controllerQualifiedName: resolveControllerQualifiedName(
-            target.controllerQualified,
-            target.controller ?? effective.controller,
+            inlineQualified,
+            controllerName,
             useAliasMap,
             effective.namespace,
             stringAction,
@@ -831,7 +858,9 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
       } else if (target.actionRouteName) {
         routeName = joinRouteName(effective.namePrefix, target.actionRouteName);
       }
-      const controllerName = target.controller ?? effective.controller;
+      const inherited = target.controller ? null : inheritedClassController(effective.controller);
+      const controllerName = target.controller ?? inherited?.name ?? null;
+      const inlineQualified = target.controllerQualified ?? inherited?.qualified ?? null;
       // A bare action inherits the group controller, which is a class
       // reference, so the route namespace must not prefix it.
       const stringAction = target.stringAction && target.controller != null;
@@ -842,7 +871,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         routeName,
         controllerName,
         controllerQualifiedName: resolveControllerQualifiedName(
-          target.controllerQualified,
+          inlineQualified,
           controllerName,
           useAliasMap,
           effective.namespace,
