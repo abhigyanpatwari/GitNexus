@@ -86,6 +86,30 @@ export function fitSectionsToBudget(sections: string[], maxTokens: number): stri
   return result;
 }
 
+/** Tokens held back for the "N more omitted" line in `joinSectionsToBudget`. */
+const OMITTED_NOTE_TOKENS = 10;
+
+/**
+ * Join sections with `separator` and keep the whole string within
+ * `maxTokens`. Every separator costs up to a token, so when there is less
+ * than about two tokens per section, only the first sections are kept and a
+ * final line says how many were left out.
+ */
+export function joinSectionsToBudget(
+  sections: string[],
+  maxTokens: number,
+  separator = '\n\n',
+): string {
+  if (sections.length * 2 <= maxTokens) {
+    return fitSectionsToBudget(sections, maxTokens).join(separator);
+  }
+  if (maxTokens < OMITTED_NOTE_TOKENS) return '';
+  const room = maxTokens - OMITTED_NOTE_TOKENS;
+  const keep = Math.floor(room / 2);
+  const note = `... (${sections.length - keep} more omitted)`;
+  return [...fitSectionsToBudget(sections.slice(0, keep), room), note].join(separator);
+}
+
 /** Keep at most `maxLines` lines of a newline-separated block. */
 export function capLines(text: string, maxLines: number): string {
   const lines = text.split('\n');

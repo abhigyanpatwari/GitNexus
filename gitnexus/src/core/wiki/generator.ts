@@ -71,6 +71,7 @@ import {
   clipToTokens,
   estimateTokensSafe,
   fitSectionsToBudget,
+  joinSectionsToBudget,
   promptTokenBudget,
 } from './prompt-budget.js';
 import { splitModuleByDirectory } from './module-split.js';
@@ -1062,7 +1063,7 @@ export class WikiGenerator {
       estimateTokensSafe(fillTemplate(PARENT_USER_PROMPT, { ...parentVars, CHILDREN_DOCS: '' }));
     const prompt = fillTemplate(PARENT_USER_PROMPT, {
       ...parentVars,
-      CHILDREN_DOCS: fitSectionsToBudget(childDocs, parentRoom).join('\n\n'),
+      CHILDREN_DOCS: joinSectionsToBudget(childDocs, parentRoom),
     });
 
     const response = await this.invokeLLM(
@@ -1124,7 +1125,7 @@ export class WikiGenerator {
       );
     const prompt = fillTemplate(OVERVIEW_USER_PROMPT, {
       ...overviewVars,
-      MODULE_SUMMARIES: fitSectionsToBudget(moduleSummaries, overviewRoom).join('\n\n'),
+      MODULE_SUMMARIES: joinSectionsToBudget(moduleSummaries, overviewRoom),
     });
 
     const response = await this.invokeLLM(

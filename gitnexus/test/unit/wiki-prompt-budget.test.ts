@@ -5,6 +5,7 @@ import {
   clipToTokens,
   estimateTokensSafe,
   fitSectionsToBudget,
+  joinSectionsToBudget,
   minContextWindow,
   promptTokenBudget,
 } from '../../src/core/wiki/prompt-budget.js';
@@ -72,6 +73,28 @@ describe('fitSectionsToBudget', () => {
     const sections = Array.from({ length: 500 }, () => 'y'.repeat(300));
     const fitted = fitSectionsToBudget(sections, 2_000);
     expect(fitted.reduce((sum, s) => sum + estimateTokensSafe(s), 0)).toBeLessThanOrEqual(2_000);
+  });
+});
+
+describe('joinSectionsToBudget', () => {
+  it('joins sections that fit without dropping any', () => {
+    expect(joinSectionsToBudget(['a', 'b'], 1_000)).toBe('a\n\nb');
+  });
+
+  it('stays within budget when there are more sections than tokens', () => {
+    const sections = Array.from({ length: 10_000 }, () => '');
+    const joined = joinSectionsToBudget(sections, 4_000);
+    expect(estimateTokensSafe(joined)).toBeLessThanOrEqual(4_000);
+    expect(joined).toMatch(/\.\.\. \(\d+ more omitted\)$/);
+  });
+
+  it('stays within budget for many non-empty sections', () => {
+    const sections = Array.from({ length: 5_000 }, (_, i) => `#### m${i}\n${'z'.repeat(400)}`);
+    for (const budget of [3_000, 9_999, 20_000]) {
+      expect(estimateTokensSafe(joinSectionsToBudget(sections, budget))).toBeLessThanOrEqual(
+        budget,
+      );
+    }
   });
 });
 
