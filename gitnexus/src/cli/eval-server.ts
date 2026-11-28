@@ -218,8 +218,12 @@ export async function reindexRepository(
   } catch {
     return { statusCode: 400, payload: { error: 'Invalid JSON body' } };
   }
-  if (Object.hasOwn(args, 'force')) {
-    return { statusCode: 400, payload: { error: 'The force option is not supported yet.' } };
+  const unsupported = Object.keys(args).find((key) => key !== 'repo');
+  if (unsupported !== undefined) {
+    return {
+      statusCode: 400,
+      payload: { error: `The ${unsupported} option is not supported yet.` },
+    };
   }
   if (typeof args.repo !== 'string' || !args.repo.trim()) {
     return { statusCode: 400, payload: { error: 'A string "repo" is required.' } };

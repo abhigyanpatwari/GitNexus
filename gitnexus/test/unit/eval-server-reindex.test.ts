@@ -76,14 +76,19 @@ describe('eval-server POST /reindex', () => {
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
-  it('rejects force instead of silently ignoring it', async () => {
+  it.each([
+    ['force', false],
+    ['dry_run', true],
+  ])('rejects %s before refreshing the index', async (key, value) => {
+    const backend = backendMock();
     const result = await reindexRepository(
-      backendMock(),
-      '{"repo":"GitNexus","force":false}',
+      backend,
+      JSON.stringify({ repo: 'GitNexus', [key]: value }),
       true,
     );
     expect(result.statusCode).toBe(400);
-    expect(result.payload.error).toContain('force');
+    expect(result.payload.error).toContain(key);
+    expect(backend.callTool).not.toHaveBeenCalled();
   });
 
   it('maps already-running to 409 and backend failures to 500', async () => {
