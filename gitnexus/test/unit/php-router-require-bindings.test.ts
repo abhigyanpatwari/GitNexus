@@ -19,8 +19,9 @@ const parser = new Parser();
 parser.setLanguage(PHP.php_only);
 
 const extractBindings = (source: string, filePath: string) => {
-  const out = extractPhpRouterRequireBindings(parser.parse(source), filePath);
-  return out;
+  const local = new Parser();
+  local.setLanguage(PHP.php_only);
+  return extractPhpRouterRequireBindings(local.parse(source), filePath);
 };
 
 describe('extractPhpRouterRequireBindings', () => {
@@ -565,8 +566,45 @@ $app->router->group(['prefix' => 'api'], function ($router) {
 });
 `;
     const bindings = extractBindings(source, 'bootstrap/app.php');
-    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(false);
-    expect(webContexts(source)).toEqual([null, 'api']);
+    expect(bindings.some((b) => b.requiredPath === 'routes/web.php')).toBe(false);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a require in a while condition counts as already run', () => {
+    const source = `<?php
+while (require_once __DIR__ . '/../routes/web.php') {}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a require on the left of ?? counts as already run', () => {
+    const source = `<?php
+$x = (require_once __DIR__ . '/../routes/web.php') ?? $fallback;
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('qualifies a group controller through the host file use import', () => {
+    const bindings = extractBindings(
+      `<?php
+use App\\Http\\Controllers\\HomeController;
+$app->router->group(['controller' => HomeController::class, 'prefix' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings[0]?.controller).toBe('App\\Http\\Controllers\\HomeController');
   });
 
   it('a differently cased Throwable catch still handles the throw', () => {

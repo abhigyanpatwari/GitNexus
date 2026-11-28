@@ -11,6 +11,7 @@ import {
 import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import {
   findRouteGroupClosureBody,
+  buildUseAliasMap,
   foldPhpStringLiteral,
   getRouterCallArguments,
   getRouterCallMethodName,
@@ -121,7 +122,7 @@ const MUST_RUN_CONTAINER_TYPES = new Set([
   'assignment_expression',
 ]);
 
-const SHORT_CIRCUIT_OPERATORS = new Set(['&&', '||', 'and', 'or']);
+const SHORT_CIRCUIT_OPERATORS = new Set(['&&', '||', 'and', 'or', '??']);
 
 function catchTypeText(catchClause: SyntaxNode): string {
   const chunks: string[] = [];
@@ -379,8 +380,33 @@ function loopExitLevels(node: SyntaxNode): number {
   return Number.isFinite(levels) && levels > 0 ? levels : 1;
 }
 
+/** Later siblings are unreachable only inside a straight-line block. */
+const SEQUENTIAL_BLOCK_TYPES = new Set([
+  'program',
+  'compound_statement',
+  'namespace_definition',
+  'declaration_list',
+]);
+
+/** An `exit` or `die` on the straight-line path, ignoring conditional branches. */
+function straightLineEndsRequest(node: SyntaxNode): boolean {
+  if (DEFERRED_SCOPE_TYPES.has(node.type)) return false;
+  if (nodeEndsRequest(node)) return true;
+  const sequential =
+    MUST_RUN_CONTAINER_TYPES.has(node.type) ||
+    node.type === 'try_statement' ||
+    SEQUENTIAL_BLOCK_TYPES.has(node.type);
+  if (!sequential) return false;
+  for (const child of node.children ?? []) {
+    if (child.type === 'catch_clause' || child.type === 'finally_clause') continue;
+    if (straightLineEndsRequest(child)) return true;
+  }
+  return false;
+}
+
 function statementExitsUnconditionally(node: SyntaxNode): boolean {
   if (node.type === 'goto_statement') return false;
+  if (node.type === 'try_statement') return straightLineEndsRequest(node);
   if (UNCONDITIONAL_EXIT_TYPES.has(node.type)) return true;
   if (node.type !== 'expression_statement') return false;
   const inner = (node.children ?? []).find((child) => child.type !== ';');
@@ -437,14 +463,6 @@ function skippedByForwardGoto(node: SyntaxNode, ranges: { from: number; to: numb
   return ranges.some((range) => node.startIndex >= range.from && node.endIndex <= range.to);
 }
 
-/** Later siblings are unreachable only inside a straight-line block. */
-const SEQUENTIAL_BLOCK_TYPES = new Set([
-  'program',
-  'compound_statement',
-  'namespace_definition',
-  'declaration_list',
-]);
-
 interface WalkFrame {
   node: SyntaxNode;
   /** Composed router-group context, or null outside any group. */
@@ -466,6 +484,7 @@ export function extractPhpRouterRequireBindings(
   const relHost = hostFilePath.replace(/\\/g, '/');
   const mayExit = collectMayExit(tree.rootNode);
   const gotoSkips = forwardGotoSkipRanges(tree.rootNode);
+  const useAliases = buildUseAliasMap(tree.rootNode);
 
   const pushChildren = (frame: WalkFrame, children: readonly SyntaxNode[]) => {
     const { node, group, mustRun } = frame;
@@ -485,6 +504,8 @@ export function extractPhpRouterRequireBindings(
           : undefined;
     const ordered: WalkFrame[] = [];
     for (const child of children) {
+      // `exit` / `die` skips `finally`, so requires there are not possible loads.
+      if (isTry && child.type === 'finally_clause' && !finallyRuns) continue;
       // Try/catch bodies may skip. `finally` runs once the try is reached,
       // except when `exit` or `die` in the try or catch ends the request first.
       // The `if` condition runs whenever the `if` is reached. The body and
@@ -495,7 +516,8 @@ export function extractPhpRouterRequireBindings(
           ? finallyRuns
           : isTry && child.type === 'catch_clause'
             ? false
-            : node.type === 'if_statement' && child.type === 'parenthesized_expression'
+            : (node.type === 'if_statement' || node.type === 'while_statement') &&
+                child.type === 'parenthesized_expression'
               ? mustRun
               : child === shortCircuitLeft || child === alwaysEvaluated
                 ? mustRun
@@ -544,6 +566,10 @@ export function extractPhpRouterRequireBindings(
       const body = findRouteGroupClosureBody(argsNode);
       if (body) {
         const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
+        if (groupCtx.controller && !groupCtx.controller.includes('\\')) {
+          const imported = useAliases.get(groupCtx.controller);
+          if (imported) groupCtx.controller = imported.replace(/\./g, '\\');
+        }
         const inner = extendRouteGroupContext(
           group ?? EMPTY_ROUTE_GROUP_CONTEXT,
           groupCtx,

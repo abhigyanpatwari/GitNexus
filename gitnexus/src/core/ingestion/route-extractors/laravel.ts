@@ -717,7 +717,7 @@ export function parseRouteGroupArrayArgs(
  * `use` statements are file-/namespace-scoped, so a shallow walk over the
  * routes file's structural nodes finds them all.
  */
-function buildUseAliasMap(root: SyntaxNode): Map<string, string> {
+export function buildUseAliasMap(root: SyntaxNode): Map<string, string> {
   const aliasMap = new Map<string, string>();
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
