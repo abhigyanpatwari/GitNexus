@@ -46,22 +46,10 @@ export function publishedPropertyAccess(edge) {
   return { kind, start: line + ':' + col, end: endLine + ':' + endCol };
 }
 
-function graphReport(
-  graph,
-  boundCalls,
-  inventory,
-  methodFacts,
-  propertyAccess,
-  parameterCalls,
-  classes,
-  methodReturns,
-  constructedTargets,
-) {
+function publishedClassPositions(graph, classes, typeParameters) {
   // Class nodes carry a line. The real graph bridge joins their IDs to the
   // exact scope declarations, including two local classes on that same line.
   const classPositions = new Map();
-  const result = emptyReport();
-  result.publishedCalls = [];
   const lookup = buildGraphNodeLookup(graph);
   for (const def of classes) {
     const id = resolveDefGraphId(def.filePath, def, lookup);
@@ -72,7 +60,7 @@ function graphReport(
     assert.ok(!previous || previous === position, id + ' merges ' + previous + ' and ' + position);
     classPositions.set(id, position);
     if (def.typeParameters?.length) {
-      result.CLASS_TYPE_PARAMETERS.edges.push({
+      typeParameters.edges.push({
         from: position,
         to: JSON.stringify(
           def.typeParameters.map(({ name, bound, defaultType }) => [
@@ -84,6 +72,10 @@ function graphReport(
       });
     }
   }
+  return classPositions;
+}
+
+function graphIdentities(classPositions, owners) {
   function graphIdentity(node) {
     if (node.label === 'Class') {
       const position = classPositions.get(node.id);
@@ -96,7 +88,6 @@ function graphReport(
     }
     return graphDeclaration(node);
   }
-  const owners = publishedMethodOwners(graph);
   function callableIdentity(node) {
     const owner = owners.get(node.id);
     if (node.label === 'Method' && ['Interface', 'Const', 'Variable'].includes(owner?.label))
@@ -109,105 +100,123 @@ function graphReport(
         ])
       : graphIdentity(node);
   }
+  return { graphIdentity, callableIdentity };
+}
+
+function recordPropertyAccess(result, graph, { graphIdentity, callableIdentity }) {
+  for (const edge of graph.iterRelationshipsByType('ACCESSES')) {
+    const caller = graph.getNode(edge.sourceId);
+    const field = graph.getNode(edge.targetId);
+    assert.ok(caller && field, 'Unpublished property access: ' + edge.id);
+    const access = publishedPropertyAccess(edge);
+    if (!access) continue; // The compiler selects the interface member, not runtime implementations.
+    const { kind, start, end } = access;
+    const report = result[kind === 'read' ? 'PROPERTY_READS' : 'PROPERTY_WRITES'];
+    const target = graphIdentity(field);
+    report.edges.push({ from: callableIdentity(caller), to: target });
+    report.sites.push({
+      file: caller.properties.filePath,
+      start,
+      end,
+      status: 'resolved',
+      target,
+    });
+  }
+}
+
+function recordMethodFacts(result, graph, callableIdentity, methodReturns) {
+  for (const node of graph.nodes) {
+    if (node.label !== 'Method') continue;
+    const { isAbstract, isStatic, parameterTypes } = node.properties;
+    result.METHOD_FACTS.edges.push({
+      from: callableIdentity(node),
+      to: JSON.stringify([
+        isAbstract,
+        isStatic,
+        parameterTypes ?? [],
+        ...(isAbstract ? [methodReturns.get(graphDeclaration(node)) ?? null] : []),
+      ]),
+    });
+  }
+}
+
+function recordInventory(result, graph, owners, { graphIdentity, callableIdentity }) {
+  for (const node of graph.nodes) {
+    if (!['Class', 'Interface', 'Method', 'Function'].includes(node.label)) continue;
+    result.DECLARATIONS.edges.push({
+      from: node.properties.filePath,
+      to: node.label + ':' + node.properties.name + '@' + callableIdentity(node),
+    });
+  }
+  for (const [id, owner] of owners) {
+    const method = graph.getNode(id);
+    if (method?.label === 'Method')
+      result.HAS_METHOD.edges.push({ from: graphIdentity(owner), to: callableIdentity(method) });
+  }
+}
+
+function relationshipSite(relation, edge, file) {
+  if (relation !== 'CALLS' && relation !== 'USES') return;
+  const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
+  if (!edge.id.startsWith(prefix)) return;
+  const span = /^(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
+  if (span) return { file, start: span[1], end: span[2] };
+}
+
+function reportedRelation(relation, edge, to) {
+  if (relation === 'CALLS' && to.label === 'Property') return 'CALLABLE_PROPERTIES';
+  if (relation === 'USES' && edge.reason === 'scope-resolution: value-ref')
+    return to.label === 'Function' ? 'FUNCTION_VALUES' : undefined;
+  return relation;
+}
+
+function recordRelationship(result, graph, relation, edge, context) {
+  if (edge.reason === 'interface-dispatch') return;
+  if (
+    relation === 'USES' &&
+    !['scope-resolution: value-ref', 'scope-resolution: type-reference'].includes(edge.reason)
+  )
+    return;
+  const from = graph.getNode(edge.sourceId);
+  const to = graph.getNode(edge.targetId);
+  assert.ok(from && to, 'Unpublished endpoint: ' + edge.id);
+  const kind = reportedRelation(relation, edge, to);
+  if (!kind) return;
+  const { graphIdentity, callableIdentity, boundRanges, parameterRanges } = context;
+  const site = relationshipSite(relation, edge, from.properties.filePath);
+  const key = site && siteKey(site);
+  // The checker binds an indirect invocation through a parameter to its signature.
+  if (edge.reason === 'callable-value-flow' && parameterRanges.has(key)) return;
+  const endpoints = { from: callableIdentity(from), to: callableIdentity(to) };
+  if (kind === 'CALLS' && site) {
+    endpoints.site = site;
+    endpoints.declaration = graphIdentity(to);
+  }
+  result[kind].edges.push(endpoints);
+  if (site && site.start !== site.end && !(kind === 'CALLS' && boundRanges.has(key))) {
+    result[kind].sites.push({ ...site, status: 'resolved', target: graphIdentity(to) });
+  }
+}
+
+function graphReport(graph, { boundCalls, parameterCalls, classes, methodReturns }, options) {
+  const result = emptyReport();
+  const positions = publishedClassPositions(graph, classes, result.CLASS_TYPE_PARAMETERS);
+  const owners = publishedMethodOwners(graph);
+  const identities = graphIdentities(positions, owners);
   result.PARAMETER_CALLS.sites = publishedParameterCalls(graph, parameterCalls);
-  const parameterRanges = new Set(parameterCalls.map(siteKey));
-  if (propertyAccess) {
-    for (const edge of graph.iterRelationshipsByType('ACCESSES')) {
-      const caller = graph.getNode(edge.sourceId);
-      const field = graph.getNode(edge.targetId);
-      assert.ok(caller && field, 'Unpublished property access: ' + edge.id);
-      const access = publishedPropertyAccess(edge);
-      if (!access) continue; // The compiler selects the interface member, not runtime implementations.
-      const { kind, start, end } = access;
-      const report = result[kind === 'read' ? 'PROPERTY_READS' : 'PROPERTY_WRITES'];
-      const target = graphIdentity(field);
-      report.edges.push({ from: callableIdentity(caller), to: target });
-      report.sites.push({
-        file: caller.properties.filePath,
-        start,
-        end,
-        status: 'resolved',
-        target,
-      });
-    }
-  }
-  if (methodFacts) {
-    for (const node of graph.nodes) {
-      if (node.label !== 'Method') continue;
-      const { isAbstract, isStatic, parameterTypes } = node.properties;
-      result.METHOD_FACTS.edges.push({
-        from: callableIdentity(node),
-        to: JSON.stringify([
-          isAbstract,
-          isStatic,
-          parameterTypes ?? [],
-          ...(isAbstract ? [methodReturns.get(graphDeclaration(node)) ?? null] : []),
-        ]),
-      });
-    }
-  }
-  if (inventory) {
-    for (const node of graph.nodes) {
-      if (!['Class', 'Interface', 'Method', 'Function'].includes(node.label)) continue;
-      result.DECLARATIONS.edges.push({
-        from: node.properties.filePath,
-        to: node.label + ':' + node.properties.name + '@' + callableIdentity(node),
-      });
-    }
-    for (const [id, owner] of owners) {
-      const method = graph.getNode(id);
-      if (method?.label === 'Method')
-        result.HAS_METHOD.edges.push({ from: graphIdentity(owner), to: callableIdentity(method) });
-    }
-  }
-  const boundRanges = new Set();
-  for (const site of boundCalls) {
-    const key = siteKey(site);
-    boundRanges.add(key);
-    if (constructedTargets.get(key) !== site.target) result.CALLS.sites.push(site);
-  }
+  if (options.propertyAccess) recordPropertyAccess(result, graph, identities);
+  if (options.methodFacts)
+    recordMethodFacts(result, graph, identities.callableIdentity, methodReturns);
+  if (options.inventory) recordInventory(result, graph, owners, identities);
+  result.CALLS.sites = [...boundCalls];
+  const context = {
+    ...identities,
+    boundRanges: new Set(boundCalls.map(siteKey)),
+    parameterRanges: new Set(parameterCalls.map(siteKey)),
+  };
   for (const relation of graphRelations) {
     for (const edge of graph.iterRelationshipsByType(relation)) {
-      if (edge.reason === 'interface-dispatch') continue;
-      const valueReference = relation === 'USES' && edge.reason === 'scope-resolution: value-ref';
-      if (
-        relation === 'USES' &&
-        !valueReference &&
-        edge.reason !== 'scope-resolution: type-reference'
-      )
-        continue;
-      const from = graph.getNode(edge.sourceId);
-      const to = graph.getNode(edge.targetId);
-      assert.ok(from && to, 'Unpublished endpoint: ' + edge.id);
-      if (valueReference && to.label !== 'Function') continue;
-      const located = relation === 'CALLS' || relation === 'USES';
-      const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
-      const span =
-        located &&
-        edge.id.startsWith(prefix) &&
-        /^(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
-      const site = span && { file: from.properties.filePath, start: span[1], end: span[2] };
-      let kind = valueReference ? 'FUNCTION_VALUES' : relation;
-      if (relation === 'CALLS' && to.label === 'Property') kind = 'CALLABLE_PROPERTIES';
-      if (edge.reason === 'callable-value-flow' && site && parameterRanges.has(siteKey(site)))
-        continue; // The checker binds this invocation to its parameter signature.
-      if (kind === 'CALLS' && site && constructedTargets.get(siteKey(site)) === graphIdentity(to))
-        continue;
-      result[kind].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
-      if (kind === 'CALLS') {
-        result.publishedCalls.push({
-          ...(site && site.start !== site.end ? site : {}),
-          caller: callableIdentity(from),
-          target: callableIdentity(to),
-        });
-      }
-      if (
-        site &&
-        site.start !== site.end &&
-        !(kind === 'CALLS' && boundRanges.has(siteKey(site)))
-      ) {
-        result[kind].sites.push({ ...site, status: 'resolved', target: graphIdentity(to) });
-      }
+      recordRelationship(result, graph, relation, edge, context);
     }
   }
   return result;
@@ -215,6 +224,30 @@ function graphReport(
 
 function siteKey(site) {
   return JSON.stringify([site.file, site.start, site.end]);
+}
+
+// Only an exact match at an unchecked construction site is outside the compiler's call contract.
+function compareCallObservations(reference, calls) {
+  const constructedTargets = new Map(
+    reference.uncheckedMemberSites
+      .filter((site) => site.constructedTarget)
+      .map((site) => [siteKey(site), site.constructedTarget]),
+  );
+  const edges = calls.edges.filter(
+    ({ site, declaration }) => !site || constructedTargets.get(siteKey(site)) !== declaration,
+  );
+  comparePublishedCalls(
+    reference.publishedCalls,
+    edges.map(({ from, to, site }) => ({
+      ...(site && site.start !== site.end ? site : {}),
+      caller: from,
+      target: to,
+    })),
+  );
+  return {
+    edges: edges.map(({ from, to }) => ({ from, to })),
+    sites: calls.sites.filter((site) => constructedTargets.get(siteKey(site)) !== site.target),
+  };
 }
 
 // Some relationship IDs encode only an endpoint pair. For those pairs the
@@ -317,81 +350,73 @@ function parameterInvocations(file, indexes) {
   return calls;
 }
 
-function recordBindings(observation, calls, typeParameters, reads, unbound, parameterCalls) {
+function bindingRange(file, { startLine, startCol, endLine, endCol }) {
+  return { file, start: startLine + ':' + startCol, end: endLine + ':' + endCol };
+}
+
+function boundTypeParameter(site, scopeTree) {
+  for (let scope = scopeTree.getScope(site.inScope); scope; scope = scopeTree.getParent(scope.id)) {
+    const owner = scope.ownedDefs.find(
+      (def) =>
+        def.declarationRange?.startLine === scope.range.startLine &&
+        def.declarationRange?.startCol === scope.range.startCol &&
+        def.typeParameters?.some((parameter) => parameter.name === site.name),
+    );
+    const name =
+      owner?.nameRange ??
+      (scope.typeParameters?.some((parameter) => parameter.name === site.name) && scope.range);
+    if (name) return scope.filePath + '#' + name.startLine + ':' + name.startCol + '/' + site.name;
+  }
+}
+
+function recordReferenceBinding(file, site, binding, scopeTree, definitions, reports) {
+  if (binding?.basis === 'type-parameter') {
+    const target = boundTypeParameter(site, scopeTree);
+    if (target) {
+      reports.typeParameters.push({
+        ...bindingRange(file, site.atRange),
+        status: 'type-parameter',
+        target,
+      });
+    }
+  }
+  if (!['call', 'read'].includes(site.kind)) return;
+  const isCall = site.kind === 'call';
+  if (binding?.status !== 'resolved') {
+    if (isCall && ['blocked', 'unresolved'].includes(binding?.status)) {
+      reports.unbound.push({ ...bindingRange(file, site.atRange), status: 'unresolved' });
+    }
+    return;
+  }
+  const sites = isCall ? reports.boundCalls : reports.reads;
+  for (const id of binding.targetDefIds) {
+    const def = definitions.get(id);
+    const range = isCall ? def?.declarationRange : def?.nameRange;
+    if (!range || (isCall && !['Function', 'Method', 'Class'].includes(def.type))) continue;
+    sites.push({
+      ...bindingRange(file, site.atRange),
+      status: 'resolved',
+      target: def.filePath + '#' + range.startLine + ':' + range.startCol,
+    });
+  }
+}
+
+function recordBindings(observation, reports) {
   const definitions = new Map(
     observation.parsedFiles.flatMap((file) => file.localDefs.map((def) => [def.nodeId, def])),
   );
   for (const file of observation.parsedFiles) {
-    parameterCalls.push(...parameterInvocations(file, observation.indexes));
+    reports.parameterCalls.push(...parameterInvocations(file, observation.indexes));
     for (const site of file.referenceSites) {
       const binding = observation.referenceBindings.get(site);
-      if (site.kind === 'read' && binding?.status === 'resolved') {
-        for (const id of binding.targetDefIds) {
-          const def = definitions.get(id);
-          if (!def?.nameRange) continue;
-          const range = site.atRange;
-          reads.push({
-            file: file.filePath,
-            start: range.startLine + ':' + range.startCol,
-            end: range.endLine + ':' + range.endCol,
-            status: 'resolved',
-            target: def.filePath + '#' + def.nameRange.startLine + ':' + def.nameRange.startCol,
-          });
-        }
-      }
-      if (binding?.basis === 'type-parameter') {
-        let scope = observation.indexes.scopeTree.getScope(site.inScope);
-        while (scope) {
-          const owner = scope.ownedDefs.find(
-            (def) =>
-              def.declarationRange?.startLine === scope.range.startLine &&
-              def.declarationRange?.startCol === scope.range.startCol &&
-              def.typeParameters?.some((p) => p.name === site.name),
-          );
-          const name =
-            owner?.nameRange ??
-            (scope.typeParameters?.some((parameter) => parameter.name === site.name) &&
-              scope.range);
-          if (name) {
-            const range = site.atRange;
-            typeParameters.push({
-              file: file.filePath,
-              start: range.startLine + ':' + range.startCol,
-              end: range.endLine + ':' + range.endCol,
-              status: 'type-parameter',
-              target: scope.filePath + '#' + name.startLine + ':' + name.startCol + '/' + site.name,
-            });
-            break;
-          }
-          scope = observation.indexes.scopeTree.getParent(scope.id);
-        }
-      }
-      if (site.kind !== 'call') continue;
-      if (binding?.status !== 'resolved') {
-        if (binding && (binding.status === 'blocked' || binding.status === 'unresolved')) {
-          const range = site.atRange;
-          unbound.push({
-            file: file.filePath,
-            start: range.startLine + ':' + range.startCol,
-            end: range.endLine + ':' + range.endCol,
-            status: 'unresolved',
-          });
-        }
-        continue;
-      }
-      for (const id of binding.targetDefIds) {
-        const def = definitions.get(id);
-        if (!def?.declarationRange || !['Function', 'Method', 'Class'].includes(def.type)) continue;
-        const { startLine, startCol } = def.declarationRange;
-        const range = site.atRange;
-        calls.push({
-          file: file.filePath,
-          start: range.startLine + ':' + range.startCol,
-          end: range.endLine + ':' + range.endCol,
-          status: 'resolved',
-          target: def.filePath + '#' + startLine + ':' + startCol,
-        });
-      }
+      recordReferenceBinding(
+        file.filePath,
+        site,
+        binding,
+        observation.indexes.scopeTree,
+        definitions,
+        reports,
+      );
     }
   }
 }
@@ -413,13 +438,15 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     relations.some((kind) => reference[kind].edges.length || reference[kind].sites.length),
     root + ': TypeScript reported no project-local declarations at any reference',
   );
-  const boundCalls = [];
-  const parameterCalls = [];
+  const bindings = {
+    boundCalls: [],
+    parameterCalls: [],
+    typeParameters: [],
+    reads: [],
+    unbound: [],
+  };
   const classes = [];
   const methodReturns = new Map();
-  const typeParameters = [];
-  const reads = [];
-  const unbound = [];
   const pipeline = await runPipelineFromRepo(root, () => {}, {
     ...options,
     // Keep local declarations observable when a property read could bind to a same-named variable.
@@ -434,32 +461,24 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
           }
         }
       }
-      recordBindings(observation, boundCalls, typeParameters, reads, unbound, parameterCalls);
+      recordBindings(observation, bindings);
     },
   });
   const observed = graphReport(
     pipeline.graph,
-    boundCalls,
-    inventory,
-    methodFacts,
-    propertyAccess,
-    parameterCalls,
-    classes,
-    methodReturns,
-    new Map(
-      reference.uncheckedMemberSites
-        .filter((site) => site.constructedTarget)
-        .map((site) => [siteKey(site), site.constructedTarget]),
-    ),
+    { ...bindings, classes, methodReturns },
+    { inventory, methodFacts, propertyAccess },
   );
-  comparePublishedCalls(reference.publishedCalls, observed.publishedCalls);
-  observed.TYPE_PARAMETER_USES.sites = typeParameters;
+  observed.CALLS = compareCallObservations(reference, observed.CALLS);
+  observed.TYPE_PARAMETER_USES.sites = bindings.typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
   // The observer also sees property reads, argument reads and other syntax.
   const rejectedLocations = new Set(reference.REJECTED_CALLS.sites.map(siteKey));
-  observed.REJECTED_CALLS.sites = unbound.filter((site) => rejectedLocations.has(siteKey(site)));
+  observed.REJECTED_CALLS.sites = bindings.unbound.filter((site) =>
+    rejectedLocations.has(siteKey(site)),
+  );
   const checkedReads = new Set(reference.VARIABLE_READS.sites.map(siteKey));
-  observed.VARIABLE_READS.sites = reads.filter((site) => checkedReads.has(siteKey(site)));
+  observed.VARIABLE_READS.sites = bindings.reads.filter((site) => checkedReads.has(siteKey(site)));
   for (const relation of relations) {
     if (!reference[relation].edges.length && !reference[relation].sites.length) {
       assert.deepEqual(
@@ -488,8 +507,8 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
 
 export async function compareProjects(fixtures, diagnostics, diagnosticsOnly = new Set()) {
   assert.ok(fixtures.length, 'No TypeScript fixtures found');
-  const failures = [];
-  for (const root of fixtures) {
+  // Each fixture owns a compiler and a graph pipeline. Finish one before opening the next.
+  const outcomes = await Array.fromAsync(fixtures, async (root) => {
     const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
     try {
       if (diagnosticsOnly.has(key)) {
@@ -500,9 +519,10 @@ export async function compareProjects(fixtures, diagnostics, diagnosticsOnly = n
         console.log(path.basename(root), counts);
       }
     } catch (cause) {
-      failures.push(new Error(path.basename(root), { cause }));
+      return new Error(path.basename(root), { cause });
     }
-  }
+  });
+  const failures = outcomes.filter((failure) => failure !== undefined);
   if (failures.length)
     throw new AggregateError(failures, `${failures.length} TypeScript conformance fixtures failed`);
 }

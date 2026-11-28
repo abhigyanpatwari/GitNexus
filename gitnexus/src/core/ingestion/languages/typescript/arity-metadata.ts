@@ -86,7 +86,7 @@ export function computeTsArityMetadata(
   for (const p of params) {
     if (p.isVariadic) hasRest = true;
     else if (p.isOptional) optionalCount++;
-    const t = p.type !== null && p.type !== undefined ? stripGenericsAndArraySuffix(p.type) : '';
+    const t = stripGenericsAndArraySuffix(p.type ?? '');
     if (isOverloadSignature && overloadParameterType(p) !== t) needsWrittenTypes = true;
     if (t !== sharedTypes[index]) {
       normalized ??= sharedTypes.slice();

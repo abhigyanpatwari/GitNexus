@@ -190,8 +190,37 @@ function* ungroupedOffsets(text: string, start = 0): Generator<number> {
 
 // A number starts at a token boundary, so the 8 in the character literal u8','
 // cannot consume its opening quote. Separators stay in the numeric spelling.
-const numericLiteral =
-  /\b(?:0x[\da-f.](?:'?[\da-f]|\.)*|0b[01](?:'?[01])*|\d(?:'?\d|\.)*)(?:[ep][+-]?\d(?:'?\d)*)?/iy;
+const numericMantissas = [
+  /\b0x[\da-f.](?:'?[\da-f]|\.)*/iy,
+  /\b0b[01](?:'?[01])*/iy,
+  /\b\d(?:'?\d|\.)*/y,
+];
+const numericExponent = /[ep][+-]?\d(?:'?\d)*/iy;
+
+function numericLiteralEnd(text: string, start: number): number {
+  for (const mantissa of numericMantissas) {
+    mantissa.lastIndex = start;
+    if (!mantissa.test(text)) continue;
+    numericExponent.lastIndex = mantissa.lastIndex;
+    return numericExponent.test(text) ? numericExponent.lastIndex : mantissa.lastIndex;
+  }
+  return start + 1;
+}
+
+function quotedEnd(text: string, start: number, lastCommentEnd: number): number | undefined {
+  let end = start + 1;
+  while (end < text.length && text[end] !== text[start]) {
+    end += text[end] === '\\' ? 2 : 1;
+  }
+  if (end < text.length && !isLifetimePair(text, start, end, lastCommentEnd)) return end + 1;
+}
+
+function angleOperatorEnd(text: string, i: number): number | undefined {
+  const ch = text[i];
+  // Both <= and <=> are single operators. Their angles do not delimit a list.
+  if (ch === '<' && text[i + 1] === '=') return text[i + 2] === '>' ? i + 3 : i + 2;
+  if ((ch === '=' || ch === '-') && text[i + 1] === '>') return i + 2;
+}
 
 /** Comments and quoted strings are opaque even when they contain each other's delimiters. */
 function* opaqueSpans(text: string, start: number) {
@@ -201,30 +230,24 @@ function* opaqueSpans(text: string, start: number) {
   while (cursor < text.length) {
     const i = cursor++;
     const ch = text[i];
-    const end = ch === '/' ? endOfComment(text, i) : undefined;
+    if (hasApostrophe && ch >= '0' && ch <= '9') {
+      cursor = numericLiteralEnd(text, i);
+      continue;
+    }
+    const commentEnd = ch === '/' ? endOfComment(text, i) : undefined;
+    if (commentEnd !== undefined) {
+      cursor = commentEnd;
+      lastCommentEnd = commentEnd;
+      yield { start: i, end: cursor, comment: true };
+      continue;
+    }
+    const end =
+      ch === '"' || ch === "'" || ch === '`'
+        ? quotedEnd(text, i, lastCommentEnd)
+        : angleOperatorEnd(text, i);
     if (end !== undefined) {
-      yield { start: i, end, comment: true };
-      lastCommentEnd = end;
       cursor = end;
-    } else if (ch === '<' && text[i + 1] === '=') {
-      // Both <= and <=> are single operators. Their angles do not delimit a list.
-      cursor = text[i + 2] === '>' ? i + 3 : i + 2;
-      yield { start: i, end: cursor, comment: false };
-    } else if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
-      yield { start: i, end: i + 2, comment: false };
-      cursor = i + 2;
-    } else if (hasApostrophe && ch >= '0' && ch <= '9') {
-      numericLiteral.lastIndex = i;
-      if (numericLiteral.test(text)) cursor = numericLiteral.lastIndex;
-    } else if (ch === '"' || ch === "'" || ch === '`') {
-      let end = i + 1;
-      while (end < text.length && text[end] !== ch) {
-        end += text[end] === '\\' ? 2 : 1;
-      }
-      if (end < text.length && !isLifetimePair(text, i, end, lastCommentEnd)) {
-        yield { start: i, end: end + 1, comment: false };
-        cursor = end + 1;
-      }
+      yield { start: i, end, comment: false };
     }
   }
 }
@@ -263,20 +286,33 @@ export function withoutTypeComments(text: string): string {
   return start ? result + text.slice(start) : text;
 }
 
-/** In <'a, T, 'b> each apostrophe starts a name. Neither quotes the comma. */
-function isLifetimePair(text: string, start: number, end: number, lastCommentEnd: number): boolean {
-  if (text[start] !== "'") return false;
+function initialLifetimeEnd(
+  text: string,
+  start: number,
+  lastCommentEnd: number,
+): number | undefined {
+  if (text[start] !== "'") return;
   let before = start - 1;
   while (before >= 0 && /\s/u.test(text[before])) before--;
-  if (before >= lastCommentEnd && !'<,:&+'.includes(text[before])) return false;
+  if (before >= lastCommentEnd && !'<,:&+'.includes(text[before])) return;
+  return lifetimeNameEnd(text, start);
+}
+
+function lifetimeNameEnd(text: string, start: number): number | undefined {
   const name = /'[_\p{XID_Start}][_\p{XID_Continue}]*/uy;
   name.lastIndex = start;
-  if (!name.test(text) || name.lastIndex === end) return false; // e.g. 'x'_suffix
+  return name.test(text) ? name.lastIndex : undefined;
+}
+
+/** In <'a, T, 'b> each apostrophe starts a name. Neither quotes the comma. */
+function isLifetimePair(text: string, start: number, end: number, lastCommentEnd: number): boolean {
+  const firstEnd = initialLifetimeEnd(text, start, lastCommentEnd);
+  if (firstEnd === undefined || firstEnd === end) return false; // e.g. 'x'_suffix
 
   // If the apparent closing quote is another lifetime or lies in a comment
   // after a separator, the outer scanner must see the intervening tokens.
   let separator = false;
-  let cursor = name.lastIndex;
+  let cursor = firstEnd;
   while (cursor < end) {
     const i = cursor++;
     if (/\s/u.test(text[i])) continue;
@@ -288,8 +324,7 @@ function isLifetimePair(text: string, start: number, end: number, lastCommentEnd
       separator = '<,:&+='.includes(text[i]);
     }
   }
-  name.lastIndex = end;
-  return separator && name.test(text);
+  return separator && lifetimeNameEnd(text, end) !== undefined;
 }
 
 function isIdentifierChar(ch: string): boolean {

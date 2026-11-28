@@ -17,11 +17,8 @@ export function withWorkspacePackages(root, run) {
   const manifest = path.join(root, 'package.json');
   const workspaces = existsSync(manifest) && JSON.parse(readFileSync(manifest, 'utf8')).workspaces;
   const pnpm = path.join(root, 'pnpm-workspace.yaml');
-  const patterns = existsSync(pnpm)
-    ? parseYaml(readFileSync(pnpm, 'utf8'))?.packages
-    : Array.isArray(workspaces)
-      ? workspaces
-      : workspaces?.packages;
+  const npmPatterns = Array.isArray(workspaces) ? workspaces : workspaces?.packages;
+  const patterns = existsSync(pnpm) ? parseYaml(readFileSync(pnpm, 'utf8'))?.packages : npmPatterns;
   if (!patterns?.length) return run(root);
   const scratch = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-workspace-'));
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });

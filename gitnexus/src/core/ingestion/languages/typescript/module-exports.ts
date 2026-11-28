@@ -35,6 +35,37 @@ function explicitEsmDefinitions(
   return definitions;
 }
 
+function commonJsDefinitions(
+  definitions: readonly SymbolDefinition[],
+  positions?: readonly string[],
+): readonly SymbolDefinition[] {
+  if (!positions?.length) return definitions;
+  const candidates = definitions.filter((def) => {
+    const at = def.declarationRange;
+    return def.type === 'Function' && at && positions.includes(`${at.startLine}:${at.startCol}`);
+  });
+  if (candidates.length !== 1) return definitions;
+  return definitions.map((def) =>
+    def === candidates[0] ? { ...def, isExported: true, isDefaultExport: true } : def,
+  );
+}
+
+function projectModuleFormat(
+  filePath: string,
+  configs: TsconfigIndex | null,
+  packages: NodeWorkspacePackages | null,
+  hasModuleSyntax?: boolean,
+): NativeModule['format'] | undefined {
+  const isJs = /\.jsx?$/i.test(filePath);
+  const mode = isJs ? undefined : tsconfigFor(configs, filePath)?.module;
+  const nodeMode = /^node(?:16|18|20|next)$/.test(mode ?? '');
+  const esmEmit = /^(?:es6|es2015|es2020|es2022|esnext)$/.test(mode ?? '');
+  const usesPackageFormat = !mode || nodeMode || esmEmit || mode === 'preserve';
+  if (usesPackageFormat && nodePackageIsEsm(filePath, packages)) return 'esm';
+  if ((isJs || esmEmit) && hasModuleSyntax) return 'esm';
+  if (mode === 'commonjs' || nodeMode) return 'commonjs';
+}
+
 /** Resolve ambiguous .js/.ts syntax using the project's compiler and Node package scope. */
 export function bindModuleFormatExports(
   files: readonly ParsedFile[],
@@ -49,33 +80,18 @@ export function bindModuleFormatExports(
     if ((!esm && !positions?.length && !possibleWrapper) || !/\.[jt]sx?$/i.test(file.filePath))
       continue;
     formatExports.delete(file);
-    const isJs = /\.jsx?$/i.test(file.filePath);
-    const mode = isJs ? undefined : tsconfigFor(configs, file.filePath)?.module;
-    const nodeMode = /^node(?:16|18|20|next)$/.test(mode ?? '');
-    const esmEmit = /^(?:es6|es2015|es2020|es2022|esnext)$/.test(mode ?? '');
-    const usesPackageFormat = !mode || nodeMode || esmEmit || mode === 'preserve';
-    const packageEsm = usesPackageFormat && nodePackageIsEsm(file.filePath, packages);
-    if (packageEsm || ((isJs || esmEmit) && esm?.hasModuleSyntax)) {
+    const format = projectModuleFormat(file.filePath, configs, packages, esm?.hasModuleSyntax);
+    if (format === 'esm') {
       // A CommonJS wrapper alone supplies no exports in a native ES module.
       const definitions = !esm && possibleWrapper ? [] : explicitEsmDefinitions(file, esm);
       formatExports.set(file, { format: 'esm', definitions });
       continue;
     }
-    if (!(mode === 'commonjs' || nodeMode)) continue;
-    let definitions = file.localDefs;
-    if (positions?.length) {
-      const candidates = file.localDefs.filter((def) => {
-        const at = def.declarationRange;
-        return (
-          def.type === 'Function' && at && positions.includes(`${at.startLine}:${at.startCol}`)
-        );
+    if (format === 'commonjs')
+      formatExports.set(file, {
+        format,
+        definitions: commonJsDefinitions(file.localDefs, positions),
       });
-      if (candidates.length === 1)
-        definitions = file.localDefs.map((def) =>
-          def === candidates[0] ? { ...def, isExported: true, isDefaultExport: true } : def,
-        );
-    }
-    formatExports.set(file, { format: 'commonjs', definitions });
   }
 }
 

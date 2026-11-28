@@ -11,6 +11,35 @@ function signatureKey(method: MethodInfo): string {
   return (arityForIdFromInfo(method) ?? 'rest') + ':' + method.name;
 }
 
+function interfaceGroups(root: SyntaxNode) {
+  const groups = new Map<string, SyntaxNode[]>();
+  for (const declaration of root.descendantsOfType('interface_declaration')) {
+    const name = resolveTsJsContainerTypeOwner(declaration)?.name;
+    if (!name) continue;
+    const group = groups.get(name);
+    if (group) group.push(declaration);
+    else groups.set(name, [declaration]);
+  }
+  return groups.values();
+}
+
+function interfaceSignatureCollisions(
+  declarations: SyntaxNode[],
+  context: MethodExtractorContext,
+  extractor: MethodExtractor,
+): Set<string> {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const declaration of declarations) {
+    for (const method of extractor.extract(declaration, context)?.methods ?? []) {
+      const key = signatureKey(method);
+      if (seen.has(key)) repeated.add(key);
+      seen.add(key);
+    }
+  }
+  return repeated;
+}
+
 function mergedMethodCollisions(
   owner: SyntaxNode,
   context: MethodExtractorContext,
@@ -19,26 +48,11 @@ function mergedMethodCollisions(
   if (owner.type !== 'interface_declaration') return;
   let collisions = collisionsByTree.get(owner.tree);
   if (!collisions) {
-    const groups = new Map<string, SyntaxNode[]>();
-    for (const declaration of owner.tree.rootNode.descendantsOfType('interface_declaration')) {
-      const name = resolveTsJsContainerTypeOwner(declaration)?.name;
-      if (!name) continue;
-      const group = groups.get(name);
-      if (group) group.push(declaration);
-      else groups.set(name, [declaration]);
-    }
     const byOwner = new Map<number, Set<string>>();
-    for (const group of groups.values()) {
-      const seen = new Set<string>();
-      const repeated = new Set<string>();
-      for (const declaration of group) {
-        const keys = extractor.extract(declaration, context)?.methods.map(signatureKey) ?? [];
-        for (const key of keys) {
-          if (seen.has(key)) repeated.add(key);
-          seen.add(key);
-        }
-      }
-      if (repeated.size) for (const declaration of group) byOwner.set(declaration.id, repeated);
+    for (const group of interfaceGroups(owner.tree.rootNode)) {
+      const repeated = interfaceSignatureCollisions(group, context, extractor);
+      if (!repeated.size) continue;
+      for (const declaration of group) byOwner.set(declaration.id, repeated);
     }
     collisions = byOwner;
     collisionsByTree.set(owner.tree, collisions);

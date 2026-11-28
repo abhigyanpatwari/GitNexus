@@ -230,24 +230,25 @@ export function createReferenceLookup(
         namespaceImport || ownedMember
           ? undefined
           : publishedNamespaceMember(claim.bindings, parts.slice(1), scopes, options.purpose);
-      const definition =
-        ownedMember ??
-        (namespaceImport
-          ? findClassBindingInScope(scope, qualified, scopes, undefined, {
-              ...options,
-              uniqueQualifiedNameFallback: false,
-              namespaceMemberVisible: input.isNamespaceMemberVisible,
-            })
-          : member === undefined
-            ? resolveQualifiedInheritanceBase(
-                scope,
-                site.rawQualifiedName,
-                scopes,
-                findEnclosingClassDef(scope, scopes),
-              )
-            : member && CLASS_KINDS.includes(member.def.type)
-              ? member.def
-              : undefined);
+      let definition = ownedMember;
+      if (!ownedMember) {
+        if (namespaceImport) {
+          definition = findClassBindingInScope(scope, qualified, scopes, undefined, {
+            ...options,
+            uniqueQualifiedNameFallback: false,
+            namespaceMemberVisible: input.isNamespaceMemberVisible,
+          });
+        } else if (member === undefined) {
+          definition = resolveQualifiedInheritanceBase(
+            scope,
+            site.rawQualifiedName,
+            scopes,
+            findEnclosingClassDef(scope, scopes),
+          );
+        } else if (member && CLASS_KINDS.includes(member.def.type)) {
+          definition = member.def;
+        }
+      }
       if (
         definition === undefined ||
         (!ownedMember &&

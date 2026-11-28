@@ -79,28 +79,46 @@ import {
   isDefaultExportHocFunctionNode,
 } from '../../ts-js-hoc-utils.js';
 
+type NamespaceAliases = Map<string, { values: Set<string>; types: Set<string> }>;
+
+function collectNamespaceAliases(
+  statement: SyntaxNode,
+  clause: SyntaxNode,
+  aliases: NamespaceAliases,
+) {
+  for (const { name, publicName, typeOnly } of localExportSpecifiers(statement, clause)) {
+    const key = canonicalModuleExportName(publicName.text);
+    if (key === null) continue;
+    let entry = aliases.get(name);
+    if (!entry) {
+      entry = { values: new Set(), types: new Set() };
+      aliases.set(name, entry);
+    }
+    (typeOnly ? entry.types : entry.values).add(key);
+  }
+}
+
 /** Each ambient namespace block owns its export list, even when declarations merge. */
 function namespaceExportEvidence(body: SyntaxNode, filePath: string) {
   const ambient = /\.d\.[cm]?ts$/i.test(filePath) || body.closest('ambient_declaration') !== null;
-  let implicit = ambient;
-  const aliases = new Map<string, { values: Set<string>; types: Set<string> }>();
-  if (ambient) {
-    for (const statement of body.namedChildren) {
-      if (statement.type !== 'export_statement' || statement.childForFieldName('declaration'))
-        continue;
-      implicit = false;
-      const clause = statement.namedChildren.find((child) => child.type === 'export_clause');
-      if (!clause || statement.childForFieldName('source')) continue;
-      for (const { name, publicName, typeOnly } of localExportSpecifiers(statement, clause)) {
-        const key = canonicalModuleExportName(publicName.text);
-        if (key === null) continue;
-        let entry = aliases.get(name);
-        if (!entry) aliases.set(name, (entry = { values: new Set(), types: new Set() }));
-        (typeOnly ? entry.types : entry.values).add(key);
-      }
-    }
+  const aliases: NamespaceAliases = new Map();
+  if (!ambient) return { implicit: false, aliases };
+  let implicit = true;
+  for (const statement of body.namedChildren) {
+    if (statement.type !== 'export_statement' || statement.childForFieldName('declaration'))
+      continue;
+    implicit = false;
+    const clause = statement.namedChildren.find((child) => child.type === 'export_clause');
+    if (clause && !statement.childForFieldName('source'))
+      collectNamespaceAliases(statement, clause, aliases);
   }
   return { implicit, aliases };
+}
+
+function methodNameCaptureTag(grouped: CaptureMatch) {
+  if (grouped['@declaration.method']) return '@declaration.name';
+  if (grouped['@reference.call.member']) return '@reference.name';
+  if (grouped['@type-binding.return']) return '@type-binding.name';
 }
 
 /** tree-sitter-typescript node types for function-like scopes that may
@@ -464,6 +482,7 @@ export function emitTsScopeCaptures(
   const returnedDefault = sourceText.includes('default')
     ? defaultFactoryResult(tree.rootNode)
     : undefined;
+  const returnedDefaultId = returnedDefault?.value.id;
   let defaultDeclaration: Record<string, Capture> | undefined;
   const namespaceExports = new Map<number, ReturnType<typeof namespaceExportEvidence>>();
   let awaitedCalls: Map<string, Capture> | undefined;
@@ -492,13 +511,7 @@ export function emitTsScopeCaptures(
           values;
       }
     }
-    const methodKey = grouped['@declaration.method']
-      ? '@declaration.name'
-      : grouped['@reference.call.member']
-        ? '@reference.name'
-        : grouped['@type-binding.return']
-          ? '@type-binding.name'
-          : undefined;
+    const methodKey = methodNameCaptureTag(grouped);
     const nameNode = methodKey && groupedNodes[methodKey];
     if (
       methodKey &&
@@ -839,10 +852,8 @@ export function emitTsScopeCaptures(
                 startCol: operand.startPosition.column,
               },
             };
-            (awaitedCalls ??= new Map()).set(
-              callRangeKey(callAnchor.range),
-              grouped[callAnchor.name],
-            );
+            awaitedCalls ??= new Map();
+            awaitedCalls.set(callRangeKey(callAnchor.range), grouped[callAnchor.name]);
           }
         }
         const argList = callNode.childForFieldName('arguments');
@@ -883,7 +894,8 @@ export function emitTsScopeCaptures(
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
     addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
-    if (returnedDefault && unbound?.id === returnedDefault.value.id) defaultDeclaration = grouped;
+    if (returnedDefaultId !== undefined && unbound?.id === returnedDefaultId)
+      defaultDeclaration = grouped;
     const declaredName = groupedNodes['@declaration.name'];
     const declarator = declaredName?.parent;
     const declaration =
@@ -1141,12 +1153,10 @@ function emitTsInheritanceBase(
   if (nameNode === null) return;
   const namedBase = base.type === 'generic_type' ? base.childForFieldName('name') : base;
   const qualified = namedBase && qualifiedHeritageName(namedBase);
-  const argumentsNode =
-    base.type === 'generic_type'
-      ? base.childForFieldName('type_arguments')
-      : base.parent?.type === 'extends_clause'
-        ? (base.parent.childForFieldName('type_arguments') ?? base.nextNamedSibling)
-        : null;
+  let argumentsNode: SyntaxNode | null = null;
+  if (base.type === 'generic_type') argumentsNode = base.childForFieldName('type_arguments');
+  else if (base.parent?.type === 'extends_clause')
+    argumentsNode = base.parent.childForFieldName('type_arguments') ?? base.nextNamedSibling;
   const argumentTag = '@reference.type-arguments';
   out.push({
     [argumentTag]:
@@ -1298,8 +1308,7 @@ export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMa
     if (node.childForFieldName('operator')?.type !== 'of') continue;
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
-    if (left === null || right === null) continue;
-    if (left.type !== 'array_pattern' || right.type !== 'identifier') continue;
+    if (left?.type !== 'array_pattern' || right?.type !== 'identifier') continue;
     const rhs = right.text;
     const prefix = node.children.some((child) => child.type === 'await')
       ? '__ASYNC_MAP_TUPLE_'

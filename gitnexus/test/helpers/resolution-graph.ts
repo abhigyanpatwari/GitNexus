@@ -51,6 +51,13 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
   return edges;
 }
 
+interface DanglingEdge {
+  type: string;
+  sourceId: string;
+  targetId: string;
+  missing: 'source' | 'target' | 'both';
+}
+
 /**
  * Relationships whose source or target id does not resolve to a live graph node.
  * A non-empty result means the graph has dangling edges (an endpoint that was
@@ -58,31 +65,21 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
  * structure phase failed to create. Pass `types` to scope the check to specific
  * relationship types (e.g. `['HAS_METHOD']`).
  */
-export function findDanglingEdges(
-  result: PipelineResult,
-  types?: string[],
-): Array<{
-  type: string;
-  sourceId: string;
-  targetId: string;
-  missing: 'source' | 'target' | 'both';
-}> {
-  const out: Array<{
-    type: string;
-    sourceId: string;
-    targetId: string;
-    missing: 'source' | 'target' | 'both';
-  }> = [];
+export function findDanglingEdges(result: PipelineResult, types?: string[]): DanglingEdge[] {
+  const out: DanglingEdge[] = [];
   for (const rel of result.graph.iterRelationships()) {
     if (types && !types.includes(rel.type)) continue;
     const src = result.graph.getNode(rel.sourceId);
     const tgt = result.graph.getNode(rel.targetId);
     if (src && tgt) continue;
+    let missing: DanglingEdge['missing'] = 'both';
+    if (src) missing = 'target';
+    else if (tgt) missing = 'source';
     out.push({
       type: rel.type,
       sourceId: rel.sourceId,
       targetId: rel.targetId,
-      missing: !src && !tgt ? 'both' : !src ? 'source' : 'target',
+      missing,
     });
   }
   return out;

@@ -35,6 +35,25 @@ function tupleSignature(spelling: string, formals?: ReadonlyMap<string, string>)
   return { type: type && mode + type, labels, grounded };
 }
 
+function matchingParameters(
+  own: ReturnType<typeof tupleSignature>[],
+  base: ReturnType<typeof tupleSignature>[],
+): boolean {
+  // The final entry is the return type, which has separate covariance rules.
+  for (let i = 0; i < own.length - 1; i++) {
+    const parameter = own[i];
+    const inherited = base[i];
+    if (
+      !parameter.type ||
+      !parameter.grounded ||
+      !inherited.grounded ||
+      parameter.type !== inherited.type
+    )
+      return false;
+  }
+  return true;
+}
+
 const containsTuple = (type: string) => type.includes('(');
 
 function invariantReturn(type: string) {
@@ -94,15 +113,7 @@ export const csharpTupleOverride: NonNullable<LanguageProvider['overrideSignatur
       items.some((item) => item.labels.some((name) => name !== undefined));
     const hasOwnNames = hasNames(own);
     if (!hasOwnNames && !hasNames(base)) return undefined;
-    for (let index = 0; index < overriding.length; index++) {
-      if (
-        !own[index].type ||
-        !own[index].grounded ||
-        !base[index].grounded ||
-        own[index].type !== base[index].type
-      )
-        return 'different';
-    }
+    if (!matchingParameters(own, base)) return 'different';
     // A private declaration is invisible to a derived class. An accessible
     // nonvirtual or sealed declaration hides all deeper slots (CS0506/CS0239).
     if (baseMethod.visibility === 'private') return 'different';

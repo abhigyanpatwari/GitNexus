@@ -53,7 +53,7 @@ function blockHandlerIds(result: PipelineResult): Map<string, string> {
             const { line, character } = source.getLineAndCharacterOfPosition(
               declaration.initializer.getStart(),
             );
-            const [handler] = getRelationships(result, 'HANDLES_TOOL').filter(
+            const handler = getRelationships(result, 'HANDLES_TOOL').find(
               (edge) => edge.target === name,
             );
             assert.ok(handler);

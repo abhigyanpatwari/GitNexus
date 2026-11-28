@@ -40,7 +40,7 @@ export function compilerImportTrace(root, config) {
       /^======== Module name '(.*)' was successfully resolved to '(.*?)'(?: with Package ID '.*')?\. ========$/.exec(
         line,
       );
-    if (!result || result[1] !== specifier || !importer) continue;
+    if (!importer || result?.[1] !== specifier) continue;
     const from = path.resolve(root, importer);
     if (!bySource.has(from)) bySource.set(from, new Map());
     bySource.get(from).set(specifier, path.resolve(root, result[2]));

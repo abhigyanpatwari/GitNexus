@@ -70,7 +70,7 @@ export function populateCsharpNamespacePrefixes(parsed: ParsedFile): void {
 
 // An escaped segment remains part of its qualified name even when it spells an open type parameter.
 const qualifiedNames =
-  /[_\p{ID_Start}][\p{ID_Continue}]*(?:\s*(?:\.|::)\s*@?[_\p{ID_Start}][\p{ID_Continue}]*)*/gu;
+  /[_\p{ID_Start}]\p{ID_Continue}*(?:\s*(?:\.|::)\s*@?[_\p{ID_Start}]\p{ID_Continue}*)*/gu;
 const nullableQualifiedNames = new RegExp(qualifiedNames.source + String.raw`(?:\s*\?)?`, 'gu');
 
 export function isStableCsharpTypeName(name: string): boolean {

@@ -58,6 +58,32 @@ function binaryConstant(
   }
 }
 
+function referencedEnumMember(node: SyntaxNode, owner: string): string | undefined {
+  const receiver = node.childForFieldName('object');
+  if (receiver?.type !== 'identifier' || canonicalTypeScriptName(receiver.text) !== owner)
+    return undefined;
+  if (node.type === 'subscript_expression')
+    return literalMethodName(node.childForFieldName('index'));
+  const property = node.childForFieldName('property');
+  return property?.type === 'property_identifier'
+    ? canonicalTypeScriptName(property.text)
+    : undefined;
+}
+
+function unaryConstant(op: string | undefined, operand: Constant | undefined): number | undefined {
+  if (typeof operand !== 'number') return undefined;
+  switch (op) {
+    case '+':
+      return operand;
+    case '-':
+      return -operand;
+    case '~':
+      return ~operand;
+    default:
+      return undefined;
+  }
+}
+
 /** Only fold literal expressions and references to previously known members of this enum. */
 function initializerValue(
   node: SyntaxNode | null,
@@ -78,16 +104,7 @@ function initializerValue(
       return members.get(canonicalTypeScriptName(node.text));
     case 'member_expression':
     case 'subscript_expression': {
-      const receiver = node.childForFieldName('object');
-      if (receiver?.type !== 'identifier' || canonicalTypeScriptName(receiver.text) !== owner)
-        return undefined;
-      if (node.type === 'member_expression') {
-        const property = node.childForFieldName('property');
-        return property?.type === 'property_identifier'
-          ? members.get(canonicalTypeScriptName(property.text))
-          : undefined;
-      }
-      const name = literalMethodName(node.childForFieldName('index'));
+      const name = referencedEnumMember(node, owner);
       return name === undefined ? undefined : members.get(name);
     }
     case 'parenthesized_expression':
@@ -104,17 +121,7 @@ function initializerValue(
         members,
         depth + 1,
       );
-      if (typeof operand !== 'number') return undefined;
-      switch (node.childForFieldName('operator')?.type) {
-        case '+':
-          return operand;
-        case '-':
-          return -operand;
-        case '~':
-          return ~operand;
-        default:
-          return undefined;
-      }
+      return unaryConstant(node.childForFieldName('operator')?.type, operand);
     }
     case 'binary_expression': {
       const left = initializerValue(node.childForFieldName('left'), owner, members, depth + 1);

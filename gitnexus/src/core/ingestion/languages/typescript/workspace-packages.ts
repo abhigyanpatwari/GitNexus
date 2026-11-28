@@ -574,19 +574,16 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown> |
 
 /** A checkout can sit inside a package. A node_modules directory ends that package's scope. */
 async function inheritsEsmPackage(repoRoot: string): Promise<boolean> {
-  let directory = path.resolve(repoRoot);
-  while (path.basename(directory) !== 'node_modules') {
-    try {
-      const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
-      return manifest?.type === 'module';
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
-    }
-    const parent = path.dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
+  const directory = path.resolve(repoRoot);
+  if (path.basename(directory) === 'node_modules') return false;
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+    return manifest?.type === 'module';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
   }
-  return false;
+  const parent = path.dirname(directory);
+  return parent !== directory && inheritsEsmPackage(parent);
 }
 
 async function readYamlPackages(filePath: string): Promise<string[]> {
@@ -698,6 +695,47 @@ function cachedWorkspacePackages(repoRoot: string): Promise<NodeWorkspacePackage
   return pending;
 }
 
+type ScanDirectory = { dir: string; depth: number };
+
+async function readWorkspaceDirectoryManifest(
+  repoRoot: string,
+  { dir, depth }: ScanDirectory,
+  queue: ScanDirectory[],
+  unscanned: Set<string>,
+) {
+  // Same-depth name collisions resolve first-wins, so use a stable directory order.
+  const entries = await readDirSorted(dir);
+  if (!entries) return;
+  let hasManifest = false;
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const childDir = path.join(dir, entry.name);
+      if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
+      if (depth < SCAN_MAX_DEPTH) queue.push({ dir: childDir, depth: depth + 1 });
+      else unscanned.add(repoRelativeDir(repoRoot, childDir));
+    } else if (entry.isFile() && entry.name === 'package.json') {
+      hasManifest = true;
+    }
+  }
+  if (!hasManifest) return;
+  const manifest = await readJsonFile(path.join(dir, 'package.json'));
+  if (manifest) return { dir, manifest };
+}
+
+// The next directory may be discovered by the preceding read. Yield one read at a time.
+async function* workspaceManifests(repoRoot: string, unscanned: Set<string>) {
+  const queue: ScanDirectory[] = [{ dir: repoRoot, depth: 0 }];
+  for (let i = 0; i < queue.length && i < SCAN_MAX_DIRS; i++)
+    yield readWorkspaceDirectoryManifest(repoRoot, queue[i], queue, unscanned);
+  if (queue.length > SCAN_MAX_DIRS) {
+    for (let i = SCAN_MAX_DIRS; i < queue.length; i++)
+      unscanned.add(repoRelativeDir(repoRoot, queue[i].dir));
+    logger.warn(
+      `[node] package.json scan of ${repoRoot} hit the ${SCAN_MAX_DIRS}-directory cap; workspace packages below it will not resolve`,
+    );
+  }
+}
+
 /**
  * Collect the `package.json` of every ADMITTED workspace package.
  *
@@ -712,54 +750,16 @@ async function loadNodeWorkspacePackagesUncached(
   const byName = new Map<string, NodeWorkspacePackage>();
   const packageModules = new Map<string, boolean>();
   const unscanned = new Set<string>();
-  const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
-  let queueHead = 0;
-  let dirsScanned = 0;
-
-  while (queueHead < queue.length) {
-    if (dirsScanned >= SCAN_MAX_DIRS) {
-      for (let i = queueHead; i < queue.length; i++)
-        unscanned.add(repoRelativeDir(repoRoot, queue[i].dir));
-      logger.warn(
-        `[node] package.json scan of ${repoRoot} hit the ${SCAN_MAX_DIRS}-directory cap; workspace packages below it will not resolve`,
-      );
-      break;
-    }
-    const { dir, depth } = queue[queueHead++]!;
-    dirsScanned++;
-
-    // Sorted: same-depth name collisions resolve first-wins, and readdir order
-    // is filesystem-dependent.
-    const entries = await readDirSorted(dir);
-    if (entries === null) continue;
-
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const childDir = path.join(dir, entry.name);
-        if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
-        if (depth < SCAN_MAX_DEPTH) {
-          queue.push({ dir: childDir, depth: depth + 1 });
-        } else {
-          unscanned.add(repoRelativeDir(repoRoot, childDir));
-        }
-        continue;
-      }
-      if (!entry.isFile() || entry.name !== 'package.json') continue;
-
-      const relDir = repoRelativeDir(repoRoot, dir);
-      const manifest = await readJsonFile(path.join(dir, entry.name));
-      if (!manifest) continue;
-      packageModules.set(relDir, manifest.type === 'module');
-      // Found is not the same as admitted. A manifest outside the declared
-      // workspace belongs to something this repository does not build — a
-      // fixture, an example, a vendored copy — and its name is not addressable.
-      if (!admits(scope, relDir)) continue;
-
-      const pkg = await readManifest(manifest, repoRoot, dir);
-      // First declaration wins: BFS visits shallower directories first, so a
-      // top-level package outranks a nested one that reuses the name.
-      if (pkg !== null && !byName.has(pkg.name)) byName.set(pkg.name, pkg.package);
-    }
+  for await (const entry of workspaceManifests(repoRoot, unscanned)) {
+    if (!entry) continue;
+    const { dir, manifest } = entry;
+    const relDir = repoRelativeDir(repoRoot, dir);
+    packageModules.set(relDir, manifest.type === 'module');
+    // A manifest outside the declared workspace supplies its format but is not addressable.
+    if (!admits(scope, relDir)) continue;
+    const pkg = await readManifest(manifest, repoRoot, dir);
+    // BFS visits shallower directories first, so a top-level package outranks a nested duplicate.
+    if (pkg !== null && !byName.has(pkg.name)) byName.set(pkg.name, pkg.package);
   }
 
   if (!packageModules.has('') && (await inheritsEsmPackage(repoRoot))) packageModules.set('', true);

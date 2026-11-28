@@ -493,13 +493,22 @@ function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
-  recordTypeArguments: HeritageTypeArgumentSink,
-  unresolvedInheritanceByClass: Set<string>,
   provider: ScopeResolver,
-  recordSourceBinding?: SourceBindingRecorder,
-  substitutions?: HeritageSubstitutions,
-  scopedEdges?: ScopedHeritageEdge[],
-  scopedOverrideOwners?: Set<string>,
+  {
+    recordTypeArguments,
+    unresolvedInheritanceByClass,
+    recordSourceBinding,
+    substitutions,
+    scopedEdges,
+    scopedOverrideOwners,
+  }: {
+    recordTypeArguments: HeritageTypeArgumentSink;
+    unresolvedInheritanceByClass: Set<string>;
+    recordSourceBinding?: SourceBindingRecorder;
+    substitutions?: HeritageSubstitutions;
+    scopedEdges?: ScopedHeritageEdge[];
+    scopedOverrideOwners?: Set<string>;
+  },
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -1274,18 +1283,14 @@ export function runScopeResolution(
     input.heritageSubstitutions && provider.needsScopedOverrideType ? new Set<string>() : undefined;
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
-    : preEmitInheritanceEdges(
-        graph,
-        finalized,
-        nodeLookup,
-        recordHeritageTypeArguments,
+    : preEmitInheritanceEdges(graph, finalized, nodeLookup, provider, {
+        recordTypeArguments: recordHeritageTypeArguments,
         unresolvedInheritanceByClass,
-        provider,
         recordSourceBinding,
-        input.heritageSubstitutions,
+        substitutions: input.heritageSubstitutions,
         scopedEdges,
         scopedOverrideOwners,
-      );
+      });
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -1441,11 +1446,9 @@ export function runScopeResolution(
         scopedOverrideType &&
         overrideOwner &&
         (declared?.some(scopedOverrideType) || (returnType && scopedOverrideType(returnType)));
-      const normalizeHere = scopeOverride
-        ? provider.normalizeNullableHeritageSignature
-        : normalize && def.ownerId && participates(def.ownerId)
-          ? normalize
-          : undefined;
+      let normalizeHere: ScopeResolver['normalizeNullableHeritageSignature'];
+      if (scopeOverride) normalizeHere = provider.normalizeNullableHeritageSignature;
+      else if (normalize && def.ownerId && participates(def.ownerId)) normalizeHere = normalize;
       if (normalizeHere && def.declarationRange) {
         const scope = makeScopeId({
           filePath: def.filePath,
@@ -1460,7 +1463,10 @@ export function runScopeResolution(
                 scopedTypes = null;
                 break;
               }
-              if (normalized !== type) (scopedTypes ??= [...declared])[i] = normalized;
+              if (normalized !== type) {
+                scopedTypes ??= [...declared];
+                scopedTypes[i] = normalized;
+              }
             }
           if (scopeOverride && returnType) {
             const normalized = normalizeHere(returnType, { scope, indexes });

@@ -72,7 +72,7 @@ interface GraphDefinition {
 }
 
 const defGraphIdMemoKey = (filePath: string, def: GraphDefinition): string =>
-  `${filePath}\0${def.nodeId ?? ''}\0${def.graphPosition?.startLine ?? ''}:${def.graphPosition?.startCol ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.literalMemberName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${(def.parameterTypeClasses ?? []).join(',')}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
+  `${filePath}\0${def.nodeId ?? ''}\0${def.graphPosition?.startLine ?? ''}:${def.graphPosition?.startCol ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.literalMemberName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${parameterShapeIdTag(def.parameterTypes, def.parameterTypeClasses)}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
 
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the

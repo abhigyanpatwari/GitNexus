@@ -36,28 +36,31 @@ export function declarationScope(channel: unknown): DeclarationScope | undefined
   return undefined;
 }
 
-let pending: { filePath: string; value: boolean | DeclarationScope } | undefined;
+type PendingDeclarations = { filePath: string; value: boolean | DeclarationScope };
+let pending: PendingDeclarations | undefined;
 
-function pendingDeclarations(filePath: string): DeclarationScope | undefined {
-  if (pending?.filePath !== filePath) return undefined;
-  if (typeof pending.value === 'boolean') {
-    pending.value = {
+function ensureDeclarationScope(entry: PendingDeclarations): DeclarationScope {
+  if (typeof entry.value === 'boolean') {
+    entry.value = {
       kind: 'typescript-declarations',
-      commonJs: pending.value,
+      commonJs: entry.value,
       script: false,
       globalNames: [],
     };
   }
-  return pending.value;
+  return entry.value;
+}
+
+function pendingDeclarations(filePath: string): DeclarationScope | undefined {
+  if (pending?.filePath === filePath) return ensureDeclarationScope(pending);
 }
 
 /** An import-bearing .ts file may emit a Node wrapper under its project's module setting. */
 export function recordPossibleCommonJsDefault(filePath: string, node: SyntaxNode): void {
   const scope = pendingDeclarations(filePath);
-  if (scope)
-    (scope.possibleCommonJsDefaults ??= []).push(
-      `${node.startPosition.row + 1}:${node.startPosition.column}`,
-    );
+  if (!scope) return;
+  scope.possibleCommonJsDefaults ??= [];
+  scope.possibleCommonJsDefaults.push(`${node.startPosition.row + 1}:${node.startPosition.column}`);
 }
 
 /** Workers serialize only explicit ESM publications for files with conflicting CommonJS evidence. */
@@ -79,89 +82,70 @@ export function withCommonJsModuleKind(emit: CaptureEmitter): CaptureEmitter {
   };
 }
 
-export function recordCommonJsModuleKind(
-  root: SyntaxNode,
-  filePath: string,
-  sourceText?: string,
-  captures?: CaptureMatch[],
-  callArguments?: CallEvidence,
-  enumValues?: EnumValues,
-): void {
-  const commonJs = isCommonJsModule(root, filePath);
-  pending = {
-    filePath,
-    value:
-      callArguments || enumValues
-        ? {
-            kind: 'typescript-declarations',
-            commonJs,
-            script: false,
-            globalNames: [],
-            ...(callArguments && { callArguments }),
-            ...(enumValues && { enumValues }),
-          }
-        : commonJs,
-  };
-  const declarationFile = /\.d\.[cm]?ts$/.test(filePath);
-  const ordinarySource = /\.[cm]?tsx?$/.test(filePath);
-  if (!ordinarySource && !sourceText?.includes('global')) return;
-  const statements = root.namedChildren;
-  const referencePaths: string[] = [];
-  if (sourceText?.includes('<reference')) {
-    for (const statement of statements) {
-      if (statement?.type !== 'comment' && statement?.type !== 'hash_bang_line') break;
-      const directive = /^\/\/\/\s*<reference\s+path\s*=\s*(?:"([^"]+)"|'([^']+)')\s*\/>/i.exec(
-        statement.text,
-      );
-      if (directive) referencePaths.push(directive[1] ?? directive[2]);
-    }
+function leadingReferencePaths(statements: readonly SyntaxNode[], sourceText?: string): string[] {
+  const paths: string[] = [];
+  if (!sourceText?.includes('<reference')) return paths;
+  for (const statement of statements) {
+    if (statement?.type !== 'comment' && statement?.type !== 'hash_bang_line') break;
+    const directive = /^\/\/\/\s*<reference\s+path\s*=\s*(?:"([^"]+)"|'([^']+)')\s*\/>/i.exec(
+      statement.text,
+    );
+    if (directive) paths.push(directive[1] ?? directive[2]);
   }
-  const externalModule = hasEsmSyntax(root, sourceText);
-  if (externalModule && !referencePaths.length && !sourceText?.includes('global')) return;
-  const script = !externalModule && ordinarySource;
-  if (!script && !externalModule) return;
-  const globalNames: string[] = [];
-  const scriptNames: string[] = [];
-  let importedBindings: Set<string> | undefined;
-  function recordBinding(name: SyntaxNode | null, names: string[], kind?: string) {
+  return paths;
+}
+
+function importedBindingPositions(captures?: CaptureMatch[]): Set<string> {
+  const positions = new Set<string>();
+  for (const match of captures ?? []) {
+    const range = match['@import.alias']?.range;
+    if (range) positions.add(`${range.startLine}:${range.startCol}`);
+  }
+  return positions;
+}
+
+class DeclarationNames {
+  readonly globalNames: string[] = [];
+  readonly scriptNames: string[] = [];
+  private importedBindings?: Set<string>;
+
+  constructor(private readonly captures?: CaptureMatch[]) {}
+
+  private recordBinding(name: SyntaxNode | null, names: string[], kind?: string) {
     if (name?.type === 'identifier' || name?.type === 'type_identifier') {
       names.push(`${name.startPosition.row + 1}:${name.startPosition.column}`);
-    } else if (kind && (name?.type === 'object_pattern' || name?.type === 'array_pattern')) {
-      // A destructured loader already binds its local name to the imported definition.
-      if (!importedBindings) {
-        importedBindings = new Set();
-        for (const match of captures ?? []) {
-          const range = match['@import.alias']?.range;
-          if (range) importedBindings.add(`${range.startLine}:${range.startCol}`);
-        }
-      }
-      for (const binding of boundNames(name)) {
-        const text = canonicalTypeScriptName(binding.text);
-        const position = `${binding.startPosition.row + 1}:${binding.startPosition.column}`;
-        names.push(position);
-        if (importedBindings.has(position)) continue;
-        captures?.push({
-          '@declaration.variable': syntheticCapture(
-            '@declaration.variable',
-            binding,
-            kind + ' ' + text,
-          ),
-          '@declaration.name': syntheticCapture('@declaration.name', binding, text),
-        });
-      }
+      return;
+    }
+    if (!kind || (name?.type !== 'object_pattern' && name?.type !== 'array_pattern')) return;
+    // A destructured loader already binds its local name to the imported definition.
+    this.importedBindings ??= importedBindingPositions(this.captures);
+    for (const binding of boundNames(name)) {
+      const text = canonicalTypeScriptName(binding.text);
+      const position = `${binding.startPosition.row + 1}:${binding.startPosition.column}`;
+      names.push(position);
+      if (this.importedBindings.has(position)) continue;
+      this.captures?.push({
+        '@declaration.variable': syntheticCapture(
+          '@declaration.variable',
+          binding,
+          kind + ' ' + text,
+        ),
+        '@declaration.name': syntheticCapture('@declaration.name', binding, text),
+      });
     }
   }
-  function recordDeclaration(node: SyntaxNode | null, names: string[]) {
+
+  private recordDeclaration(node: SyntaxNode | null, names: string[]) {
     if (!node) return;
     if (
       node.type === 'ambient_declaration' ||
       node.type === 'lexical_declaration' ||
       node.type === 'variable_declaration'
     ) {
-      for (const child of node.namedChildren) recordDeclaration(child, names);
+      for (const child of node.namedChildren) this.recordDeclaration(child, names);
       return;
     }
-    recordBinding(
+    this.recordBinding(
       node.childForFieldName('name'),
       names,
       node.type === 'variable_declarator' ? node.parent?.firstChild?.type : undefined,
@@ -169,9 +153,9 @@ export function recordCommonJsModuleKind(
   }
   // Only statements can hoist var into a script. Function, class and namespace
   // bodies have their own var scopes and must not contribute declarations.
-  function recordNestedVars(node: SyntaxNode, names: string[]) {
+  private recordNestedVars(node: SyntaxNode, names: string[]) {
     if (node.type === 'variable_declaration') {
-      recordDeclaration(node, names);
+      this.recordDeclaration(node, names);
     } else if (
       node.type === 'statement_block' ||
       node.type.endsWith('_statement') ||
@@ -183,24 +167,29 @@ export function recordCommonJsModuleKind(
       node.type === 'finally_clause'
     ) {
       if (node.type === 'for_in_statement' && node.childForFieldName('kind')?.type === 'var') {
-        recordBinding(node.childForFieldName('left'), names, 'var');
+        this.recordBinding(node.childForFieldName('left'), names, 'var');
       }
-      for (const child of node.namedChildren) recordNestedVars(child, names);
+      for (const child of node.namedChildren) this.recordNestedVars(child, names);
     }
   }
-  const hasScriptVars = script && !declarationFile && (!sourceText || /\bvar\b/.test(sourceText));
-  for (const statement of statements) {
-    if (!statement) continue;
+
+  recordStatement(
+    statement: SyntaxNode,
+    script: boolean,
+    declarationFile: boolean,
+    hasScriptVars: boolean,
+  ) {
+    if (!statement) return;
     if (script) {
       const declaration =
         statement.type === 'expression_statement' &&
         statement.firstNamedChild?.type === 'internal_module'
           ? statement.firstNamedChild
           : statement;
-      recordDeclaration(declaration, declarationFile ? globalNames : scriptNames);
+      this.recordDeclaration(declaration, declarationFile ? this.globalNames : this.scriptNames);
     }
     if (hasScriptVars && statement.type !== 'variable_declaration')
-      recordNestedVars(statement, scriptNames);
+      this.recordNestedVars(statement, this.scriptNames);
     if (
       (!script || !declarationFile) &&
       statement.type === 'ambient_declaration' &&
@@ -208,30 +197,68 @@ export function recordCommonJsModuleKind(
     ) {
       const block = statement.namedChildren.find((child) => child?.type === 'statement_block');
       for (const declaration of block?.namedChildren ?? [])
-        recordDeclaration(declaration, globalNames);
+        this.recordDeclaration(declaration, this.globalNames);
     }
   }
+}
+
+function collectModuleDeclarations(
+  root: SyntaxNode,
+  filePath: string,
+  sourceText?: string,
+  captures?: CaptureMatch[],
+) {
+  const ordinarySource = /\.[cm]?tsx?$/.test(filePath);
+  const mayDeclareGlobals = sourceText?.includes('global');
+  if (!ordinarySource && !mayDeclareGlobals) return;
+  const statements = root.namedChildren;
+  const referencePaths = leadingReferencePaths(statements, sourceText);
+  const externalModule = hasEsmSyntax(root, sourceText);
+  if (externalModule && !referencePaths.length && !mayDeclareGlobals) return;
+  const script = !externalModule && ordinarySource;
+  if (!script && !externalModule) return;
+
+  const declarationFile = /\.d\.[cm]?ts$/.test(filePath);
+  const hasScriptVars = script && !declarationFile && (!sourceText || /\bvar\b/.test(sourceText));
+  const names = new DeclarationNames(captures);
+  for (const statement of statements)
+    names.recordStatement(statement, script, declarationFile, hasScriptVars);
+  const { globalNames, scriptNames } = names;
   if (
-    (script && (declarationFile || scriptNames.length)) ||
-    globalNames.length ||
-    referencePaths.length
-  ) {
-    pending.value = {
-      kind: 'typescript-declarations',
-      commonJs,
-      script,
-      globalNames,
-      ...(callArguments && { callArguments }),
-      ...(enumValues && { enumValues }),
-      ...(referencePaths.length ? { referencePaths } : {}),
-      ...(script && !declarationFile ? { scriptNames } : {}),
-      ...(script &&
-      /\.tsx$/.test(filePath) &&
-      root.descendantsOfType(['jsx_element', 'jsx_self_closing_element']).length
-        ? { containsJsx: true }
-        : {}),
-    };
+    !(script && (declarationFile || scriptNames.length)) &&
+    !globalNames.length &&
+    !referencePaths.length
+  )
+    return;
+  return {
+    script,
+    globalNames,
+    ...(referencePaths.length && { referencePaths }),
+    ...(script && !declarationFile && { scriptNames }),
+    ...(script &&
+      filePath.endsWith('.tsx') &&
+      root.descendantsOfType(['jsx_element', 'jsx_self_closing_element']).length && {
+        containsJsx: true,
+      }),
+  };
+}
+
+export function recordCommonJsModuleKind(
+  root: SyntaxNode,
+  filePath: string,
+  sourceText?: string,
+  captures?: CaptureMatch[],
+  callArguments?: CallEvidence,
+  enumValues?: EnumValues,
+): void {
+  pending = { filePath, value: isCommonJsModule(root, filePath) };
+  if (callArguments || enumValues) {
+    const scope = ensureDeclarationScope(pending);
+    if (callArguments) scope.callArguments = callArguments;
+    if (enumValues) scope.enumValues = enumValues;
   }
+  const metadata = collectModuleDeclarations(root, filePath, sourceText, captures);
+  if (metadata) Object.assign(ensureDeclarationScope(pending), metadata);
 }
 
 export function collectCommonJsModuleKind(

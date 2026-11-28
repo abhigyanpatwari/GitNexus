@@ -207,6 +207,40 @@ export function compilerReport(root, expectedDiagnostics = [], inventory = false
   });
 }
 
+function collectDiagnostics(root, program, diagnostics) {
+  const compilerDiagnostics = [
+    ...program.getConfigFileParsingDiagnostics(),
+    ...program.getProgramDiagnostics(),
+    ...program.getGlobalDiagnostics(),
+    ...program.getSyntacticDiagnostics(),
+    ...program.getSemanticDiagnostics(),
+  ];
+  const erasedValueUses = new Map();
+  const nonCallableExpressions = new Set();
+  for (const diagnostic of compilerDiagnostics) {
+    if (diagnostic.code === 2349) {
+      nonCallableExpressions.add(
+        JSON.stringify([diagnostic.fileName, diagnostic.pos, diagnostic.end]),
+      );
+    }
+    if (diagnostic.code === 1361 || diagnostic.code === 1362) {
+      const positions = erasedValueUses.get(diagnostic.fileName) ?? new Set();
+      positions.add(diagnostic.pos);
+      erasedValueUses.set(diagnostic.fileName, positions);
+    }
+    const file = diagnostic.fileName && program.getSourceFile(diagnostic.fileName);
+    if (!file) {
+      diagnostics.push('project TS' + diagnostic.code);
+      continue;
+    }
+    const { line, character } = file.getLineAndCharacterOfPosition(diagnostic.pos);
+    diagnostics.push(
+      relative(root, file) + ':' + (line + 1) + ':' + character + ' TS' + diagnostic.code,
+    );
+  }
+  return { erasedValueUses, nonCallableExpressions };
+}
+
 function reportProject(
   root,
   localConfig,
@@ -272,36 +306,11 @@ function reportProject(
       }
     }
     assert.ok(files.size || references.length, 'Empty TypeScript project ' + config);
-    const compilerDiagnostics = [
-      ...program.getConfigFileParsingDiagnostics(),
-      ...program.getProgramDiagnostics(),
-      ...program.getGlobalDiagnostics(),
-      ...program.getSyntacticDiagnostics(),
-      ...program.getSemanticDiagnostics(),
-    ];
-    const erasedValueUses = new Map();
-    const nonCallableExpressions = new Set();
-    for (const diagnostic of compilerDiagnostics) {
-      if (diagnostic.code === 2349) {
-        nonCallableExpressions.add(
-          JSON.stringify([diagnostic.fileName, diagnostic.pos, diagnostic.end]),
-        );
-      }
-      if (diagnostic.code === 1361 || diagnostic.code === 1362) {
-        const positions = erasedValueUses.get(diagnostic.fileName) ?? new Set();
-        positions.add(diagnostic.pos);
-        erasedValueUses.set(diagnostic.fileName, positions);
-      }
-      const file = diagnostic.fileName && program.getSourceFile(diagnostic.fileName);
-      if (!file) {
-        diagnostics.push('project TS' + diagnostic.code);
-        continue;
-      }
-      const { line, character } = file.getLineAndCharacterOfPosition(diagnostic.pos);
-      diagnostics.push(
-        relative(root, file) + ':' + (line + 1) + ':' + character + ' TS' + diagnostic.code,
-      );
-    }
+    const { erasedValueUses, nonCallableExpressions } = collectDiagnostics(
+      root,
+      program,
+      diagnostics,
+    );
 
     let importTrace;
     function importedDeclaration(literal) {
@@ -379,8 +388,7 @@ function reportProject(
     function* baseHierarchy(types) {
       const pending = [...types];
       const seen = new Set();
-      for (let i = 0; i < pending.length; i++) {
-        const type = pending[i];
+      for (const type of pending) {
         const symbol = type.getSymbol();
         const declaration = symbolDeclaration(symbol, project);
         if (!declaration || !files.has(declaration.getSourceFile().fileName)) continue;
@@ -441,45 +449,32 @@ function reportProject(
       }
     }
 
-    function recordHeritage(node) {
-      for (const clause of node.heritageClauses ?? []) {
-        const extendsBase = clause.token === SyntaxKind.ExtendsKeyword;
-        for (const base of clause.types) {
-          if (
-            extendsBase &&
-            node.kind === SyntaxKind.ClassDeclaration &&
-            isErasedValueUse(base.expression)
-          )
-            continue;
-          const type = checker.getTypeAtLocation(base);
-          if (!type) continue;
-          edge(
-            extendsBase ? 'EXTENDS' : 'IMPLEMENTS',
-            node,
-            symbolDeclaration(type.getSymbol(), project),
-          );
-          if (!extendsBase || node.kind !== SyntaxKind.ClassDeclaration) continue;
-          for (const method of node.members) {
-            if (!isMethod(method)) continue;
-            const receiver = hasModifier(method, SyntaxKind.StaticKeyword)
-              ? checker.getTypeAtLocation(base.expression)
-              : type;
-            const member = propertyBySymbolName(
-              receiver,
-              checker.getSymbolAtLocation(method.name)?.name,
-            );
-            const target = symbolDeclaration(member, project);
-            if (isMethod(target)) edge('METHOD_OVERRIDES', node, target);
-          }
-        }
+    function recordBase(node, base, extendsBase) {
+      const classBase = extendsBase && node.kind === SyntaxKind.ClassDeclaration;
+      if (classBase && isErasedValueUse(base.expression)) return;
+      const type = checker.getTypeAtLocation(base);
+      if (!type) return;
+      edge(
+        extendsBase ? 'EXTENDS' : 'IMPLEMENTS',
+        node,
+        symbolDeclaration(type.getSymbol(), project),
+      );
+      if (!classBase) return;
+      for (const method of node.members) {
+        if (!isMethod(method)) continue;
+        const receiver = hasModifier(method, SyntaxKind.StaticKeyword)
+          ? checker.getTypeAtLocation(base.expression)
+          : type;
+        const member = propertyBySymbolName(
+          receiver,
+          checker.getSymbolAtLocation(method.name)?.name,
+        );
+        const target = symbolDeclaration(member, project);
+        if (isMethod(target)) edge('METHOD_OVERRIDES', node, target);
       }
-      const classSymbol = node.name
-        ? checker.getSymbolAtLocation(node.name)
-        : checker.getTypeAtLocation(node)?.getSymbol();
-      if (!classSymbol) return;
-      const instance = checker.getDeclaredTypeOfSymbol(classSymbol);
-      recordInheritedMethodSelection(node, instance);
-      if (node.kind !== SyntaxKind.ClassDeclaration) return;
+    }
+
+    function recordMethodImplementations(instance) {
       for (const contract of interfaceContracts(instance)) {
         for (const member of checker.getPropertiesOfType(contract)) {
           const declaration = symbolDeclaration(member, project);
@@ -494,6 +489,20 @@ function reportProject(
           }
         }
       }
+    }
+
+    function recordHeritage(node) {
+      for (const clause of node.heritageClauses ?? []) {
+        const extendsBase = clause.token === SyntaxKind.ExtendsKeyword;
+        for (const base of clause.types) recordBase(node, base, extendsBase);
+      }
+      const classSymbol = node.name
+        ? checker.getSymbolAtLocation(node.name)
+        : checker.getTypeAtLocation(node)?.getSymbol();
+      if (!classSymbol) return;
+      const instance = checker.getDeclaredTypeOfSymbol(classSymbol);
+      recordInheritedMethodSelection(node, instance);
+      if (node.kind === SyntaxKind.ClassDeclaration) recordMethodImplementations(instance);
     }
 
     function isErasedValueUse(expression) {
@@ -588,174 +597,189 @@ function reportProject(
         edge('PROPERTY_READS', caller, field, node);
     }
 
-    function visit(node) {
-      const value =
-        node.kind === SyntaxKind.PropertyAssignment
-          ? node.initializer
-          : node.kind === SyntaxKind.ShorthandPropertyAssignment
-            ? node.name
-            : undefined;
-      if (value?.kind === SyntaxKind.Identifier) {
-        const symbol =
-          node.kind === SyntaxKind.ShorthandPropertyAssignment
-            ? checker.getShorthandAssignmentValueSymbol(node)
-            : checker.getSymbolAtLocation(value);
-        const target = symbolDeclaration(
-          symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol),
-          project,
-        );
-        const callable =
-          target?.kind === SyntaxKind.VariableDeclaration ? target.initializer : target;
-        if (
-          callable &&
-          [
-            SyntaxKind.FunctionDeclaration,
-            SyntaxKind.FunctionExpression,
-            SyntaxKind.ArrowFunction,
-          ].includes(callable.kind)
-        )
-          edge('FUNCTION_VALUES', enclosingCaller(value), callable, value);
-      }
-      if (node.kind === SyntaxKind.ClassDeclaration && node.typeParameters?.length) {
-        result.CLASS_TYPE_PARAMETERS.edges.push({
-          from: identity(root, node),
-          to: JSON.stringify(
-            Array.from(node.typeParameters, (parameter) => [
-              parameter.name.text,
-              parameter.constraint?.getText() ?? null,
-              parameter.defaultType?.getText() ?? null,
-            ]),
-          ),
-        });
-      }
-      if (propertyAccess && node.kind === SyntaxKind.PropertyAccessExpression)
-        propertyReference(node);
+    function resolveAliasDeclaration(symbol) {
+      const target =
+        symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol);
+      return symbolDeclaration(target, project);
+    }
 
-      if (methodFacts && node.kind === SyntaxKind.MethodDeclaration) {
-        result.METHOD_FACTS.edges.push({
-          from: graphIdentity(root, node, project),
-          to: JSON.stringify([
-            hasModifier(node, SyntaxKind.AbstractKeyword),
-            hasModifier(node, SyntaxKind.StaticKeyword),
-            Array.from(node.parameters ?? [], (parameter) =>
-              checker.typeToString(checker.getTypeAtLocation(parameter)),
-            ),
-            ...(hasModifier(node, SyntaxKind.AbstractKeyword)
-              ? [node.type?.getText() ?? null]
-              : []),
+    function recordFunctionValue(node) {
+      const shorthand = node.kind === SyntaxKind.ShorthandPropertyAssignment;
+      const value = shorthand ? node.name : node.initializer;
+      if (value?.kind !== SyntaxKind.Identifier) return;
+      const symbol = shorthand
+        ? checker.getShorthandAssignmentValueSymbol(node)
+        : checker.getSymbolAtLocation(value);
+      const target = resolveAliasDeclaration(symbol);
+      const callable =
+        target?.kind === SyntaxKind.VariableDeclaration ? target.initializer : target;
+      if (
+        [
+          SyntaxKind.FunctionDeclaration,
+          SyntaxKind.FunctionExpression,
+          SyntaxKind.ArrowFunction,
+        ].includes(callable?.kind)
+      )
+        edge('FUNCTION_VALUES', enclosingCaller(value), callable, value);
+    }
+
+    function recordClassParameters(node) {
+      if (!node.typeParameters?.length) return;
+      result.CLASS_TYPE_PARAMETERS.edges.push({
+        from: identity(root, node),
+        to: JSON.stringify(
+          Array.from(node.typeParameters, (parameter) => [
+            parameter.name.text,
+            parameter.constraint?.getText() ?? null,
+            parameter.defaultType?.getText() ?? null,
           ]),
+        ),
+      });
+    }
+
+    function recordMethodFacts(node) {
+      const abstract = hasModifier(node, SyntaxKind.AbstractKeyword);
+      result.METHOD_FACTS.edges.push({
+        from: graphIdentity(root, node, project),
+        to: JSON.stringify([
+          abstract,
+          hasModifier(node, SyntaxKind.StaticKeyword),
+          Array.from(node.parameters ?? [], (parameter) =>
+            checker.typeToString(checker.getTypeAtLocation(parameter)),
+          ),
+          ...(abstract ? [node.type?.getText() ?? null] : []),
+        ]),
+      });
+    }
+
+    function recordDeclaration(node) {
+      const variableFunction =
+        (node.kind === SyntaxKind.ArrowFunction || node.kind === SyntaxKind.FunctionExpression) &&
+        node.parent.kind === SyntaxKind.VariableDeclaration;
+      const label = variableFunction ? 'Function' : declarationLabels.get(node.kind);
+      if (!label) return;
+      const namedDeclaration = variableFunction ? node.parent : node;
+      const name =
+        node.kind === SyntaxKind.Constructor
+          ? 'constructor'
+          : declarationName(namedDeclaration, checker);
+      if (name === undefined) return;
+      const target = graphIdentity(root, node, project);
+      result.DECLARATIONS.edges.push({
+        from: relative(root, node.getSourceFile()),
+        to: label + ':' + name + '@' + target,
+      });
+      if (label === 'Method')
+        result.HAS_METHOD.edges.push({ from: identity(root, node.parent), to: target });
+    }
+
+    function recordReturnRead(node) {
+      const use = node.expression;
+      if (use?.kind !== SyntaxKind.Identifier) return;
+      const variable = resolveAliasDeclaration(checker.getSymbolAtLocation(use));
+      if (
+        (variable?.kind === SyntaxKind.VariableDeclaration ||
+          variable?.kind === SyntaxKind.BindingElement) &&
+        files.has(variable.getSourceFile().fileName)
+      ) {
+        result.VARIABLE_READS.sites.push({
+          ...sourceRange(root, use),
+          status: 'resolved',
+          target: identity(root, variable.name),
         });
       }
-      if (inventory) {
-        const variableFunction =
-          (node.kind === SyntaxKind.ArrowFunction || node.kind === SyntaxKind.FunctionExpression) &&
-          node.parent.kind === SyntaxKind.VariableDeclaration;
-        const label = variableFunction ? 'Function' : declarationLabels.get(node.kind);
-        const name =
-          node.kind === SyntaxKind.Constructor
-            ? 'constructor'
-            : declarationName(variableFunction ? node.parent : node, checker);
-        if (label && name !== undefined) {
-          const target = graphIdentity(root, node, project);
-          result.DECLARATIONS.edges.push({
-            from: relative(root, node.getSourceFile()),
-            to: label + ':' + name + '@' + target,
-          });
-          if (label === 'Method')
-            result.HAS_METHOD.edges.push({ from: identity(root, node.parent), to: target });
-        }
-      }
-      if (
-        node.kind === SyntaxKind.ReturnStatement &&
-        node.expression?.kind === SyntaxKind.Identifier
-      ) {
-        const use = node.expression;
-        const symbol = checker.getSymbolAtLocation(use);
-        const target =
-          symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol);
-        const variable = symbolDeclaration(target, project);
-        if (
-          (variable?.kind === SyntaxKind.VariableDeclaration ||
-            variable?.kind === SyntaxKind.BindingElement) &&
-          files.has(variable.getSourceFile().fileName)
-        ) {
-          result.VARIABLE_READS.sites.push({
-            ...sourceRange(root, use),
-            status: 'resolved',
-            target: identity(root, variable.name),
-          });
-        }
-      }
-      if (
-        (node.kind === SyntaxKind.ImportDeclaration ||
-          node.kind === SyntaxKind.ExportDeclaration) &&
-        node.moduleSpecifier
-      ) {
-        const target = importedDeclaration(node.moduleSpecifier);
-        edge('IMPORTS', node.getSourceFile(), target);
-      }
-      const isCall =
-        node.kind === SyntaxKind.NewExpression || node.kind === SyntaxKind.CallExpression;
+    }
+
+    function recordCall(node) {
       const rejected =
-        isCall &&
-        ((erasedValueUses.size > 0 && rejectedCall(node)) ||
-          (nonCallableExpressions.size > 0 &&
-            nonCallableExpressions.has(
-              JSON.stringify([
-                node.getSourceFile().fileName,
-                node.expression.getStart(),
-                node.expression.end,
-              ]),
-            )));
+        (erasedValueUses.size > 0 && rejectedCall(node)) ||
+        (nonCallableExpressions.size > 0 &&
+          nonCallableExpressions.has(
+            JSON.stringify([
+              node.getSourceFile().fileName,
+              node.expression.getStart(),
+              node.expression.end,
+            ]),
+          ));
       if (rejected) {
         result.REJECTED_CALLS.sites.push({
           ...sourceRange(root, node),
           status: 'unresolved',
         });
+        return;
       }
-      if (!rejected && node.kind === SyntaxKind.NewExpression) {
+      if (node.kind === SyntaxKind.NewExpression) {
         const type = checker.getTypeAtLocation(node);
         edge('CALLS', enclosingCaller(node), symbolDeclaration(type?.getSymbol(), project), node);
+        return;
       }
-      if (!rejected && node.kind === SyntaxKind.CallExpression) {
-        if (node.expression.kind === SyntaxKind.ImportKeyword && node.arguments.length) {
-          edge('IMPORTS', node.getSourceFile(), importedDeclaration(node.arguments[0]));
-        }
-        const selected = call(node, node.expression);
-        if (!selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
-          result.uncheckedMemberSites.push({
-            ...sourceRange(root, node),
-            constructedTarget: constructedMember(node.expression),
-          });
-        }
+      if (node.expression.kind === SyntaxKind.ImportKeyword && node.arguments.length) {
+        edge('IMPORTS', node.getSourceFile(), importedDeclaration(node.arguments[0]));
       }
-      if (
-        node.kind === SyntaxKind.JsxOpeningElement ||
-        node.kind === SyntaxKind.JsxSelfClosingElement
-      ) {
-        call(node, node.tagName);
+      const selected = call(node, node.expression);
+      if (!selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
+        result.uncheckedMemberSites.push({
+          ...sourceRange(root, node),
+          constructedTarget: constructedMember(node.expression),
+        });
       }
-      if (node.kind === SyntaxKind.TypeReference) {
-        const name = checker.getSymbolAtLocation(node.typeName);
-        const target =
-          name && (name.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(name) : name);
-        const decl = symbolDeclaration(target, project);
-        if (decl?.kind === SyntaxKind.TypeParameter) {
-          const owner = decl.parent.name ?? decl.parent;
-          if (owner) {
-            result.TYPE_PARAMETER_USES.sites.push({
-              ...sourceRange(root, node.typeName),
-              status: 'type-parameter',
-              target: identity(root, owner) + '/' + decl.name.getText(),
-            });
-          }
-        } else edge('USES', enclosingCaller(node), decl, node.typeName);
+    }
+
+    function recordTypeReference(node) {
+      const decl = resolveAliasDeclaration(checker.getSymbolAtLocation(node.typeName));
+      if (decl?.kind !== SyntaxKind.TypeParameter) {
+        edge('USES', enclosingCaller(node), decl, node.typeName);
+        return;
       }
-      if (
-        node.kind === SyntaxKind.ClassDeclaration ||
-        node.kind === SyntaxKind.InterfaceDeclaration
-      ) {
-        recordHeritage(node);
+      const owner = decl.parent.name ?? decl.parent;
+      if (owner) {
+        result.TYPE_PARAMETER_USES.sites.push({
+          ...sourceRange(root, node.typeName),
+          status: 'type-parameter',
+          target: identity(root, owner) + '/' + decl.name.getText(),
+        });
+      }
+    }
+
+    function visit(node) {
+      if (inventory) recordDeclaration(node);
+      switch (node.kind) {
+        case SyntaxKind.PropertyAssignment:
+        case SyntaxKind.ShorthandPropertyAssignment:
+          recordFunctionValue(node);
+          break;
+        case SyntaxKind.ClassDeclaration:
+          recordClassParameters(node);
+          recordHeritage(node);
+          break;
+        case SyntaxKind.InterfaceDeclaration:
+          recordHeritage(node);
+          break;
+        case SyntaxKind.PropertyAccessExpression:
+          if (propertyAccess) propertyReference(node);
+          break;
+        case SyntaxKind.MethodDeclaration:
+          if (methodFacts) recordMethodFacts(node);
+          break;
+        case SyntaxKind.ReturnStatement:
+          recordReturnRead(node);
+          break;
+        case SyntaxKind.ImportDeclaration:
+        case SyntaxKind.ExportDeclaration:
+          if (node.moduleSpecifier)
+            edge('IMPORTS', node.getSourceFile(), importedDeclaration(node.moduleSpecifier));
+          break;
+        case SyntaxKind.NewExpression:
+        case SyntaxKind.CallExpression:
+          recordCall(node);
+          break;
+        case SyntaxKind.JsxOpeningElement:
+        case SyntaxKind.JsxSelfClosingElement:
+          call(node, node.tagName);
+          break;
+        case SyntaxKind.TypeReference:
+          recordTypeReference(node);
+          break;
       }
       node.forEachChild(visit);
     }

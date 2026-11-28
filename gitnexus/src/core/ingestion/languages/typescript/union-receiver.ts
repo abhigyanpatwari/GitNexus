@@ -1,4 +1,4 @@
-import type { ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { Range, ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import { findClassBindingInScope } from '../../scope-resolution/scope/walkers.js';
@@ -23,6 +23,58 @@ function samePrimitiveSignature(left: SymbolDefinition, right: SymbolDefinition)
   );
 }
 
+function unionMethodSignature(
+  methods: SymbolDefinition[],
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+): SymbolDefinition | null | undefined {
+  if (methods.length === 1) {
+    const method = methods[0];
+    if (!method.declarationRange || method.typeParameters?.length) return null;
+    if (site.arity === 0 && method.parameterCount === 0) return method;
+    return selectTsPrimitiveOverload(methods, site, indexes);
+  }
+  const signatures = methods.filter((method) => method.isOverloadSignature);
+  if (
+    signatures.length < 2 ||
+    methods.length - signatures.length > 1 ||
+    signatures.some((signature) => signature.typeParameters?.length)
+  )
+    return null;
+  return selectTsPrimitiveOverload(signatures, site, indexes);
+}
+
+function unionMember(
+  owner: SymbolDefinition,
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+  model: SemanticModel,
+  staticOnly: (member: SymbolDefinition) => boolean,
+) {
+  for (const id of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
+    if (model.fields.lookupAllByOwner(id, site.name).some((field) => !staticOnly(field))) return;
+    const methods = model.methods
+      .lookupAllByOwner(id, site.name)
+      .filter((method) => !staticOnly(method));
+    if (!methods.length) continue;
+    return { method: unionMethodSignature(methods, site, indexes), overloaded: methods.length > 1 };
+  }
+}
+
+function simpleUnionArm(name: string): boolean {
+  return (
+    /^[$_\p{ID_Start}][$\p{ID_Continue}]*$/u.test(name) && name !== 'null' && name !== 'undefined'
+  );
+}
+
+function declaredEarlier({ startLine, startCol }: Range, before?: Range): boolean {
+  return (
+    !before ||
+    startLine < before.startLine ||
+    (startLine === before.startLine && startCol < before.startCol)
+  );
+}
+
 /** The checker takes the first compatible signature from its ordered union of
  * member types. For equally named methods in one file, declaration position
  * determines that order, including methods inherited from a base class. */
@@ -37,15 +89,7 @@ export function representativeUnionOwner(
   if (site.kind !== 'call' || !spelling.includes('|')) return undefined;
   const names = spelling.split('|').map((arm) => arm.trim());
   // Nullable receivers and nested type expressions have their own narrowing paths.
-  if (
-    !names.every(
-      (name) =>
-        /^[$_\p{ID_Start}][$\p{ID_Continue}]*$/u.test(name) &&
-        name !== 'null' &&
-        name !== 'undefined',
-    )
-  )
-    return undefined;
+  if (!names.every(simpleUnionArm)) return undefined;
   let first: { owner: SymbolDefinition; method: SymbolDefinition } | undefined;
   const selected: SymbolDefinition[] = [];
   let hasOverloads = false;
@@ -56,47 +100,15 @@ export function representativeUnionOwner(
       uniqueQualifiedNameFallback: false,
     });
     if (!owner) return undefined;
-    let method: SymbolDefinition | undefined;
-    for (const id of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
-      if (model.fields.lookupAllByOwner(id, site.name).some((field) => !staticOnly(field)))
-        return null;
-      const methods = model.methods
-        .lookupAllByOwner(id, site.name)
-        .filter((method) => !staticOnly(method));
-      if (!methods.length) continue;
-      if (methods.length === 1) {
-        method = methods[0];
-        if (!method?.declarationRange || method.typeParameters?.length) return null;
-        if (
-          (site.arity !== 0 || method.parameterCount !== 0) &&
-          !selectTsPrimitiveOverload([method], site, indexes)
-        )
-          return null;
-      } else {
-        const signatures = methods.filter((candidate) => candidate.isOverloadSignature);
-        if (
-          signatures.length < 2 ||
-          methods.length - signatures.length > 1 ||
-          signatures.some((signature) => signature.typeParameters?.length)
-        )
-          return null;
-        hasOverloads = true;
-        method = selectTsPrimitiveOverload(signatures, site, indexes) ?? undefined;
-      }
-      break;
-    }
-    if (!method?.declarationRange || method.typeParameters?.length) return null;
+    const member = unionMember(owner, site, indexes, model, staticOnly);
+    if (!member?.method?.declarationRange) return null;
+    const { method } = member;
+    hasOverloads ||= member.overloaded;
     selected.push(method);
     // Across files the compiler uses Program source-file order. A path sort
     // or the order of the written union cannot establish that ordering.
     if (first && first.method.filePath !== method.filePath) return null;
-    const before = first?.method.declarationRange;
-    const { startLine, startCol } = method.declarationRange;
-    if (
-      !before ||
-      startLine < before.startLine ||
-      (startLine === before.startLine && startCol < before.startCol)
-    )
+    if (declaredEarlier(method.declarationRange, first?.method.declarationRange))
       first = { owner, method };
   }
   if (!first) return null;

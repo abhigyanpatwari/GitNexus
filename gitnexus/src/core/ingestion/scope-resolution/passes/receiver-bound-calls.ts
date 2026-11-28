@@ -2776,19 +2776,21 @@ function emitReceiverBoundCallsInPass(
           languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
         let ambiguousOwnerId: string | undefined;
         for (const ownerId of memberDef ? [] : chain) {
-          const picked =
-            site.kind === 'call'
-              ? separateReceiverKinds
-                ? pickFirstNonStaticOnly(
-                    ownerId,
-                    memberName,
-                    site,
-                    model,
-                    provider,
-                    excludeFromClass,
-                  )
-                : pickOverload(ownerId, memberName, site, model, provider)
-              : findOwnedMember(ownerId, memberName, model);
+          let picked: ReturnType<typeof pickFirstNonStaticOnly>;
+          if (site.kind !== 'call') {
+            picked = findOwnedMember(ownerId, memberName, model);
+          } else if (separateReceiverKinds) {
+            picked = pickFirstNonStaticOnly(
+              ownerId,
+              memberName,
+              site,
+              model,
+              provider,
+              excludeFromClass,
+            );
+          } else {
+            picked = pickOverload(ownerId, memberName, site, model, provider);
+          }
           if (picked === STATIC_ONLY_FILTERED) continue;
           if (picked === OVERLOAD_AMBIGUOUS) {
             ambiguousOwnerId = ownerId;
@@ -3247,15 +3249,16 @@ function emitReceiverBoundCallsInPass(
           isUnreachableByInstanceDispatch,
         );
         const qualifiedOwner =
-          selectedOwner === undefined
-            ? classOfQualifiedTypeSpelling(
+          selectedOwner === null
+            ? null
+            : (selectedOwner ??
+              classOfQualifiedTypeSpelling(
                 typeRef,
                 scopes,
                 provider.qualifiedTypeLookupSpelling,
                 typeLookup,
                 namespaceMemberVisible,
-              )
-            : selectedOwner;
+              ));
         let ownerDef =
           qualifiedOwner === undefined
             ? classBindingOfSimpleType(typeRef, typeApplication ?? typeRef.rawName, typeLookup)
@@ -4311,25 +4314,16 @@ function pickFirstNonStaticOnly(
       return fields.find((field) => !excludeMember(field)) ?? STATIC_ONLY_FILTERED;
     return fields[0];
   }
-  let overloads: readonly SymbolDefinition[] = rawOverloads;
-  let filteredAny = false;
-  if (excludeMember !== undefined) {
-    const survivors: SymbolDefinition[] = [];
-    for (const candidate of rawOverloads) {
-      if (excludeMember(candidate) === true) {
-        filteredAny = true;
-        continue;
-      }
-      survivors.push(candidate);
-    }
-    overloads = survivors;
-  }
+  const overloads =
+    excludeMember === undefined
+      ? rawOverloads
+      : rawOverloads.filter((candidate) => excludeMember(candidate) !== true);
   if (overloads.length === 0) {
     // Every candidate was static-only; the caller (Case 4 chain walk)
     // should walk on to the next owner AND remember that filtering
     // happened so it can mark the site handled if the whole chain
     // ends with no legitimate match.
-    return filteredAny ? STATIC_ONLY_FILTERED : undefined;
+    return STATIC_ONLY_FILTERED;
   }
   if (overloads.length === 1) return overloads[0];
 

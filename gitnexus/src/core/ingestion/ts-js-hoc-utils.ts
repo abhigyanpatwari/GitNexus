@@ -104,9 +104,7 @@ function registrationStructureTree(
 ): SyntaxNode['tree'] | undefined {
   if (!cachedTree || root.tree === cachedTree) return undefined;
   const other = (cachedTree as SyntaxNode['tree']).rootNode;
-  return other && other.startIndex === root.startIndex && other.text === root.text
-    ? other.tree
-    : undefined;
+  return other?.startIndex === root.startIndex && other.text === root.text ? other.tree : undefined;
 }
 
 export function clearRegistrationHandles(root: SyntaxNode, cachedTree?: unknown): void {

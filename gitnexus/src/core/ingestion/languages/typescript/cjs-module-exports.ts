@@ -169,7 +169,7 @@ const enum WrapperValue {
   Truthy = 2,
   Falsy = 4,
   Nullish = 8,
-  Unknown = Original | Truthy | Falsy | Nullish,
+  Unknown = 0b1111, // All four possibilities.
 }
 
 function literalWrapperValue(value: SyntaxNode | null, globalUndefined: boolean): WrapperValue {
@@ -226,28 +226,29 @@ function evaluationPosition(node: SyntaxNode, at = node.endIndex): number {
   return at;
 }
 
+function callableReferences(root: SyntaxNode): Map<string, SyntaxNode[]> {
+  const references = new Map<string, SyntaxNode[]>();
+  for (const node of root.descendantsOfType(['identifier', 'shorthand_property_identifier'])) {
+    const name = canonicalTypeScriptName(node.text);
+    const uses = references.get(name);
+    if (uses) uses.push(node);
+    else references.set(name, [node]);
+  }
+  return references;
+}
+
 /** A local callable cannot execute before its first possible use or escape. */
 function localCallableFirstUse(root: SyntaxNode) {
   let references: Map<string, SyntaxNode[]> | undefined;
   const byBinding = new Map<number, number>();
   return (fn: SyntaxNode): number => {
-    const binding = fn.type.endsWith('_declaration')
-      ? fn.childForFieldName('name')
-      : fn.parent?.type === 'variable_declarator'
-        ? fn.parent.childForFieldName('name')
-        : null;
+    const declaration = fn.type.endsWith('_declaration') ? fn : fn.parent;
+    if (declaration !== fn && declaration?.type !== 'variable_declarator') return 0;
+    const binding = declaration.childForFieldName('name');
     if (binding?.type !== 'identifier') return 0;
     const cached = byBinding.get(binding.id);
     if (cached !== undefined) return cached;
-    if (!references) {
-      references = new Map();
-      for (const node of root.descendantsOfType(['identifier', 'shorthand_property_identifier'])) {
-        const name = canonicalTypeScriptName(node.text);
-        const uses = references.get(name);
-        if (uses) uses.push(node);
-        else references.set(name, [node]);
-      }
-    }
+    references ??= callableReferences(root);
     if (references.has('eval')) return 0;
     let first = Infinity;
     for (const ref of references.get(canonicalTypeScriptName(binding.text)) ?? []) {
@@ -262,6 +263,63 @@ function localCallableFirstUse(root: SyntaxNode) {
     byBinding.set(binding.id, first);
     return first;
   };
+}
+
+type WriteGuard = WrapperValue | 'conditional' | 'unreachable' | 'program';
+
+function ifWriteGuard(parent: SyntaxNode, child: SyntaxNode): WriteGuard {
+  const condition = parent.childForFieldName('condition');
+  if (child.id === condition?.id) return WrapperValue.Unknown;
+  const test = ungroup(condition)?.type;
+  if (test !== 'true' && test !== 'false') return 'conditional';
+  const consequence = child.id === parent.childForFieldName('consequence')?.id;
+  return (test === 'true') === consequence ? WrapperValue.Unknown : 'unreachable';
+}
+
+function binaryWriteGuard(parent: SyntaxNode, child: SyntaxNode, write: SyntaxNode): WriteGuard {
+  if (child.id !== parent.childForFieldName('right')?.id) return WrapperValue.Unknown;
+  const left = ungroup(parent.childForFieldName('left'));
+  const op = parent.childForFieldName('operator')?.type;
+  if ((op === '&&' && left?.type === 'false') || (op === '||' && left?.type === 'true'))
+    return 'unreachable';
+  if (logicalWriteMask[op] && isModuleIdentifier(left) && ungroup(child)?.id === write.id)
+    return logicalWriteMask[op];
+  return 'conditional';
+}
+
+function wrapperWriteGuard(parent: SyntaxNode, child: SyntaxNode, write: SyntaxNode): WriteGuard {
+  switch (parent.type) {
+    case 'program':
+      return 'program';
+    case 'parenthesized_expression':
+    case 'sequence_expression':
+    case 'expression_statement':
+    case 'statement_block':
+    case 'else_clause':
+    case 'variable_declarator':
+    case 'lexical_declaration':
+    case 'variable_declaration':
+    case 'arguments':
+      return WrapperValue.Unknown;
+    case 'call_expression':
+      return child.type === 'arguments' &&
+        parent.children.some((token) => token.type === 'optional_chain' || token.type === '?.')
+        ? 'conditional'
+        : WrapperValue.Unknown;
+    case 'if_statement':
+      return ifWriteGuard(parent, child);
+    case 'binary_expression':
+      return binaryWriteGuard(parent, child, write);
+    default:
+      return 'conditional';
+  }
+}
+
+function immediateInvocation(fn: SyntaxNode): SyntaxNode | undefined {
+  const callee = outerParenthesizedExpression(fn);
+  const call = callee.parent;
+  if (call?.type === 'call_expression' && call.childForFieldName('function')?.id === callee.id)
+    return call;
 }
 
 /** Unknown branch conditions join both paths. Indirect invocations have no known write position. */
@@ -281,66 +339,29 @@ function wrapperWriteExecution(
   };
   for (let child = write, parent = write.parent; parent; child = parent, parent = parent.parent) {
     if (FUNCTION_NODE_TYPES.has(parent.type) || parent.type === 'generator_function') {
-      const callee = outerParenthesizedExpression(parent);
+      const call = immediateInvocation(parent);
+      if (!call) return deferred(firstUse(parent));
       if (
-        callee.parent?.type === 'call_expression' &&
-        callee.parent.childForFieldName('function')?.id === callee.id
+        parent.type === 'generator_function' ||
+        parent.children.some((token) => token.type === 'async')
       ) {
-        if (
-          parent.type === 'generator_function' ||
-          parent.children.some((token) => token.type === 'async')
-        ) {
-          // Even an async prefix or an immediately resumed generator must reach this call first.
-          // An enclosing indirect function may itself have run before its declaration.
-          deferredCall = evaluationPosition(callee.parent, callee.parent.startIndex);
-        }
-        continue;
+        // Even an async prefix or an immediately resumed generator must reach this call first.
+        // An enclosing indirect function may itself have run before its declaration.
+        deferredCall = evaluationPosition(call, call.startIndex);
       }
-      const at = firstUse(parent);
-      return deferred(at);
+      continue;
     }
-    switch (parent.type) {
+    const guard = wrapperWriteGuard(parent, child, write);
+    switch (guard) {
       case 'program':
         return deferredCall === undefined ? { when, conditional } : deferred(deferredCall);
-      case 'parenthesized_expression':
-      case 'sequence_expression':
-      case 'expression_statement':
-      case 'statement_block':
-      case 'else_clause':
-      case 'variable_declarator':
-      case 'lexical_declaration':
-      case 'variable_declaration':
-      case 'arguments':
-        break;
-      case 'call_expression':
-        if (
-          child.type === 'arguments' &&
-          parent.children.some((token) => token.type === 'optional_chain' || token.type === '?.')
-        )
-          conditional = true;
-        break;
-      case 'if_statement': {
-        const condition = parent.childForFieldName('condition');
-        if (child.id === condition?.id) break;
-        const test = ungroup(condition)?.type;
-        if (test !== 'true' && test !== 'false') conditional = true;
-        else if ((test === 'true') !== (child.id === parent.childForFieldName('consequence')?.id))
-          return undefined;
-        break;
-      }
-      case 'binary_expression': {
-        const left = ungroup(parent.childForFieldName('left'));
-        const op = parent.childForFieldName('operator')?.type;
-        if (child.id !== parent.childForFieldName('right')?.id) break;
-        if ((op === '&&' && left?.type === 'false') || (op === '||' && left?.type === 'true'))
-          return undefined;
-        if (logicalWriteMask[op] && isModuleIdentifier(left) && ungroup(child)?.id === write.id)
-          when &= logicalWriteMask[op];
-        else conditional = true;
-        break;
-      }
-      default:
+      case 'unreachable':
+        return undefined;
+      case 'conditional':
         conditional = true;
+        break;
+      default:
+        when &= guard;
     }
   }
 }
@@ -366,13 +387,16 @@ function hasWrapperBinding(root: SyntaxNode, captures: CaptureMatch[]): boolean 
     if (claim.purpose === 'type' || canonicalTypeScriptName(claim.name) !== 'module') continue;
     const pos = { row: claim.range.startLine - 1, column: claim.range.startCol };
     let node: SyntaxNode | null = root.namedDescendantForPosition(pos);
-    let sharedVar = false;
     while (node && node.type !== 'program') {
-      if (node.type === 'ambient_declaration' || node.type === 'class_static_block') break;
-      if (node.type === 'variable_declaration') sharedVar = true;
+      if (
+        node.type === 'variable_declaration' ||
+        node.type === 'ambient_declaration' ||
+        node.type === 'class_static_block'
+      )
+        break;
       node = node.parent;
     }
-    if (node?.type === 'program' && !sharedVar) return false;
+    if (node?.type === 'program') return false;
   }
   return true;
 }
@@ -403,6 +427,70 @@ function mayStoreExports(target: SyntaxNode | null): boolean {
   }
 }
 
+function lastPossibleExportStore(root: SyntaxNode): number {
+  let last = -1;
+  for (const write of root.descendantsOfType([
+    'assignment_expression',
+    'augmented_assignment_expression',
+    'update_expression',
+    'unary_expression',
+  ])) {
+    const op = write.childForFieldName('operator')?.type;
+    if (write.type === 'unary_expression' && op !== 'delete') continue;
+    if (!mayStoreExports(write.childForFieldName('left') ?? write.childForFieldName('argument')))
+      continue;
+    // A nested callable can make the store after its position in the source.
+    if (write.closest([...FUNCTION_NODE_TYPES, 'generator_function'])) return Infinity;
+    last = Math.max(last, write.endIndex);
+  }
+  return last;
+}
+
+function appendWrapperWrite(
+  events: WrapperEvent[],
+  root: SyntaxNode,
+  { node, savedAt, globalUndefined }: LocalImportFacts['wrapperWrites'][number],
+  execution: NonNullable<ReturnType<typeof wrapperWriteExecution>>,
+): void {
+  const declarator = node.type === 'variable_declarator';
+  const direct = isModuleIdentifier(node.childForFieldName(declarator ? 'name' : 'left'));
+  let op = node.childForFieldName('operator')?.type.replace(/=$/u, '');
+  const assignment =
+    direct && (declarator || node.type === 'assignment_expression' || logicalWriteMask[op]);
+  const valueField = declarator ? 'value' : 'right';
+  let value = assignment ? ungroup(node.childForFieldName(valueField)) : null;
+  if (isModuleIdentifier(value)) return;
+  if (
+    (declarator || node.type === 'assignment_expression') &&
+    value?.type === 'binary_expression' &&
+    isModuleIdentifier(value.childForFieldName('left'))
+  ) {
+    const binary = value.childForFieldName('operator')?.type;
+    if (logicalWriteMask[binary]) {
+      op = binary;
+      value = ungroup(value.childForFieldName('right'));
+    }
+  }
+  const when = logicalWriteMask[op] ?? WrapperValue.Unknown;
+  if ('deferredAt' in execution) {
+    events.push({ at: execution.deferredAt, kind: 'deferred', when });
+    return;
+  }
+  const alias = assignment ? savedAt : undefined;
+  if (alias !== undefined) {
+    const snapshot = root.namedDescendantForIndex(alias - 1);
+    events.push({ at: evaluationPosition(snapshot, alias), kind: 'save', savedAt: alias });
+  }
+  events.push({
+    at: evaluationPosition(node),
+    kind: 'write',
+    value: literalWrapperValue(value, globalUndefined),
+    when: when & execution.when,
+    savedAt: alias,
+    conditional: execution.conditional,
+  });
+}
+
 /** Advance once through stores and const snapshots, in the same order as the export sites. */
 function wrapperAtExport(
   root: SyntaxNode,
@@ -414,96 +502,40 @@ function wrapperAtExport(
   const firstUse = localCallableFirstUse(root);
   let lastExportStore: number | undefined;
   const afterLastExportStore = (at: number) => {
-    if (lastExportStore === undefined) {
-      lastExportStore = -1;
-      for (const write of root.descendantsOfType([
-        'assignment_expression',
-        'augmented_assignment_expression',
-        'update_expression',
-        'unary_expression',
-      ])) {
-        const op = write.childForFieldName('operator')?.type;
-        if (write.type === 'unary_expression' && op !== 'delete') continue;
-        if (
-          !mayStoreExports(write.childForFieldName('left') ?? write.childForFieldName('argument'))
-        )
-          continue;
-        // A nested callable can make the store after its position in the source.
-        if (write.closest([...FUNCTION_NODE_TYPES, 'generator_function'])) {
-          lastExportStore = Infinity;
-          break;
-        }
-        lastExportStore = Math.max(lastExportStore, write.endIndex);
-      }
-    }
+    lastExportStore ??= lastPossibleExportStore(root);
     return at > lastExportStore;
   };
-  for (const { node, savedAt, globalUndefined } of writes) {
-    const execution = wrapperWriteExecution(node, firstUse, afterLastExportStore);
-    if (!execution) continue;
-    const declarator = node.type === 'variable_declarator';
-    const direct = isModuleIdentifier(node.childForFieldName(declarator ? 'name' : 'left'));
-    let op = node.childForFieldName('operator')?.type.replace(/=$/u, '');
-    const assignment =
-      direct && (declarator || node.type === 'assignment_expression' || logicalWriteMask[op]);
-    let value = assignment ? ungroup(node.childForFieldName(declarator ? 'value' : 'right')) : null;
-    if (isModuleIdentifier(value)) continue;
-    if (
-      (declarator || node.type === 'assignment_expression') &&
-      value?.type === 'binary_expression' &&
-      isModuleIdentifier(value.childForFieldName('left'))
-    ) {
-      const binary = value.childForFieldName('operator')?.type;
-      if (logicalWriteMask[binary]) {
-        op = binary;
-        value = ungroup(value.childForFieldName('right'));
-      }
-    }
-    const when = logicalWriteMask[op] ?? WrapperValue.Unknown;
-    if ('deferredAt' in execution) {
-      events.push({ at: execution.deferredAt, kind: 'deferred', when });
-      continue;
-    }
-    const alias = assignment ? savedAt : undefined;
-    if (alias !== undefined) {
-      const snapshot = root.namedDescendantForIndex(alias - 1);
-      events.push({ at: evaluationPosition(snapshot, alias), kind: 'save', savedAt: alias });
-    }
-    events.push({
-      at: evaluationPosition(node),
-      kind: 'write',
-      value: literalWrapperValue(value, globalUndefined),
-      when: when & execution.when,
-      savedAt: alias,
-      conditional: execution.conditional,
-    });
+  for (const write of writes) {
+    const execution = wrapperWriteExecution(write.node, firstUse, afterLastExportStore);
+    if (execution) appendWrapperWrite(events, root, write, execution);
   }
   events.sort((a, b) => a.at - b.at);
   const snapshots = new Map<number, WrapperValue>();
   let index = 0;
   let current = WrapperValue.Original;
   let deferredWhen = 0;
-  return (position: number) => {
-    while (index < events.length && events[index].at <= position) {
-      const event = events[index++];
-      if (event.kind === 'save') {
+  function apply(event: WrapperEvent) {
+    switch (event.kind) {
+      case 'save':
         snapshots.set(event.savedAt, current);
-        continue;
-      }
-      if (event.kind === 'deferred') {
+        return;
+      case 'deferred':
         deferredWhen |= event.when;
-        if (current & deferredWhen) current = WrapperValue.Unknown;
-        continue;
+        break;
+      case 'write': {
+        if (!(current & event.when)) return;
+        const next =
+          event.savedAt === undefined
+            ? event.value
+            : (snapshots.get(event.savedAt) ?? WrapperValue.Unknown);
+        current = (event.conditional ? current : current & ~event.when) | next;
+        break;
       }
-      const when = event.when;
-      if (!(current & when)) continue;
-      const next =
-        event.savedAt === undefined
-          ? event.value
-          : (snapshots.get(event.savedAt) ?? WrapperValue.Unknown);
-      current = (event.conditional ? current : current & ~when) | next;
-      if (current & deferredWhen) current = WrapperValue.Unknown;
     }
+    if (current & deferredWhen) current = WrapperValue.Unknown;
+  }
+  return (position: number) => {
+    while (index < events.length && events[index].at <= position) apply(events[index++]);
     return current === WrapperValue.Original;
   };
 }

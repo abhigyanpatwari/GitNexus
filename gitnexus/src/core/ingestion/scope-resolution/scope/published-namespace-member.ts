@@ -47,6 +47,16 @@ interface Publication {
   readonly ref: BindingRef;
 }
 
+function addPublication(
+  byName: Map<string, Publication[]>,
+  name: string,
+  publication: Publication,
+) {
+  const published = byName.get(name);
+  if (published) published.push(publication);
+  else byName.set(name, [publication]);
+}
+
 const publicationsByBody = new WeakMap<
   ScopeResolutionIndexes['scopeTree'],
   Map<ScopeId, Map<string, Publication[]>>
@@ -67,9 +77,7 @@ function publicBindings(body: ScopeId, scopes: ScopeResolutionIndexes) {
     for (const ref of bindings) {
       if (ref.def.namedExports === undefined) continue;
       for (const name of ref.def.namedExports) {
-        const published = byName.get(name);
-        if (published) published.push({ local, ref });
-        else byName.set(name, [{ local, ref }]);
+        addPublication(byName, name, { local, ref });
       }
       for (const name of ref.def.typeOnlyExports ?? []) {
         const erased: BindingRef = {
@@ -83,9 +91,7 @@ function publicBindings(body: ScopeId, scopes: ScopeResolutionIndexes) {
             typeOnly: true,
           },
         };
-        const published = byName.get(name);
-        if (published) published.push({ local, ref: erased });
-        else byName.set(name, [{ local, ref: erased }]);
+        addPublication(byName, name, { local, ref: erased });
       }
     }
   }
@@ -95,11 +101,7 @@ function publicBindings(body: ScopeId, scopes: ScopeResolutionIndexes) {
 
 const namespaceRoots = new WeakMap<ScopeResolutionIndexes['scopeTree'], Set<string>>();
 
-/** Register names once after finalization. Other receivers can skip lexical namespace lookup. */
-export function indexPublishedNamespaceRoots(
-  files: readonly ParsedFile[],
-  scopes: ScopeResolutionIndexes,
-) {
+function declaredNamespaceRoots(files: readonly ParsedFile[]): Set<string> {
   const roots = new Set<string>();
   for (const file of files) {
     for (const def of file.localDefs) {
@@ -107,6 +109,15 @@ export function indexPublishedNamespaceRoots(
         roots.add(def.qualifiedName.split('.')[0]!);
     }
   }
+  return roots;
+}
+
+/** Register names once after finalization. Other receivers can skip lexical namespace lookup. */
+export function indexPublishedNamespaceRoots(
+  files: readonly ParsedFile[],
+  scopes: ScopeResolutionIndexes,
+) {
+  const roots = declaredNamespaceRoots(files);
   if (!roots.size) return;
   for (const file of files) {
     for (const entry of file.parsedImports) {
@@ -155,6 +166,40 @@ export function publishedNamespaceMember(
   return candidates.size === 1 ? candidates.values().next().value : null;
 }
 
+interface NamespaceMember {
+  scope: ScopeId;
+  local: string;
+  def: SymbolDefinition;
+}
+
+/** A declaration can claim a name even when it exports no member for this lookup purpose. */
+function collectNamespaceMembers(
+  owner: SymbolDefinition,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+  purpose: LookupPurpose,
+  candidates: Map<string, NamespaceMember>,
+): boolean {
+  if (owner.type !== 'Namespace') return false;
+  let known = false;
+  for (const body of bodyScopes(owner, scopes)) {
+    const published = publicBindings(body, scopes).get(name);
+    if (
+      published ||
+      scopes.scopeTree
+        .getScope(body)
+        ?.bindings.get(name)
+        ?.some(({ def }) => def.namedExports !== undefined)
+    )
+      known = true;
+    for (const { local, ref } of published ?? []) {
+      if (purpose === 'value' && ref.via?.typeOnly) continue;
+      candidates.set(ref.def.nodeId, { scope: body, local, def: ref.def });
+    }
+  }
+  return known;
+}
+
 function namespaceCandidates(
   bindings: readonly BindingRef[],
   members: readonly string[],
@@ -164,30 +209,33 @@ function namespaceCandidates(
   let owners = bindings;
   for (const [index, name] of members.entries()) {
     let known = false;
-    const candidates = new Map<string, { scope: ScopeId; local: string; def: SymbolDefinition }>();
+    const candidates = new Map<string, NamespaceMember>();
     for (const { def } of owners) {
-      if (def.type !== 'Namespace') continue;
-      for (const body of bodyScopes(def, scopes)) {
-        const published = publicBindings(body, scopes).get(name);
-        if (
-          published ||
-          scopes.scopeTree
-            .getScope(body)
-            ?.bindings.get(name)
-            ?.some(({ def }) => def.namedExports !== undefined)
-        )
-          known = true;
-        for (const { local, ref } of published ?? []) {
-          if (purpose === 'value' && ref.via?.typeOnly) continue;
-          candidates.set(ref.def.nodeId, { scope: body, local, def: ref.def });
-        }
-      }
+      if (collectNamespaceMembers(def, name, scopes, purpose, candidates)) known = true;
     }
     if (!candidates.size) return known ? null : undefined;
     if (index === members.length - 1) return candidates;
     owners = [...candidates.values()].map(({ def }) => ({ def, origin: 'local' }));
   }
   return undefined;
+}
+
+function mergeNamespaceBodyExports(
+  exports: Map<string, Map<string, BindingRef>>,
+  publications: ReadonlyMap<string, readonly Publication[]>,
+) {
+  for (const [name, members] of publications) {
+    let published = exports.get(name);
+    if (!published) {
+      published = new Map();
+      exports.set(name, published);
+    }
+    for (const { ref } of members) {
+      const previous = published.get(ref.def.nodeId);
+      if (!previous || (previous.via?.typeOnly && !ref.via?.typeOnly))
+        published.set(ref.def.nodeId, ref);
+    }
+  }
 }
 
 /** Collect the visible exports when several namespace declarations form one scope. */
@@ -199,18 +247,7 @@ export function namespaceExportsForBindings(
   for (const { def } of owners) {
     if (def.type !== 'Namespace') continue;
     for (const id of bodyScopes(def, scopes)) {
-      for (const [name, members] of publicBindings(id, scopes)) {
-        let published = exports.get(name);
-        if (!published) {
-          published = new Map();
-          exports.set(name, published);
-        }
-        for (const { ref } of members) {
-          const previous = published.get(ref.def.nodeId);
-          if (!previous || (previous.via?.typeOnly && !ref.via?.typeOnly))
-            published.set(ref.def.nodeId, ref);
-        }
-      }
+      mergeNamespaceBodyExports(exports, publicBindings(id, scopes));
     }
   }
   return new Map([...exports].map(([name, refs]) => [name, [...refs.values()]]));

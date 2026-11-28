@@ -50,6 +50,37 @@ function needsPosition(node: SyntaxNode): boolean {
   return repeated.has(node.id);
 }
 
+function enumDeclarationsByScope(tree: SyntaxNode['tree']) {
+  const groups = new Map<string, Map<number, SyntaxNode[]>>();
+  for (const decl of tree.rootNode.descendantsOfType('enum_declaration')) {
+    const simple = decl.childForFieldName('name')?.text;
+    if (!simple) continue;
+    const key = positionlessClassExtractor.qualifyScopeName!(decl, simple) ?? simple;
+    const scope = localBlock(decl)?.id ?? 0;
+    let owners = groups.get(key);
+    if (!owners) {
+      owners = new Map();
+      groups.set(key, owners);
+    }
+    const declarations = owners.get(scope);
+    if (declarations) declarations.push(decl);
+    else owners.set(scope, [decl]);
+  }
+  return groups;
+}
+
+function shadowingEnumPositions(tree: SyntaxNode['tree']) {
+  const positions = new Map<number, SyntaxNode['startPosition']>();
+  for (const owners of enumDeclarationsByScope(tree).values()) {
+    if (owners.size < 2) continue;
+    for (const declarations of owners.values()) {
+      const anchor = declarations[0].startPosition;
+      for (const decl of declarations) positions.set(decl.id, anchor);
+    }
+  }
+  return positions;
+}
+
 /** Declarations of one enum can merge within a scope. A shadowing enum in
  * another scope needs a different owner for both its type and its members. */
 function localTypeName(node: SyntaxNode, name: string): string | undefined {
@@ -61,30 +92,8 @@ function localTypeName(node: SyntaxNode, name: string): string | undefined {
   if (!node.tree || !localBlock(node)) return;
   let positions = enumPositions.get(node.tree);
   if (!positions) {
-    const groups = new Map<string, Map<number, SyntaxNode[]>>();
-    for (const decl of node.tree.rootNode.descendantsOfType('enum_declaration')) {
-      const simple = decl.childForFieldName('name')?.text;
-      if (!simple) continue;
-      const key = positionlessClassExtractor.qualifyScopeName!(decl, simple) ?? simple;
-      const scope = localBlock(decl)?.id ?? 0;
-      let owners = groups.get(key);
-      if (!owners) {
-        owners = new Map();
-        groups.set(key, owners);
-      }
-      const declarations = owners.get(scope);
-      if (declarations) declarations.push(decl);
-      else owners.set(scope, [decl]);
-    }
-    const result = new Map<number, SyntaxNode['startPosition']>();
-    for (const owners of groups.values()) {
-      if (owners.size < 2) continue;
-      for (const declarations of owners.values()) {
-        for (const decl of declarations) result.set(decl.id, declarations[0].startPosition);
-      }
-    }
-    enumPositions.set(node.tree, result);
-    positions = result;
+    positions = shadowingEnumPositions(node.tree);
+    enumPositions.set(node.tree, positions);
   }
   const anchor = positions.get(node.id);
   return anchor && positionQualifiedCallableName(name, anchor);

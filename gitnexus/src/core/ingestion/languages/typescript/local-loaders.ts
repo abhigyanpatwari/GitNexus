@@ -86,6 +86,11 @@ const atEnd = (node: SyntaxNode) => ({
   startCol: node.endPosition.column,
 });
 
+function addImportClaim(scope: LexicalScope, claim: NameClaim): void {
+  scope.claims.push(claim);
+  if (claim.purpose === 'type') scope.claims.push({ ...claim, kind: 'blocked', purpose: 'value' });
+}
+
 /** Binding patterns, not arbitrary descendants: object keys and default RHSs do not bind. */
 export function boundNames(node: SyntaxNode | null): SyntaxNode[] {
   if (node === null) return [];
@@ -354,6 +359,40 @@ function reachesUse(write: SyntaxNode, use: SyntaxNode): boolean {
   return false;
 }
 
+function receiverAssignmentKind(
+  use: SyntaxNode,
+  write: SyntaxNode,
+  writes: readonly SyntaxNode[],
+  guard: InstanceofGuard,
+): 'iteration' | 'assignment' | undefined {
+  for (
+    let ancestor = use.parent;
+    ancestor && ancestor.id !== guard.consequence.id;
+    ancestor = ancestor.parent
+  ) {
+    if (
+      ['for_statement', 'for_in_statement', 'while_statement', 'do_statement'].includes(
+        ancestor.type,
+      ) &&
+      !containsNode(ancestor, write) &&
+      writes.some((later) => containsNode(ancestor, later))
+    )
+      return;
+  }
+  const iteration =
+    write.type === 'for_in_statement' &&
+    write.childForFieldName('operator')?.type === 'of' &&
+    write.childForFieldName('body');
+  if (
+    iteration
+      ? !containsNode(iteration, use)
+      : write.type !== 'assignment_expression' || !reachesUse(write, use)
+  )
+    return;
+  if (unwrapWriteTarget(write.childForFieldName('left'), false)?.type !== 'identifier') return;
+  return iteration ? 'iteration' : 'assignment';
+}
+
 function assignedReceiverType(
   use: SyntaxNode,
   atUse: LexicalScope,
@@ -369,32 +408,8 @@ function assignedReceiverType(
   if (!write || !containsNode(guard.consequence, write)) return undefined;
   const arms = namedUnion(bindingAnnotation(declaredIn, guard.name));
   if (!arms) return undefined;
-  for (
-    let ancestor = use.parent;
-    ancestor && ancestor.id !== guard.consequence.id;
-    ancestor = ancestor.parent
-  ) {
-    if (
-      ['for_statement', 'for_in_statement', 'while_statement', 'do_statement'].includes(
-        ancestor.type,
-      ) &&
-      !containsNode(ancestor, write) &&
-      writes.some((later) => containsNode(ancestor, later))
-    )
-      return undefined;
-  }
-  const iteration =
-    write.type === 'for_in_statement' &&
-    write.childForFieldName('operator')?.type === 'of' &&
-    write.childForFieldName('body');
-  if (
-    iteration
-      ? !containsNode(iteration, use)
-      : write.type !== 'assignment_expression' || !reachesUse(write, use)
-  )
-    return undefined;
-  if (unwrapWriteTarget(write.childForFieldName('left'), false)?.type !== 'identifier')
-    return undefined;
+  const kind = receiverAssignmentKind(use, write, writes, guard);
+  if (!kind) return undefined;
   let lookup = atUse;
   while (lookup.parent && lookup.node && !containsNode(lookup.node, write)) lookup = lookup.parent;
   const rhs = write.childForFieldName('right');
@@ -405,22 +420,143 @@ function assignedReceiverType(
       bindingOwner(at, name, escapedNames) === bindingOwner(declaredIn, name, escapedNames)
     );
   };
-  if (rhs?.type === 'new_expression' && !iteration) {
+  if (rhs?.type === 'new_expression' && kind === 'assignment') {
     const type = rhs.childForFieldName('constructor');
     if (type?.type === 'identifier' && isDeclaredArm(type, lookup))
       return { type, scope: lookup, constructor: true };
   }
   if (rhs?.type !== 'identifier') return undefined;
+  return assignedIdentifierType(rhs, lookup, kind, writesByOwner, escapedNames, isDeclaredArm);
+}
+
+function assignedIdentifierType(
+  rhs: SyntaxNode,
+  lookup: LexicalScope,
+  kind: 'iteration' | 'assignment',
+  writesByOwner: ReturnType<typeof indexBindingWrites>,
+  escapedNames: ReadonlyMap<LexicalScope, ReadonlySet<string>>,
+  isDeclaredArm: (type: SyntaxNode, at: LexicalScope) => boolean,
+) {
   const name = canonicalTypeScriptName(rhs.text);
   const owner = bindingOwner(lookup, name, escapedNames);
   if (!owner || writesByOwner.get(owner)?.has(name)) return undefined;
-  const annotation = bindingAnnotation(owner, name);
-  const type = iteration
-    ? annotation?.type === 'array_type' && annotation.firstNamedChild
-    : annotation;
-  if (type && type.type === 'type_identifier' && isDeclaredArm(type, owner))
+  let type = bindingAnnotation(owner, name);
+  if (kind === 'iteration') {
+    if (type?.type !== 'array_type') return undefined;
+    type = type.firstNamedChild ?? undefined;
+  }
+  if (type?.type === 'type_identifier' && isDeclaredArm(type, owner))
     return { type, scope: owner, constructor: false };
   return undefined;
+}
+
+function remainingGuardTypes(
+  guard: InstanceofGuard,
+  owner: LexicalScope,
+  escapedNames: ReadonlyMap<LexicalScope, ReadonlySet<string>>,
+): string | undefined {
+  const { name, type, scope } = guard;
+  const arms = namedUnion(bindingAnnotation(owner, name));
+  const excluded = canonicalTypeScriptName(type.text);
+  if (
+    !arms?.includes(excluded) ||
+    bindingOwner(scope, excluded, escapedNames) !== bindingOwner(owner, excluded, escapedNames)
+  )
+    return;
+  const firstTests = guard.chain?.get(name);
+  return arms
+    .filter((arm) => {
+      if (arm === excluded) return false;
+      const first = firstTests?.get(arm);
+      return (
+        !first ||
+        first.type.startIndex >= type.startIndex ||
+        bindingOwner(first.scope, arm, escapedNames) !== bindingOwner(owner, arm, escapedNames)
+      );
+    })
+    .join(' | ');
+}
+
+function emitNarrowedUse(
+  filePath: string,
+  out: CaptureMatch[],
+  { node, receiver }: InstanceofGuard['uses'][number],
+  fact: NonNullable<ReturnType<typeof assignedReceiverType>>,
+  remaining?: string,
+) {
+  const lookupScope = makeScopeId({
+    filePath,
+    range: fact.scope.anchor.range,
+    kind: fact.scope.kind,
+  });
+  // Anchor only the member expression, so the fact cannot leak to other
+  // statements or become a new home for a lexical declaration. The
+  // receiver range is strictly inside this scope and will not auto-hoist.
+  out.push(
+    { '@scope.block': syntheticCapture('@scope.block', node, '') },
+    {
+      '@type-binding.name': nodeToCapture('@type-binding.name', receiver),
+      '@type-binding.type': remaining
+        ? syntheticCapture('@type-binding.type', fact.type, remaining)
+        : nodeToCapture('@type-binding.type', fact.type),
+      '@type-binding.instanceof-narrow': syntheticCapture(
+        '@type-binding.instanceof-narrow',
+        receiver,
+        '1',
+      ),
+      ...(fact.constructor && {
+        '@type-binding.constructor': syntheticCapture('@type-binding.constructor', receiver, ''),
+      }),
+      '@type.lookup-scope': syntheticCapture('@type.lookup-scope', receiver, lookupScope),
+    },
+  );
+}
+
+function emitInstanceofGuard(
+  guard: InstanceofGuard,
+  writesByOwner: ReturnType<typeof indexBindingWrites>,
+  filePath: string,
+  out: CaptureMatch[],
+  escapedNames: ReadonlyMap<LexicalScope, ReadonlySet<string>>,
+) {
+  if (!guard.uses.length) return;
+  const { name, type, scope } = guard;
+  const owner = bindingOwner(scope, name, escapedNames);
+  if (!owner) return;
+  const remaining = guard.alternative ? remainingGuardTypes(guard, owner, escapedNames) : undefined;
+  if (guard.alternative && !remaining) return;
+  const functionScope = functionOwner(scope);
+  const bindingWrites = writesByOwner.get(owner)?.get(name);
+  const directWrites = bindingWrites?.get(functionScope) ?? [];
+  const cutoff = narrowingCutoff(guard, directWrites);
+  const guarded = {
+    type,
+    scope: guard.alternative ? owner : scope,
+    constructor: !guard.alternative,
+  };
+  for (const use of guard.uses) {
+    if (
+      bindingOwner(use.scope, name, escapedNames) !== owner ||
+      (bindingWrites && functionOwner(use.scope) !== functionScope)
+    )
+      continue;
+    // The checker preserves a guard across ordinary calls. A write in a
+    // different function is not an assignment in this control-flow graph.
+    if (use.node.startIndex < cutoff) {
+      emitNarrowedUse(filePath, out, use, guarded, remaining);
+      continue;
+    }
+    const fact = assignedReceiverType(
+      use.node,
+      use.scope,
+      directWrites,
+      writesByOwner,
+      escapedNames,
+      guard,
+      owner,
+    );
+    if (fact) emitNarrowedUse(filePath, out, use, fact);
+  }
 }
 
 function emitInstanceofNarrowings(
@@ -430,92 +566,10 @@ function emitInstanceofNarrowings(
   out: CaptureMatch[],
   escapedNames: ReadonlyMap<LexicalScope, ReadonlySet<string>>,
 ): void {
-  if (guards.length === 0) return;
+  if (!guards.length) return;
   const writesByOwner = indexBindingWrites(writes);
-  for (const guard of guards) {
-    if (guard.uses.length === 0) continue;
-    const { name, type, scope } = guard;
-    const owner = bindingOwner(scope, name, escapedNames);
-    if (!owner) continue;
-    const functionScope = functionOwner(scope);
-    const bindingWrites = writesByOwner.get(owner)?.get(name);
-    const directWrites = bindingWrites?.get(functionScope) ?? [];
-    const cutoff = narrowingCutoff(guard, directWrites);
-    let remaining: string | undefined;
-    if (guard.alternative) {
-      const arms = namedUnion(bindingAnnotation(owner, name));
-      const excluded = canonicalTypeScriptName(type.text);
-      if (
-        !arms?.includes(excluded) ||
-        bindingOwner(scope, excluded, escapedNames) !== bindingOwner(owner, excluded, escapedNames)
-      )
-        continue;
-      const firstTests = guard.chain?.get(name);
-      remaining = arms
-        .filter((arm) => {
-          if (arm === excluded) return false;
-          const first = firstTests?.get(arm);
-          return (
-            !first ||
-            first.type.startIndex >= type.startIndex ||
-            bindingOwner(first.scope, arm, escapedNames) !== bindingOwner(owner, arm, escapedNames)
-          );
-        })
-        .join(' | ');
-      if (!remaining) continue;
-    }
-    for (const { node, scope: atUse, receiver } of guard.uses) {
-      if (bindingOwner(atUse, name, escapedNames) !== owner) continue;
-      const deferred = functionOwner(atUse) !== functionScope;
-      if (bindingWrites && deferred) continue;
-      // The checker preserves a guard across ordinary calls. A write in a
-      // different function is not an assignment in this control-flow graph.
-      const fact =
-        node.startIndex < cutoff
-          ? { type, scope: guard.alternative ? owner : scope, constructor: !guard.alternative }
-          : assignedReceiverType(
-              node,
-              atUse,
-              directWrites,
-              writesByOwner,
-              escapedNames,
-              guard,
-              owner,
-            );
-      if (!fact) continue;
-      const lookupScope = makeScopeId({
-        filePath,
-        range: fact.scope.anchor.range,
-        kind: fact.scope.kind,
-      });
-      // Anchor only the member expression, so the fact cannot leak to other
-      // statements or become a new home for a lexical declaration. The
-      // receiver range is strictly inside this scope and will not auto-hoist.
-      out.push(
-        { '@scope.block': syntheticCapture('@scope.block', node, '') },
-        {
-          '@type-binding.name': nodeToCapture('@type-binding.name', receiver),
-          '@type-binding.type':
-            remaining && node.startIndex < cutoff
-              ? syntheticCapture('@type-binding.type', fact.type, remaining)
-              : nodeToCapture('@type-binding.type', fact.type),
-          '@type-binding.instanceof-narrow': syntheticCapture(
-            '@type-binding.instanceof-narrow',
-            receiver,
-            '1',
-          ),
-          ...(fact.constructor && {
-            '@type-binding.constructor': syntheticCapture(
-              '@type-binding.constructor',
-              receiver,
-              '',
-            ),
-          }),
-          '@type.lookup-scope': syntheticCapture('@type.lookup-scope', receiver, lookupScope),
-        },
-      );
-    }
-  }
+  for (const guard of guards)
+    emitInstanceofGuard(guard, writesByOwner, filePath, out, escapedNames);
 }
 
 function indexEscapedNames(scopes: Iterable<LexicalScope>) {
@@ -908,15 +962,10 @@ export function synthesizeTsLocalImports(
       name,
       range: anchor.range,
       kind: 'import',
-      purpose: 'both',
+      purpose: match['@import.type-only'] ? 'type' : 'both',
       hoisted: true,
     };
-    if (match['@import.type-only']) {
-      scope.claims.push(
-        { ...claim, purpose: 'type' },
-        { ...claim, kind: 'blocked', purpose: 'value' },
-      );
-    } else scope.claims.push(claim);
+    addImportClaim(scope, claim);
   }
   for (const { node, scope } of equalsImports) {
     const clause = node.namedChildren.find((child) => child.type === 'import_require_clause')!;
@@ -1008,15 +1057,10 @@ export function synthesizeTsLocalImports(
         name: name.text,
         range: match['@import.statement'].range,
         kind: 'import',
-        purpose: 'both',
+        purpose: typeOnly ? 'type' : 'both',
         ...(available ? { availableFrom: available } : { hoisted: true }),
       };
-      if (typeOnly)
-        scope.claims.push(
-          { ...claim, purpose: 'type' },
-          { ...claim, kind: 'blocked', purpose: 'value' },
-        );
-      else scope.claims.push(claim);
+      addImportClaim(scope, claim);
     }
     // A destructured const retains the imported function, including an aliased property.
     // A mutable CommonJS namespace object does not give that guarantee for later calls.
@@ -1036,8 +1080,10 @@ export function synthesizeTsLocalImports(
         ?.namedChildren.some(
           (arg) => arg.type === 'arrow_function' || arg.type === 'function_expression',
         )
-    )
-      (registrationHandles ??= new Map()).set(declaration.startIndex, rangeKey(rangeOf(name)));
+    ) {
+      registrationHandles ??= new Map();
+      registrationHandles.set(declaration.startIndex, rangeKey(rangeOf(name)));
+    }
   };
   for (const { node, scope } of calls) {
     const fn = node.childForFieldName('function');

@@ -143,12 +143,12 @@ export async function checkNativeEsmExports() {
         }
       },
     });
-    for (const ext of ['cjs', 'cts']) {
+    await Array.fromAsync(['cjs', 'cts'], async (ext) => {
       const legacy = await import(pathToFileURL(path.join(out, 'legacy-' + ext + '.cjs')).href);
       assert.equal(legacy.default.name, 'cjsOnly');
       assert.deepEqual(exportsByFile.get('legacy-' + ext + '.' + ext), ['default']);
-    }
-    for (const [ext, target] of formats) {
+    });
+    await Array.fromAsync(formats, async ([ext, target]) => {
       const load = (name) => import(pathToFileURL(path.join(out, ext, name + '.' + target)).href);
       const api = await load('api');
       const barrel = await load('barrel');
@@ -177,7 +177,7 @@ export async function checkNativeEsmExports() {
         ],
         apiFile,
       );
-    }
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -190,7 +190,7 @@ export async function checkNodeModuleFormat() {
   const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-node-format-'));
   const cli = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
   try {
-    for (const type of ['commonjs', 'module']) {
+    await Array.fromAsync(['commonjs', 'module'], async (type) => {
       const project = path.join(root, type);
       const out = path.join(root, type + '-output');
       cpSync(path.join(fixture, 'callers'), project, { recursive: true });
@@ -221,7 +221,7 @@ export async function checkNodeModuleFormat() {
         },
       });
       assert.deepEqual(actual, expected, type);
-    }
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -288,15 +288,19 @@ export async function checkModuleValues() {
         })
         .map((edge) => graph.getNode(edge.targetId));
     }
-    const origins = new Map();
-    for (const module of ['left', 'right'])
-      origins.set((await load(module)).publish, barrels + '/' + module + '.ts');
-    for (const [caller, module] of [
+    const origins = new Map(
+      await Array.fromAsync(['left', 'right'], async (module) => [
+        (await load(module)).publish,
+        barrels + '/' + module + '.ts',
+      ]),
+    );
+    const callers = [
       ['useValueBesideType', 'direct-mixed'],
       ['useRuntimeStar', 'mixed-owners'],
       ['ambiguousCall', 'ambiguous'],
       ['reversedCall', 'reversed'],
-    ]) {
+    ];
+    await Array.fromAsync(callers, async ([caller, module]) => {
       const actual = targets(entry, caller);
       const namespace = await load(module);
       if (!Object.hasOwn(namespace, 'publish')) assert.deepEqual(actual, []);
@@ -307,7 +311,7 @@ export async function checkModuleValues() {
           [[origins.get(namespace.publish), 'publish']],
         );
       }
-    }
+    });
     const wrapper = await load('wrapped');
     assert.notEqual(wrapper.default, wrapper.exposed);
     const wrapped = targets(entry, 'wrapperDefault');

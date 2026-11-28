@@ -2,7 +2,7 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { positionQualifiedCallableName } from '../../workers/callable-id.js';
 import { ARRAY_METHOD_HOC_BLOCKLIST_SET, isRegistrationHandle } from '../../ts-js-hoc-utils.js';
 
-const callableKinds = ['arrow_function', 'function_expression', 'generator_function'];
+const callableKinds = new Set(['arrow_function', 'function_expression', 'generator_function']);
 const moduleBoundaries = new Set([
   ...callableKinds,
   'function_declaration',
@@ -19,7 +19,7 @@ const repeatedBindings = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
 function callableInitializer(declaration: SyntaxNode): SyntaxNode | undefined {
   const value = declaration.childForFieldName('value');
   if (!value) return undefined;
-  if (callableKinds.includes(value.type)) return value;
+  if (callableKinds.has(value.type)) return value;
   if (value.type !== 'call_expression' || isRegistrationHandle(declaration)) return undefined;
   const callee = value.childForFieldName('function');
   if (callee?.type !== 'identifier') {
@@ -50,6 +50,26 @@ function moduleBindingScope(declaration: SyntaxNode): 'module' | 'block' | undef
   return block ? 'block' : 'module';
 }
 
+function repeatedModuleBindings(tree: SyntaxNode['tree']): ReadonlySet<string> {
+  const cached = repeatedBindings.get(tree);
+  if (cached) return cached;
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const other of tree.rootNode.descendantsOfType([
+    'variable_declarator',
+    'function_declaration',
+    'generator_function_declaration',
+  ])) {
+    if (other.type === 'variable_declarator' && !callableInitializer(other)) continue;
+    const spelling = other.childForFieldName('name')?.text;
+    if (!spelling || !moduleBindingScope(other)) continue;
+    if (seen.has(spelling)) duplicates.add(spelling);
+    else seen.add(spelling);
+  }
+  repeatedBindings.set(tree, duplicates);
+  return duplicates;
+}
+
 /** A file-level block may declare a second callable with the same module-relative graph name. */
 export function blockCallableIdentity(declaration: SyntaxNode, name: string): string | undefined {
   if (
@@ -60,25 +80,7 @@ export function blockCallableIdentity(declaration: SyntaxNode, name: string): st
     return;
   const tree = declaration.tree;
   if (!tree) return;
-  let repeated = repeatedBindings.get(tree);
-  if (!repeated) {
-    const seen = new Set<string>();
-    const duplicates = new Set<string>();
-    for (const other of tree.rootNode.descendantsOfType([
-      'variable_declarator',
-      'function_declaration',
-      'generator_function_declaration',
-    ])) {
-      if (other.type === 'variable_declarator' && !callableInitializer(other)) continue;
-      const spelling = other.childForFieldName('name')?.text;
-      if (!spelling || !moduleBindingScope(other)) continue;
-      if (seen.has(spelling)) duplicates.add(spelling);
-      else seen.add(spelling);
-    }
-    repeatedBindings.set(tree, duplicates);
-    repeated = duplicates;
-  }
-  if (!repeated.has(name)) return undefined;
+  if (!repeatedModuleBindings(tree).has(name)) return undefined;
   // One lexical binding has one identity even when a wrapper takes multiple callbacks.
   const initializer = callableInitializer(declaration);
   return initializer && positionQualifiedCallableName(name, initializer.startPosition);

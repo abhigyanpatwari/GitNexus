@@ -258,6 +258,16 @@ export const buildDefinitionPreScan = (
   const nonValue = new Set<string>();
   const callable = new Set<string>();
   const concreteTypedefRanges = new Set<string>();
+  const recordNameClaim = (
+    definition: SyntaxNode,
+    name: SyntaxNode | undefined,
+    label: NodeLabel,
+  ) => {
+    if (!name || isValueDefinitionLabel(label)) return;
+    const key = `${definition.startIndex}:${name.text}`;
+    nonValue.add(key);
+    if (isOverloadableCallable(label)) callable.add(key);
+  };
   for (const match of matches) {
     // ONE capture-map build per match feeds both suppression sets. These used
     // to be two independent passes over `matches` (each rebuilding this object)
@@ -279,14 +289,11 @@ export const buildDefinitionPreScan = (
     const label = getLabelFromCaptures(captureMap, provider);
     if (label === null) continue;
     if (provider.shouldSkipDefinitionCapture?.(captureMap, label)) {
-      (skippedMatches ??= new Set()).add(match);
+      skippedMatches ??= new Set();
+      skippedMatches.add(match);
       continue;
     }
-    if (!nameNode || isValueDefinitionLabel(label)) continue;
-
-    const key = `${definitionNode.startIndex}:${nameNode.text}`;
-    nonValue.add(key);
-    if (isOverloadableCallable(label)) callable.add(key);
+    recordNameClaim(definitionNode, nameNode, label);
   }
   return { nonValue, callable, concreteTypedefRanges, skippedMatches };
 };

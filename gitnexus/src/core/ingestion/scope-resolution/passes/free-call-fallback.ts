@@ -284,12 +284,13 @@ export function emitFreeCallFallback(
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);
       const qualifier =
         site.callForm === 'constructor' ? site.rawQualifiedName?.split(/[.:]/, 1)[0] : undefined;
-      const qualifierClaim =
-        qualifier && qualifier !== site.rawQualifiedName
-          ? qualifier === site.name
+      let qualifierClaim: NameClaimResult | undefined;
+      if (qualifier && qualifier !== site.rawQualifiedName) {
+        qualifierClaim =
+          qualifier === site.name
             ? nameClaim
-            : lookupNameClaim(site.inScope, qualifier, scopes, lookupOptions)
-          : undefined;
+            : lookupNameClaim(site.inScope, qualifier, scopes, lookupOptions);
+      }
       // The first Widget in Widget.Widget is a namespace. Resolve its member
       // from that import even when the simple-name lookup also found the namespace.
       const namespaceConstructor =

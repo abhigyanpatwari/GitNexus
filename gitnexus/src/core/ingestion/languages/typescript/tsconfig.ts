@@ -110,6 +110,12 @@ export function tsconfigFor(index: TsconfigIndex | null, filePath: string): Tsco
   return nearest.get('') ?? null;
 }
 
+// Read lazily: a project can append previously unseen references to this same set.
+async function* readProjectConfigs(paths: ReadonlySet<string>, extended: Set<string>) {
+  for (const absPath of paths)
+    yield readCompilerOptions(absPath, 0, extended).then((options) => ({ absPath, options }));
+}
+
 /** Load every tsconfig in the repo, resolving `extends` chains. */
 export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex | null> {
   const files = await findTsconfigFiles(repoRoot);
@@ -119,8 +125,7 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   const references = new Map<string, string[]>();
   const extended = new Set<string>();
   const pathsToRead = new Set(files);
-  for (const absPath of pathsToRead) {
-    const options = await readCompilerOptions(absPath, 0, extended);
+  for await (const { absPath, options } of readProjectConfigs(pathsToRead, extended)) {
     if (options === null) continue;
     // `readCompilerOptions` resolves both to ABSOLUTE paths against whichever
     // config in the `extends` chain declared them, which is the only way the
@@ -315,6 +320,13 @@ async function readCompilerOptions(
   };
 }
 
+async function* extendedTargets(value: unknown, fromDir: string) {
+  const specs = Array.isArray(value) ? value : [value];
+  for (const spec of specs) {
+    if (typeof spec === 'string') yield resolveExtendsTarget(spec, fromDir);
+  }
+}
+
 /** Follow `extends`, which may be a string or (TS 5+) an array, base-first. */
 async function readExtended(
   value: unknown,
@@ -322,11 +334,8 @@ async function readExtended(
   depth: number,
   extended: Set<string>,
 ): Promise<ResolvedOptions | null> {
-  const specs = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
   let merged: ResolvedOptions | null = null;
-  for (const spec of specs) {
-    if (typeof spec !== 'string') continue;
-    const resolved = await resolveExtendsTarget(spec, fromDir);
+  for await (const resolved of extendedTargets(value, fromDir)) {
     if (resolved === null) continue;
     extended.add(resolved);
     const options = await readCompilerOptions(resolved, depth + 1, extended);

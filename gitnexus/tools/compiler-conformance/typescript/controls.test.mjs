@@ -477,6 +477,12 @@ test('legacy baseUrl resolves the same imports as the compiler’s paths migrati
   const project = path.resolve(root, '../..', key);
   const diagnostics = JSON.parse(readFileSync(new URL('./diagnostics.json', import.meta.url)));
   const reference = compilerReport(project, diagnostics[key]).IMPORTS;
+  assert.ok(
+    reference.edges.some(
+      ({ from, to }) => from === 'apps/web/src/baseurl.ts' && to === 'apps/web/src/utils/format.ts',
+    ),
+    'The compiler must exercise the baseUrl import',
+  );
   const legacy = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-legacy-baseurl-'));
   t.after(() => rmSync(legacy, { recursive: true, force: true }));
   cpSync(project, legacy, { recursive: true });
@@ -656,13 +662,11 @@ test('same-line local classes retain distinct construction and method targets', 
     const leftEdge = calls.edges.find(({ to }) => to === leftTarget);
     const rightEdge = calls.edges.find(({ to }) => to === rightTarget);
     assert.ok(leftEdge && rightEdge);
-    const swapped = calls.edges.map((edge) =>
-      edge === leftEdge
-        ? { ...edge, to: rightEdge.to }
-        : edge === rightEdge
-          ? { ...edge, to: leftEdge.to }
-          : edge,
-    );
+    const swapped = calls.edges.map((edge) => {
+      if (edge === leftEdge) return { ...edge, to: rightEdge.to };
+      if (edge === rightEdge) return { ...edge, to: leftEdge.to };
+      return edge;
+    });
     assert.throws(() => compareReports(calls, { ...calls, edges: swapped }), /Missing from actual/);
   }
 });

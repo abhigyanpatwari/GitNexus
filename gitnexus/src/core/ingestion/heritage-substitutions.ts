@@ -9,7 +9,7 @@ const maxExpandedTypeLength = 32 * 1024;
 
 // Restrict textual substitution to named types and their type constructors.
 // Structural types and nested signatures may introduce new names of their own.
-const compositeType = /^[\p{ID_Continue}$\s.<>,\[\]()|&]+$/u;
+const compositeType = /^[\p{ID_Continue}$\s.<>,[\]()|&]+$/u;
 const nullableOperand =
   /^[$_\p{ID_Start}][$\p{ID_Continue}]*(?:\.[$_\p{ID_Start}][$\p{ID_Continue}]*)*\??$/u;
 
@@ -57,6 +57,67 @@ function needsPrefixGrouping(type: string): boolean {
   return false;
 }
 
+function resolveOperand(
+  name: string,
+  bindings: Bindings,
+  local?: ReadonlySet<string>,
+  nullableOwner?: NullableOwner,
+): string | null | undefined {
+  if (local?.has(name)) return undefined;
+  const direct = bindings.get(name);
+  if (direct !== undefined || !nullableOwner?.specialize || !name.endsWith('?')) return direct;
+  const formal = name.slice(0, -1).trimEnd();
+  if (local?.has(formal)) return undefined;
+  const actual = bindings.get(formal);
+  if (actual === undefined || actual === null) return actual;
+  return nullableOwner.specialize(nullableOwner.declaration, formal, actual);
+}
+
+/** Preserve precedence when an argument is spliced into a larger type. */
+function needsOperandGrouping(type: string, offset: number, name: string, actual: string): boolean {
+  let left = offset - 1;
+  let right = offset + name.length;
+  while (left >= 0 && /\s/u.test(type[left])) left--;
+  while (right < type.length && /\s/u.test(type[right])) right++;
+  const prefix = left >= 0 && /[\p{ID_Continue}$]/u.test(type[left]);
+  const postfix = type[right] === '[';
+  const intersection = type[left] === '&' || type[right] === '&';
+  const union = type[left] === '|' || type[right] === '|';
+  return (
+    (prefix && needsPrefixGrouping(actual)) ||
+    (postfix && /[|&]|=>/.test(actual)) ||
+    (intersection && /\||=>/.test(actual)) ||
+    (union && actual.includes('=>'))
+  );
+}
+
+function substituteOperands(
+  type: string,
+  sites: Iterable<RegExpExecArray>,
+  bindings: Bindings,
+  local?: ReadonlySet<string>,
+  nullableOwner?: NullableOwner,
+): string | null {
+  let length = type.length;
+  let end = 0;
+  const parts: string[] = [];
+  for (const match of sites) {
+    const name = match[0];
+    const offset = match.index;
+    const actual = resolveOperand(name, bindings, local, nullableOwner);
+    if (actual === undefined) continue;
+    if (actual === null) return null;
+    const group = needsOperandGrouping(type, offset, name, actual);
+    length += actual.length - name.length + (group ? 2 : 0);
+    if (length > maxExpandedTypeLength) return null;
+    parts.push(type.slice(end, offset), group ? `(${actual})` : actual);
+    end = offset + name.length;
+  }
+  if (!parts.length) return type;
+  parts.push(type.slice(end));
+  return parts.join('');
+}
+
 function specializeType(
   type: string,
   bindings?: Bindings,
@@ -67,17 +128,7 @@ function specializeType(
 ): string | null {
   if (type.length > maxExpandedTypeLength) return null;
   if (!bindings?.size || local?.has(type)) return type;
-  const resolveOperand = (name: string): string | null | undefined => {
-    if (local?.has(name)) return undefined;
-    const direct = bindings.get(name);
-    if (direct !== undefined || !nullableOwner?.specialize || !name.endsWith('?')) return direct;
-    const formal = name.slice(0, -1).trimEnd();
-    if (local?.has(formal)) return undefined;
-    const actual = bindings.get(formal);
-    if (actual === undefined || actual === null) return actual;
-    return nullableOwner.specialize(nullableOwner.declaration, formal, actual);
-  };
-  const direct = resolveOperand(type);
+  const direct = resolveOperand(type, bindings, local, nullableOwner);
   if (direct !== undefined)
     return direct !== null && direct.length <= maxExpandedTypeLength ? direct : null;
   let sites = operands?.(type, bindings, local);
@@ -88,37 +139,60 @@ function specializeType(
     if (!pattern) return type;
     sites = type.matchAll(pattern);
   }
-  let length = type.length;
-  let end = 0;
-  const parts: string[] = [];
-  for (const match of sites) {
-    const name = match[0];
-    const offset = match.index;
-    const actual = resolveOperand(name);
-    if (actual === undefined) continue;
-    if (actual === null) return null;
-    // Preserve precedence when an argument is spliced into a larger type.
-    let left = offset - 1;
-    let right = offset + name.length;
-    while (left >= 0 && /\s/u.test(type[left]!)) left--;
-    while (right < type.length && /\s/u.test(type[right]!)) right++;
-    const prefix = left >= 0 && /[\p{ID_Continue}$]/u.test(type[left]!);
-    const postfix = type[right] === '[';
-    const intersection = type[left] === '&' || type[right] === '&';
-    const union = type[left] === '|' || type[right] === '|';
-    const group =
-      (prefix && needsPrefixGrouping(actual)) ||
-      (postfix && /[|&]|=>/.test(actual)) ||
-      (intersection && /\||=>/.test(actual)) ||
-      (union && actual.includes('=>'));
-    length += actual.length - name.length + (group ? 2 : 0);
-    if (length > maxExpandedTypeLength) return null;
-    parts.push(type.slice(end, offset), group ? `(${actual})` : actual);
-    end = offset + name.length;
+  return substituteOperands(type, sites, bindings, local, nullableOwner);
+}
+
+interface ClassBindings {
+  bindingsByOwner: Map<string, Bindings>;
+  nullablePaths?: Map<string, NullableOwner>;
+}
+
+function specializeBaseArguments(
+  args: Bindings | undefined,
+  outer: Bindings | undefined,
+  metadata: NullableOwner | undefined,
+  context: NullableOwner | undefined,
+): Map<string, string | null> {
+  const next = new Map<string, string | null>();
+  for (const [formal, actual] of args ?? []) {
+    next.set(
+      formal,
+      actual === null
+        ? null
+        : specializeType(
+            actual,
+            outer,
+            undefined,
+            context,
+            metadata?.qualifiedPattern,
+            metadata?.operands,
+          ),
+    );
   }
-  if (!parts.length) return type;
-  parts.push(type.slice(end));
-  return parts.join('');
+  return next;
+}
+
+function mergeBaseBindings(
+  composed: ClassBindings,
+  base: string,
+  next: Map<string, string | null>,
+  path: NullableOwner | undefined,
+): boolean {
+  const addedPath = path !== undefined && !composed.nullablePaths?.has(base);
+  if (addedPath) {
+    composed.nullablePaths ??= new Map();
+    composed.nullablePaths.set(base, path);
+  }
+  const prior = composed.bindingsByOwner.get(base);
+  if (prior) {
+    // Only substitutions supported by every path can select a method.
+    for (const [formal, actual] of next) {
+      if (prior.get(formal) !== actual) next.delete(formal);
+    }
+    if (next.size === prior.size && !addedPath) return false;
+  }
+  composed.bindingsByOwner.set(base, next);
+  return true;
 }
 
 /** Type arguments retained between scope resolution and method override matching. */
@@ -199,7 +273,10 @@ export class HeritageSubstitutions {
     for (const [formal, actual] of bindings) {
       if (actual === null) continue;
       const scoped = normalize(actual);
-      if (scoped !== actual) (normalized ??= new Map(bindings)).set(formal, scoped);
+      if (scoped !== actual) {
+        normalized ??= new Map(bindings);
+        normalized.set(formal, scoped);
+      }
     }
     if (normalized) this.normalizedEdges.set(key, normalized);
   }
@@ -229,7 +306,8 @@ export class HeritageSubstitutions {
     result?: string | null,
   ) {
     if (scopedOverride) {
-      (this.scopedOverrides ??= new Map()).set(id, {
+      this.scopedOverrides ??= new Map();
+      this.scopedOverrides.set(id, {
         parameters: scopedTypes,
         result: typeof result === 'string' ? [result] : result,
       });
@@ -242,59 +320,71 @@ export class HeritageSubstitutions {
     }
   }
 
+  private composeBindings(
+    child: string,
+    parents: ReadonlyMap<string, readonly string[]>,
+    scoped: boolean,
+  ): ClassBindings {
+    const composed: ClassBindings = { bindingsByOwner: new Map() };
+    if (!this.edges.size) return composed;
+
+    const queue = [child];
+    composed.bindingsByOwner.set(child, new Map());
+    // The array iterator also visits bases appended when a binding or path changes.
+    for (const owner of queue) {
+      const outer = composed.bindingsByOwner.get(owner);
+      const metadata = this.nullableOwners.get(owner);
+      for (const base of parents.get(owner) ?? []) {
+        const key = heritageTypeArgumentsKey(owner, base);
+        const args = (scoped && this.normalizedEdges.get(key)) || this.edges.get(key);
+        const context = this.nullableEdges.has(key) ? metadata : undefined;
+        const next = specializeBaseArguments(args, outer, metadata, context);
+        const path = context ?? composed.nullablePaths?.get(owner);
+        if (mergeBaseBindings(composed, base, next, path)) queue.push(base);
+      }
+    }
+    return composed;
+  }
+
+  private specializeMethodTypes(
+    method: string,
+    types: string[],
+    bindings: Bindings | undefined,
+    metadata: NullableOwner | undefined,
+    path: NullableOwner | undefined,
+  ): string[] | null {
+    const normalize = path?.normalize;
+    const completed = metadata?.needsNormalization;
+    if (!types.length || (!bindings?.size && !normalize && (!completed || !types.some(completed))))
+      return types;
+
+    const local = this.methodParameters.get(method);
+    const context = path ? metadata : undefined;
+    const specialized: string[] = [];
+    for (const type of types) {
+      const result = specializeType(
+        type,
+        bindings,
+        local,
+        context,
+        metadata?.qualifiedPattern,
+        metadata?.operands,
+      );
+      if (result === null) return null;
+      // Direct generic methods can contain a completed type even when the
+      // base arguments themselves need no declaration-scoped normalization.
+      const canonical = normalize ?? (completed?.(result) ? metadata.normalize : undefined);
+      const normalized = canonical ? canonical(result) : result;
+      if (normalized === null) return null;
+      specialized.push(normalized);
+    }
+    return specialized;
+  }
+
   /** Express every ancestor's formal parameters in the child's lexical context. */
   forClass(child: string, parents: ReadonlyMap<string, readonly string[]>) {
-    const compose = (scoped: boolean) => {
-      const bindingsByOwner = new Map<string, Bindings>();
-      let nullablePaths: Map<string, NullableOwner> | undefined;
-      if (this.edges.size) {
-        const queue = [child];
-        bindingsByOwner.set(child, new Map());
-        for (let i = 0; i < queue.length; i++) {
-          const owner = queue[i]!;
-          const outer = bindingsByOwner.get(owner);
-          const metadata = this.nullableOwners.get(owner);
-          for (const base of parents.get(owner) ?? []) {
-            const key = heritageTypeArgumentsKey(owner, base);
-            const args = (scoped && this.normalizedEdges.get(key)) || this.edges.get(key);
-            const next = new Map<string, string | null>();
-            const context = this.nullableEdges.has(key) ? metadata : undefined;
-            const path = context ?? nullablePaths?.get(owner);
-            for (const [formal, actual] of args ?? []) {
-              next.set(
-                formal,
-                actual === null
-                  ? null
-                  : specializeType(
-                      actual,
-                      outer,
-                      undefined,
-                      context,
-                      metadata?.qualifiedPattern,
-                      metadata?.operands,
-                    ),
-              );
-            }
-            const addedPath = path !== undefined && !nullablePaths?.has(base);
-            if (addedPath) (nullablePaths ??= new Map()).set(base, path);
-            const prior = bindingsByOwner.get(base);
-            if (prior) {
-              // Distinct paths can instantiate the same ancestor differently. Only
-              // substitutions supported by every path can select a method.
-              for (const [formal, actual] of next) {
-                if (prior.get(formal) !== actual) next.delete(formal);
-              }
-              if (next.size === prior.size && !addedPath) continue;
-            }
-            bindingsByOwner.set(base, next);
-            queue.push(base);
-          }
-        }
-      }
-      return { bindingsByOwner, nullablePaths };
-    };
-    const { bindingsByOwner, nullablePaths } = compose(false);
-    let normalized: ReturnType<typeof compose> | undefined;
+    const composed = this.composeBindings(child, parents, false);
+    let normalized: ClassBindings | undefined;
     return (
       owner: string,
       method: string,
@@ -303,11 +393,13 @@ export class HeritageSubstitutions {
       useDeclaredParameters = true,
     ): string[] | null => {
       // A nullable base on another branch supplies no evidence about this method.
-      const path = nullablePaths?.get(contract) ?? nullablePaths?.get(owner);
-      const bindings =
-        path && this.normalizedEdges.size
-          ? (normalized ??= compose(true)).bindingsByOwner.get(owner)
-          : bindingsByOwner.get(owner);
+      const path = composed.nullablePaths?.get(contract) ?? composed.nullablePaths?.get(owner);
+      let byOwner = composed.bindingsByOwner;
+      if (path && this.normalizedEdges.size) {
+        normalized ??= this.composeBindings(child, parents, true);
+        byOwner = normalized.bindingsByOwner;
+      }
+
       const scoped = this.scopedOverrides?.get(method);
       const ownTypes = useDeclaredParameters ? scoped?.parameters : scoped?.result;
       const declared =
@@ -315,37 +407,13 @@ export class HeritageSubstitutions {
           ? this.declaredMethodTypes.get(method)
           : ownTypes;
       if (declared === null) return null;
-      const exact = declared ?? types;
-      const metadata = this.nullableOwners.get(owner);
-      const context = path ? metadata : undefined;
-      const normalize = path?.normalize;
-      const completed = !normalize && metadata?.needsNormalization;
-      if (
-        !exact.length ||
-        (!bindings?.size && !normalize && (!completed || !exact.some(completed)))
-      )
-        return exact;
-      const local = this.methodParameters.get(method);
-      const specialized: string[] = [];
-      for (const type of exact) {
-        const result = specializeType(
-          type,
-          bindings,
-          local,
-          context,
-          metadata?.qualifiedPattern,
-          metadata?.operands,
-        );
-        if (result === null) return null;
-        // Direct generic methods can contain a completed type even when the
-        // base arguments themselves need no declaration-scoped normalization.
-        const canonical =
-          normalize ?? (completed && completed(result) ? metadata?.normalize : undefined);
-        const normalized = canonical ? canonical(result) : result;
-        if (normalized === null) return null;
-        specialized.push(normalized);
-      }
-      return specialized;
+      return this.specializeMethodTypes(
+        method,
+        declared ?? types,
+        byOwner.get(owner),
+        this.nullableOwners.get(owner),
+        path,
+      );
     };
   }
 }

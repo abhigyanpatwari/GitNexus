@@ -69,7 +69,8 @@ export function callStrictNullChecks(
   indexes: ScopeResolutionIndexes,
 ): boolean | 'mixed' {
   const modes = callNullModes(site, indexes);
-  return modes.includes('loose') ? (modes.length === 1 ? false : 'mixed') : true;
+  if (!modes.includes('loose')) return true;
+  return modes.length === 1 ? false : 'mixed';
 }
 
 const scriptDeclarations = new WeakSet<SymbolDefinition>();
@@ -203,8 +204,9 @@ function fileSelection(scope: TsconfigScope) {
   const compile = (pattern: string, exclude: boolean) => {
     // TypeScript treats brackets, braces and parentheses literally. Only *, ** and ? are wildcards.
     const tail = pattern.slice(pattern.lastIndexOf('/') + 1);
-    const glob = /[.*?]/.test(tail) ? pattern : (pattern ? pattern + '/' : '') + '**/*';
-    return new Minimatch(glob.replace(/[\[\]\\]/g, '\\$&'), {
+    let glob = pattern;
+    if (!/[.*?]/.test(tail)) glob = pattern ? `${pattern}/**/*` : '**/*';
+    return new Minimatch(glob.replace(/[[\]\\]/g, String.raw`\$&`), {
       nobrace: true,
       noext: true,
       nonegate: true,
@@ -232,12 +234,82 @@ function fileSelection(scope: TsconfigScope) {
   };
 }
 
+function includeDirectory(pattern: string): string {
+  const prefix = pattern.split(/[?*]/, 1)[0];
+  if (prefix.endsWith('/')) return prefix.slice(0, -1);
+  if (prefix === pattern && !path.posix.extname(prefix)) return prefix;
+  return prefix.slice(0, Math.max(0, prefix.lastIndexOf('/')));
+}
+
+type GlobalProject = TsconfigScope | string;
+type ProjectRoots = Map<GlobalProject, Set<ParsedFile>>;
+type ProjectSelections = Map<string, Map<TsconfigScope, ReturnType<typeof fileSelection>>>;
+
+function addMember<K, V>(groups: Map<K, Set<V>>, key: K, member: V) {
+  const group = groups.get(key);
+  if (group) group.add(member);
+  else groups.set(key, new Set([member]));
+}
+
+function indexProjectRoots(
+  project: TsconfigScope,
+  byPath: ReadonlyMap<string, ParsedFile>,
+  roots: ProjectRoots,
+  selections: ProjectSelections,
+) {
+  for (const name of project.files ?? []) {
+    const file = byPath.get(name);
+    if (file) addMember(roots, project, file);
+  }
+  const selected = fileSelection(project);
+  for (const pattern of project.include ?? (project.files ? [] : [project.dir])) {
+    const directory = includeDirectory(pattern);
+    const existing = selections.get(directory);
+    if (existing) existing.set(project, selected);
+    else selections.set(directory, new Map([[project, selected]]));
+  }
+}
+
+function selectFileProjects(
+  file: ParsedFile,
+  owner: GlobalProject,
+  roots: ProjectRoots,
+  selections: ProjectSelections,
+) {
+  if (typeof owner === 'string') addMember(roots, owner, file);
+  let dir = file.filePath;
+  do {
+    dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')));
+    for (const [project, selected] of selections.get(dir) ?? []) {
+      if (selected(file.filePath)) addMember(roots, project, file);
+    }
+  } while (dir);
+}
+
+function includeDependencies(
+  file: ParsedFile,
+  members: Set<ParsedFile>,
+  byPath: ReadonlyMap<string, ParsedFile>,
+  indexes: ScopeResolutionIndexes,
+) {
+  indexes.imports.forEachTarget(file.moduleScope, (target) => {
+    const dependency = byPath.get(target);
+    if (dependency) members.add(dependency);
+  });
+  for (const reference of declarationScope(file.captureSideChannel)?.referencePaths ?? []) {
+    const target = byPath.get(
+      path.posix.normalize(path.posix.join(path.posix.dirname(file.filePath), reference)),
+    );
+    if (target) members.add(target);
+  }
+}
+
 /** Explicit file entries and transitive imports stay in a project even when an exclude matches. */
 function projectMembers(
   files: readonly ParsedFile[],
   config: Projects | undefined,
   indexes: ScopeResolutionIndexes,
-  projectOf: (file: ParsedFile) => TsconfigScope | string,
+  projectOf: (file: ParsedFile) => GlobalProject,
 ) {
   const index = config?.tsconfigs;
   const scopes = index?.standalonePrograms?.length
@@ -253,72 +325,220 @@ function projectMembers(
   )
     return;
   const byPath = new Map(files.map((file) => [file.filePath, file]));
-  const roots = new Map<TsconfigScope | string, Set<ParsedFile>>();
-  function addRoot(project: TsconfigScope | string, file: ParsedFile) {
-    let members = roots.get(project);
-    if (!members) {
-      members = new Set();
-      roots.set(project, members);
-    }
-    members.add(file);
-  }
-  const selections = new Map<string, Map<TsconfigScope, ReturnType<typeof fileSelection>>>();
-  for (const project of scopes) {
-    for (const name of project.files ?? []) {
-      const file = byPath.get(name);
-      if (file) addRoot(project, file);
-    }
-    const selected = fileSelection(project);
-    for (const pattern of project.include ?? (project.files ? [] : [project.dir])) {
-      const prefix = pattern.split(/[?*]/, 1)[0];
-      const dir = prefix.endsWith('/')
-        ? prefix.slice(0, -1)
-        : prefix === pattern && !path.posix.extname(prefix)
-          ? prefix
-          : prefix.slice(0, Math.max(0, prefix.lastIndexOf('/')));
-      let configs = selections.get(dir);
-      if (!configs) {
-        configs = new Map();
-        selections.set(dir, configs);
-      }
-      configs.set(project, selected);
-    }
-  }
-  for (const file of files) {
-    const owner = projectOf(file);
-    if (typeof owner === 'string') addRoot(owner, file);
-    let dir = file.filePath;
-    do {
-      dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')));
-      for (const [project, selected] of selections.get(dir) ?? []) {
-        if (selected(file.filePath)) addRoot(project, file);
-      }
-    } while (dir);
-  }
-  const membership = new Map<ParsedFile, Set<TsconfigScope | string>>();
+  const roots: ProjectRoots = new Map();
+  const selections: ProjectSelections = new Map();
+  for (const project of scopes) indexProjectRoots(project, byPath, roots, selections);
+  for (const file of files) selectFileProjects(file, projectOf(file), roots, selections);
+
+  const membership = new Map<ParsedFile, Set<GlobalProject>>();
   for (const [project, members] of roots) {
+    const followImports = typeof project === 'string' || !project.noResolve;
     for (const file of members) {
-      let projects = membership.get(file);
-      if (!projects) {
-        projects = new Set();
-        membership.set(file, projects);
-      }
-      projects.add(project);
-      if (members.size < files.length && (typeof project === 'string' || !project.noResolve)) {
-        indexes.imports.forEachTarget(file.moduleScope, (target) => {
-          const dependency = byPath.get(target);
-          if (dependency) members.add(dependency);
-        });
-        for (const reference of declarationScope(file.captureSideChannel)?.referencePaths ?? []) {
-          const target = byPath.get(
-            path.posix.normalize(path.posix.join(path.posix.dirname(file.filePath), reference)),
-          );
-          if (target) members.add(target);
-        }
-      }
+      addMember(membership, file, project);
+      if (followImports && members.size < files.length)
+        includeDependencies(file, members, byPath, indexes);
     }
   }
   return membership;
+}
+
+type GlobalTable = Map<string, BindingRef[]>;
+type DeclarationScope = NonNullable<ReturnType<typeof declarationScope>>;
+
+function declarationPositions(
+  scope: DeclarationScope,
+  filePath: string,
+  project: GlobalProject,
+  packages?: NodeWorkspacePackages | null,
+) {
+  if (!scope.scriptNames) return scope.globalNames;
+  const config = typeof project === 'string' ? null : project;
+  return isProjectModule(filePath, scope.containsJsx === true, config, packages)
+    ? scope.globalNames
+    : scope.scriptNames;
+}
+
+function visiblePrograms(
+  owner: GlobalProject,
+  projects: ReadonlySet<GlobalProject> | undefined,
+  standalone: ReadonlySet<TsconfigScope>,
+): GlobalProject[] {
+  if (!projects) return [owner];
+  const visible = [...projects];
+  if (visible.length < 2) return visible;
+  // An imported file belongs to its including programs, even outside every config directory.
+  const configured = visible.filter((project) => typeof project !== 'string');
+  if (!configured.length) return visible;
+  const primary = configured.filter((project) => !standalone.has(project));
+  return primary.length ? primary : configured;
+}
+
+function recordProjectNullModes(
+  filePath: string,
+  projects: readonly GlobalProject[],
+  modes: Map<string, readonly CallNullMode[]>,
+) {
+  const first = projectNullMode(projects[0]);
+  if (projects.some((project) => projectNullMode(project) !== first)) {
+    modes.set(filePath, [...new Set(projects.map(projectNullMode))]);
+  } else if (first !== 'strict') {
+    modes.set(filePath, singleMode[first]);
+  }
+}
+
+class GlobalBindings {
+  private readonly globals = new Map<GlobalProject, GlobalTable>();
+  private readonly declaredNamespaces = new Map<ParsedFile, Set<SymbolDefinition>>();
+  private readonly definitionsByBucket = new WeakMap<
+    readonly BindingRef[],
+    Set<SymbolDefinition>
+  >();
+  private readonly agreedByProjects = new Map<string, GlobalTable>();
+  private readonly namespaces: Map<string, ReadonlyMap<string, BindingRef[]>>;
+  private readonly accessible: Map<ScopeId, readonly string[]>;
+
+  constructor(
+    private readonly indexes: ScopeResolutionIndexes,
+    private readonly programIds: ReadonlyMap<TsconfigScope, number>,
+    private readonly packages?: NodeWorkspacePackages | null,
+  ) {
+    this.namespaces = indexes.namespaceFqnBindings as typeof this.namespaces;
+    this.accessible = indexes.accessibleNamespacesByScope as typeof this.accessible;
+  }
+
+  collect(
+    file: ParsedFile,
+    membership: ReturnType<typeof projectMembers>,
+    projectOf: (file: ParsedFile) => GlobalProject,
+  ) {
+    const scope = declarationScope(file.captureSideChannel);
+    if (!scope) return;
+    if (scope.scriptNames?.length) {
+      const candidates = new Set(scope.scriptNames);
+      for (const def of file.localDefs) {
+        if (def.nameRange && candidates.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`))
+          scriptDeclarations.add(def);
+      }
+    }
+    const projects = membership ? membership.get(file) : [projectOf(file)];
+    for (const project of projects ?? []) {
+      const names = declarationPositions(scope, file.filePath, project, this.packages);
+      if (names.length) this.addDeclarations(file, project, new Set(names));
+    }
+  }
+
+  private addDeclarations(
+    file: ParsedFile,
+    project: GlobalProject,
+    positions: ReadonlySet<string>,
+  ) {
+    let symbols = this.globals.get(project);
+    if (!symbols) {
+      symbols = new Map();
+      this.globals.set(project, symbols);
+    }
+    for (const def of file.localDefs) {
+      const { nameRange, qualifiedName } = def;
+      if (
+        !nameRange ||
+        !qualifiedName ||
+        !positions.has(`${nameRange.startLine}:${nameRange.startCol}`)
+      )
+        continue;
+      const refs = symbols.get(qualifiedName) ?? [];
+      refs.push({ def, origin: 'namespace' });
+      symbols.set(qualifiedName, refs);
+      if (def.type === 'Namespace') addMember(this.declaredNamespaces, file, def);
+    }
+  }
+
+  private definitions(refs: readonly BindingRef[]) {
+    let result = this.definitionsByBucket.get(refs);
+    if (!result) {
+      result = new Set(refs.map((ref) => ref.def));
+      this.definitionsByBucket.set(refs, result);
+    }
+    return result;
+  }
+
+  private sharedGlobals(
+    projectKey: string,
+    projects: readonly GlobalProject[],
+    symbols: GlobalTable,
+  ) {
+    const cached = this.agreedByProjects.get(projectKey);
+    if (cached) return cached;
+    if (projects.length < 2) return symbols;
+    // A shared dependency without its own project only has a unique binding
+    // when its including programs agree on the declarations.
+    const others = projects.slice(1);
+    const shared = new Map(
+      [...symbols].filter(([name, refs]) =>
+        others.every((project) => {
+          const other = this.globals.get(project)?.get(name);
+          return (
+            other?.length === refs.length &&
+            refs.every((ref) => this.definitions(other).has(ref.def))
+          );
+        }),
+      ),
+    );
+    this.agreedByProjects.set(projectKey, shared);
+    return shared;
+  }
+
+  private namespaceFor(file: ParsedFile, projects: readonly GlobalProject[], symbols: GlobalTable) {
+    // An explicit import owns its local spelling even when its target is not a module.
+    const shadowed = new Set<string>();
+    for (const entry of file.parsedImports) {
+      if ('localName' in entry && symbols.has(entry.localName)) shadowed.add(entry.localName);
+    }
+    const projectKey = JSON.stringify(
+      projects
+        .map((project) => (typeof project === 'string' ? project : this.programIds.get(project)))
+        .sort(compareGlobalProjectIds),
+    );
+    const namespace = JSON.stringify([
+      'typescript-global',
+      projectKey,
+      [...shadowed].sort(compareCodeUnits),
+    ]);
+    if (!this.namespaces.has(namespace)) {
+      const shared = this.sharedGlobals(projectKey, projects, symbols);
+      for (const name of shadowed) if (!shared.has(name)) shadowed.delete(name);
+      this.namespaces.set(
+        namespace,
+        shadowed.size ? new UnshadowedGlobals(shared, shadowed) : shared,
+      );
+    }
+    return namespace;
+  }
+
+  publish(file: ParsedFile, projects: readonly GlobalProject[]) {
+    const symbols = this.globals.get(projects[0]);
+    if (!symbols?.size) return;
+    const namespace = this.namespaceFor(file, projects, symbols);
+    this.accessible.set(file.moduleScope, [
+      ...(this.accessible.get(file.moduleScope) ?? []),
+      namespace,
+    ]);
+    const visible = this.namespaces.get(namespace)!;
+    visibleGlobals.set(file, visible);
+    for (const def of this.declaredNamespaces.get(file) ?? []) {
+      if (!def.declarationRange || !def.qualifiedName) continue;
+      const siblings = visible.get(def.qualifiedName);
+      if (!siblings || siblings.length < 2 || !this.definitions(siblings).has(def)) continue;
+      const name = JSON.stringify([namespace, def.qualifiedName]);
+      if (!this.namespaces.has(name))
+        this.namespaces.set(name, namespaceExportsForBindings(siblings, this.indexes));
+      const scope = makeScopeId({
+        filePath: file.filePath,
+        range: def.declarationRange,
+        kind: 'Namespace',
+      });
+      this.accessible.set(scope, [...(this.accessible.get(scope) ?? []), name]);
+    }
+  }
 }
 
 /** Publish globals at the module scope so lexical declarations retain precedence. */
@@ -340,148 +560,15 @@ export function bindGlobalDeclarations(
     ? new Map<string, readonly CallNullMode[]>()
     : undefined;
   if (nullModes) nullModesByScopeTree.set(indexes.scopeTree, nullModes);
-  const globals = new Map<TsconfigScope | string, Map<string, BindingRef[]>>();
-  const declaredNamespaces = new Map<ParsedFile, Set<SymbolDefinition>>();
-  for (const file of files) {
-    const scope = declarationScope(file.captureSideChannel);
-    if (!scope) continue;
-    if (scope.scriptNames?.length) {
-      const candidates = new Set(scope.scriptNames);
-      for (const def of file.localDefs) {
-        if (def.nameRange && candidates.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`))
-          scriptDeclarations.add(def);
-      }
-    }
-    const projects = membership ? membership.get(file) : [projectOf(file)];
-    for (const project of projects ?? []) {
-      const names =
-        scope.scriptNames &&
-        !isProjectModule(
-          file.filePath,
-          scope.containsJsx === true,
-          typeof project === 'string' ? null : project,
-          config?.nodeWorkspacePackages,
-        )
-          ? scope.scriptNames
-          : scope.globalNames;
-      if (!names.length) continue;
-      const positions = new Set(names);
-      let symbols = globals.get(project);
-      if (!symbols) {
-        symbols = new Map();
-        globals.set(project, symbols);
-      }
-      for (const def of file.localDefs) {
-        if (
-          !def.nameRange ||
-          !def.qualifiedName ||
-          !positions.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`)
-        )
-          continue;
-        const name = def.qualifiedName;
-        const refs = symbols.get(name) ?? [];
-        refs.push({ def, origin: 'namespace' });
-        symbols.set(name, refs);
-        if (def.type === 'Namespace') {
-          let declarations = declaredNamespaces.get(file);
-          if (!declarations) {
-            declarations = new Set();
-            declaredNamespaces.set(file, declarations);
-          }
-          declarations.add(def);
-        }
-      }
-    }
-  }
-  const namespaces = indexes.namespaceFqnBindings as Map<string, ReadonlyMap<string, BindingRef[]>>;
-  const accessible = indexes.accessibleNamespacesByScope as Map<ScopeId, readonly string[]>;
-  const definitionsByBucket = new WeakMap<readonly BindingRef[], Set<SymbolDefinition>>();
-  const agreedByProjects = new Map<string, Map<string, BindingRef[]>>();
-  function definitions(refs: readonly BindingRef[]) {
-    let result = definitionsByBucket.get(refs);
-    if (!result) {
-      result = new Set(refs.map((ref) => ref.def));
-      definitionsByBucket.set(refs, result);
-    }
-    return result;
-  }
+  const bindings = new GlobalBindings(indexes, programIds, config?.nodeWorkspacePackages);
+  for (const file of files) bindings.collect(file, membership, projectOf);
   for (const file of files) {
     visibleGlobals.delete(file);
     const owner = projectOf(file);
     const projects = membership?.get(file);
     if (membership && !projects) continue;
-    let visibleProjects = projects ? [...projects] : [owner];
-    if (visibleProjects.length > 1) {
-      // An imported file belongs to its including programs, even outside every config directory.
-      const configured = visibleProjects.filter((p) => typeof p !== 'string');
-      if (configured.length) {
-        const primary = configured.filter((p) => !standalone.has(p));
-        visibleProjects = primary.length ? primary : configured;
-      }
-    }
-    if (nullModes) {
-      const first = projectNullMode(visibleProjects[0]);
-      if (visibleProjects.some((project) => projectNullMode(project) !== first)) {
-        nullModes.set(file.filePath, [...new Set(visibleProjects.map(projectNullMode))]);
-      } else if (first !== 'strict') {
-        nullModes.set(file.filePath, singleMode[first]);
-      }
-    }
-    if (visibleProjects.includes(owner)) visibleProjects = [owner];
-    const symbols = globals.get(visibleProjects[0]);
-    if (!symbols?.size) continue;
-    // An explicit import owns its local spelling even when its target is not a module.
-    const shadowed = new Set<string>();
-    for (const entry of file.parsedImports) {
-      if ('localName' in entry && symbols.has(entry.localName)) shadowed.add(entry.localName);
-    }
-    const projectKey = JSON.stringify(
-      visibleProjects
-        .map((project) => (typeof project === 'string' ? project : programIds.get(project)))
-        .sort(compareGlobalProjectIds),
-    );
-    const namespace = JSON.stringify([
-      'typescript-global',
-      projectKey,
-      [...shadowed].sort(compareCodeUnits),
-    ]);
-    if (!namespaces.has(namespace)) {
-      let shared = agreedByProjects.get(projectKey) ?? symbols;
-      if (visibleProjects.length > 1 && !agreedByProjects.has(projectKey)) {
-        // A shared dependency without its own project only has a unique binding
-        // when its including programs agree on the declarations.
-        shared = new Map(
-          [...symbols].filter(([name, refs]) =>
-            visibleProjects.slice(1).every((project) => {
-              const other = globals.get(project)?.get(name);
-              return (
-                other?.length === refs.length &&
-                refs.every((ref) => definitions(other).has(ref.def))
-              );
-            }),
-          ),
-        );
-        agreedByProjects.set(projectKey, shared);
-      }
-      for (const name of shadowed) if (!shared.has(name)) shadowed.delete(name);
-      namespaces.set(namespace, shadowed.size ? new UnshadowedGlobals(shared, shadowed) : shared);
-    }
-    accessible.set(file.moduleScope, [...(accessible.get(file.moduleScope) ?? []), namespace]);
-    const visible = namespaces.get(namespace)!;
-    visibleGlobals.set(file, visible);
-    for (const def of declaredNamespaces.get(file) ?? []) {
-      if (!def.declarationRange || !def.qualifiedName) continue;
-      const siblings = visible.get(def.qualifiedName);
-      if (!siblings || siblings.length < 2 || !definitions(siblings).has(def)) continue;
-      const name = JSON.stringify([namespace, def.qualifiedName]);
-      if (!namespaces.has(name))
-        namespaces.set(name, namespaceExportsForBindings(siblings, indexes));
-      const scope = makeScopeId({
-        filePath: file.filePath,
-        range: def.declarationRange,
-        kind: 'Namespace',
-      });
-      accessible.set(scope, [...(accessible.get(scope) ?? []), name]);
-    }
+    const visible = visiblePrograms(owner, projects, standalone);
+    if (nullModes) recordProjectNullModes(file.filePath, visible, nullModes);
+    bindings.publish(file, visible.includes(owner) ? [owner] : visible);
   }
 }

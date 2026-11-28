@@ -32,6 +32,21 @@ interface CsharpArityMetadata {
   readonly parameterTypes: readonly string[] | undefined;
 }
 
+function declaredParameterSpelling(
+  type: string,
+  rawType: string | null | undefined,
+): string | undefined {
+  if (!rawType || !/[<.?:]/u.test(rawType)) return undefined;
+  const raw = withoutTypeComments(rawType);
+  const scalar = csharpScalarType(raw);
+  let spelling: string | undefined;
+  if (scalar) spelling = scalar.name + (scalar.nullable ? '?' : '');
+  else spelling = renderCsharpHeritageType(raw);
+  if (!spelling) return undefined;
+  const mode = csharpParameterMode.exec(type)?.[0] ?? '';
+  return mode + spelling;
+}
+
 export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetadata {
   const params = csharpMethodConfig.extractParameters?.(fnNode) ?? [];
 
@@ -41,22 +56,16 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
   // The call matcher erases qualifications, generic arguments and nullability.
   // Keep the declared spelling and passing mode for inherited signatures.
   let declaredParameterTypes: string[] | undefined;
+  const isMethod = fnNode.type === 'method_declaration';
   let typeIndex = 0;
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
     if (p.type === null) continue;
-    if (fnNode.type === 'method_declaration' && p.rawType && /[<.?:]/u.test(p.rawType)) {
-      const raw = withoutTypeComments(p.rawType);
-      const scalar = csharpScalarType(raw);
-      const spelling = scalar
-        ? scalar.name + (scalar.nullable ? '?' : '')
-        : renderCsharpHeritageType(raw);
-      const mode = csharpParameterMode.exec(p.type)?.[0] ?? '';
-      if (spelling && mode + spelling !== p.type) {
-        declaredParameterTypes ??= [...types];
-        declaredParameterTypes[typeIndex] = mode + spelling;
-      }
+    const spelling = isMethod && declaredParameterSpelling(p.type, p.rawType);
+    if (spelling && spelling !== p.type) {
+      declaredParameterTypes ??= [...types];
+      declaredParameterTypes[typeIndex] = spelling;
     }
     typeIndex++;
   }

@@ -13,18 +13,22 @@ export const literalPropertyKeyQuery = `[(string) (number) (template_string) (pa
 
 const decimalDigits = String.raw`\d(?:_?\d)*`;
 const decimalInteger = String.raw`(?:0|[1-9](?:_?\d)*)`;
-const decimalMantissa = `(?:${decimalInteger}(?:\\.(?:${decimalDigits})?)?|\\.${decimalDigits})`;
+const decimalMantissa = String.raw`(?:${decimalInteger}(?:\.(?:${decimalDigits})?)?|\.${decimalDigits})`;
 const decimalLiteral = new RegExp(
   `^(?:${decimalInteger}n|${decimalMantissa}(?:[eE][+-]?${decimalDigits})?)$`,
   'u',
 );
-const radixLiteral =
-  /^(?:0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*)n?$/u;
+const radixLiterals = [
+  /^0[xX][\da-fA-F](?:_?[\da-fA-F])*n?$/u,
+  /^0[oO][0-7](?:_?[0-7])*n?$/u,
+  /^0[bB][01](?:_?[01])*n?$/u,
+];
 
 export function numericLiteralValue(spelling: string): number | bigint | undefined {
   const sign = spelling[0];
   const unsigned = sign === '-' || sign === '+' ? spelling.slice(1) : spelling;
-  if (!decimalLiteral.test(unsigned) && !radixLiteral.test(unsigned)) return undefined;
+  if (!decimalLiteral.test(unsigned) && !radixLiterals.some((pattern) => pattern.test(unsigned)))
+    return undefined;
   const digits = unsigned.replaceAll('_', '');
   if (digits.endsWith('n')) {
     if (sign === '+') return undefined;
