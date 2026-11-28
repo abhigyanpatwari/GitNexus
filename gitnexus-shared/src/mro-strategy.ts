@@ -4,8 +4,11 @@
  * Lives in `gitnexus-shared` so `model/resolve.ts` and `mro-processor.ts` share
  * the type without importing the language registry (avoids circular coupling).
  *
- * `first-wins` (default, Java/C#/Kotlin/Go/Swift/Dart):
- *   BFS ancestor walk in declaration order; first match wins.
+ * The default `first-wins` strategy uses the first match in a breadth-first
+ *   walk of the declared bases.
+ *
+ * TypeScript and Vue use `depth-first` to visit each base and its ancestors
+ *   before the next declared base when looking up an inherited member.
  *
  * `leftmost-base` (C++):
  *   BFS walk; HeritageMap preserves source insertion order, so BFS naturally
@@ -39,6 +42,7 @@
  */
 export type MroStrategy =
   | 'first-wins'
+  | 'depth-first'
   | 'c3'
   | 'leftmost-base'
   | 'implements-split'

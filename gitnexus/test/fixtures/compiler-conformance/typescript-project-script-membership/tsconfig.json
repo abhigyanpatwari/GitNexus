@@ -1,0 +1,15 @@
+{
+  "extends": "./config/base.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "moduleDetection": "legacy",
+    "strict": true,
+    "noEmit": true,
+    "types": []
+  },
+  "files": [
+    "examples/listed.ts"
+  ]
+}

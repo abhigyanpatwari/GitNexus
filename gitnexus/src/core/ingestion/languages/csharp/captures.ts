@@ -24,6 +24,8 @@ import {
   walkNamedTree,
 } from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
+import { isCsharpReservedTypeKeyword } from './identifiers.js';
+import { csharpNullableConstraints } from './nullable-heritage.js';
 import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
@@ -71,25 +73,6 @@ const CSHARP_CALLABLE_CAPTURE_OPTIONS = {
     return { destination, source };
   },
 } as const;
-
-const BUILTIN_TYPE_NAMES = new Set([
-  'bool',
-  'byte',
-  'char',
-  'decimal',
-  'double',
-  'float',
-  'int',
-  'long',
-  'object',
-  'sbyte',
-  'short',
-  'string',
-  'uint',
-  'ulong',
-  'ushort',
-  'void',
-]);
 
 function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   const parent = memberNode.parent;
@@ -204,6 +187,18 @@ export function emitCsharpScopeCaptures(
     // registry can narrow overloads (C# relies heavily on this). Mirrors
     // Python's captures.ts pattern — one anchor per match, so we find
     // the first tag that matches.
+    const formals = nodeMap['@declaration.type-parameters'];
+    if (formals?.parent && !grouped['@declaration.method']) {
+      const constraints = csharpNullableConstraints(formals.parent);
+      if (constraints) {
+        grouped['@declaration.template-constraints'] = syntheticCapture(
+          '@declaration.template-constraints',
+          formals,
+          JSON.stringify(constraints),
+        );
+      }
+    }
+
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
       const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
@@ -221,6 +216,13 @@ export function emitCsharpScopeCaptures(
             '@declaration.required-parameter-count',
             fnNode,
             String(arity.requiredParameterCount),
+          );
+        }
+        if (arity.declaredParameterTypes) {
+          grouped['@declaration.declared-parameter-types'] = syntheticCapture(
+            '@declaration.declared-parameter-types',
+            fnNode,
+            JSON.stringify(arity.declaredParameterTypes),
           );
         }
         if (arity.parameterTypes !== undefined) {
@@ -388,7 +390,7 @@ function synthesizeCsharpConstructorInitializerReferences(root: SyntaxNode): Cap
       for (const base of baseList.namedChildren) {
         if (base === null) continue;
         const n = terminalTypeNameNode(base);
-        if (n === null || BUILTIN_TYPE_NAMES.has(n.text)) continue;
+        if (n === null || isCsharpReservedTypeKeyword(n.text)) continue;
         sawNonBuiltin = true;
         targetNameNode = n;
         break;
@@ -467,7 +469,7 @@ function synthesizeCsharpInheritanceReferences(root: SyntaxNode): CaptureMatch[]
       if (base === null) continue;
       const nameNode = terminalTypeNameNode(base);
       if (nameNode === null) continue;
-      if (BUILTIN_TYPE_NAMES.has(nameNode.text)) continue;
+      if (isCsharpReservedTypeKeyword(nameNode.text)) continue;
       out.push({
         '@reference.inherits': nodeToCapture('@reference.inherits', base),
         '@reference.name': nodeToCapture('@reference.name', nameNode),
@@ -490,7 +492,7 @@ function synthesizeGenericTypeArgumentReferences(root: SyntaxNode): CaptureMatch
       if (arg === null) continue;
       const nameNode = terminalTypeNameNode(arg);
       if (nameNode === null) continue;
-      if (BUILTIN_TYPE_NAMES.has(nameNode.text)) continue;
+      if (isCsharpReservedTypeKeyword(nameNode.text)) continue;
       out.push({
         '@reference.type': nodeToCapture('@reference.type', nameNode),
         '@reference.name': nodeToCapture('@reference.name', nameNode),

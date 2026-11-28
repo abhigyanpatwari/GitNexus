@@ -16,10 +16,20 @@
  * Pure given the input nodes. No I/O, no globals.
  */
 
-import type { CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import type { CaptureMatch, NameClaim } from 'gitnexus-shared';
+import {
+  FUNCTION_NODE_TYPES,
+  nodeToCapture,
+  outerParenthesizedExpression,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { deriveDefaultExportHocName } from '../../ts-js-hoc-utils.js';
-import { defaultExportNameCollides } from './cjs-export-assignment.js';
+import { defaultExportNameCollides, isCommonJsModule } from './cjs-export-assignment.js';
+import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
+import { canonicalTypeScriptName, literalMethodName, numericLiteralValue } from './identifiers.js';
+import type { LocalImportFacts } from './local-loaders.js';
+import { recordPossibleCommonJsDefault } from './module-kind.js';
 
 /**
  * Synthesize re-export markers for CJS forwarding assignments (#2723).
@@ -142,6 +152,394 @@ export function synthesizeCjsReExports(
   }
 }
 
+function ungroup(node: SyntaxNode | null): SyntaxNode | null {
+  while (node?.type === 'parenthesized_expression')
+    node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
+  return node;
+}
+
+function isModuleIdentifier(node: SyntaxNode | null): boolean {
+  node = ungroup(node);
+  return node?.type === 'identifier' && canonicalTypeScriptName(node.text) === 'module';
+}
+
+// Each bit represents a value the binding may hold on a reachable path.
+const enum WrapperValue {
+  Original = 1,
+  Truthy = 2,
+  Falsy = 4,
+  Nullish = 8,
+  Unknown = 0b1111, // All four possibilities.
+}
+
+function literalWrapperValue(value: SyntaxNode | null, globalUndefined: boolean): WrapperValue {
+  switch (value?.type) {
+    case 'null':
+      return WrapperValue.Nullish;
+    case 'undefined':
+      return globalUndefined ? WrapperValue.Nullish : WrapperValue.Unknown;
+    case 'false':
+      return WrapperValue.Falsy;
+    case 'true':
+    case 'object':
+    case 'array':
+    case 'arrow_function':
+    case 'function_expression':
+    case 'class':
+      return WrapperValue.Truthy;
+    case 'number':
+    case 'string': {
+      const literal =
+        value.type === 'number' ? numericLiteralValue(value.text) : decodeStringLiteral(value.text);
+      if (literal == null) return WrapperValue.Unknown;
+      return literal ? WrapperValue.Truthy : WrapperValue.Falsy;
+    }
+    case 'unary_expression':
+      if (value.childForFieldName('operator')?.type === 'void') return WrapperValue.Nullish;
+  }
+  return WrapperValue.Unknown;
+}
+
+const logicalWriteMask: Record<string, WrapperValue> = {
+  '||': WrapperValue.Falsy | WrapperValue.Nullish,
+  '??': WrapperValue.Nullish,
+  '&&': WrapperValue.Original | WrapperValue.Truthy,
+};
+
+/**
+ * In a direct synchronous IIFE the arguments run before the parameters and body.
+ * Swap those two source intervals within each enclosing call. Nested calls keep
+ * their internal order and every event stays inside its original call's extent.
+ */
+function evaluationPosition(node: SyntaxNode, at = node.endIndex): number {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (parent.type !== 'call_expression') continue;
+    const callee = parent.childForFieldName('function');
+    const fn = ungroup(callee);
+    if (fn?.type !== 'function_expression' && fn?.type !== 'arrow_function') continue;
+    if (fn.children.some((token) => token.type === 'async')) continue;
+    const args = parent.childForFieldName('arguments');
+    if (args?.type !== 'arguments') continue;
+    if (child.id === args.id) at -= args.startIndex - parent.startIndex;
+    else if (child.id === callee.id) at += parent.endIndex - args.startIndex;
+  }
+  return at;
+}
+
+function callableReferences(root: SyntaxNode): Map<string, SyntaxNode[]> {
+  const references = new Map<string, SyntaxNode[]>();
+  for (const node of root.descendantsOfType(['identifier', 'shorthand_property_identifier'])) {
+    const name = canonicalTypeScriptName(node.text);
+    const uses = references.get(name);
+    if (uses) uses.push(node);
+    else references.set(name, [node]);
+  }
+  return references;
+}
+
+/** A local callable cannot execute before its first possible use or escape. */
+function localCallableFirstUse(root: SyntaxNode) {
+  let references: Map<string, SyntaxNode[]> | undefined;
+  const byBinding = new Map<number, number>();
+  return (fn: SyntaxNode): number => {
+    const declaration = fn.type.endsWith('_declaration') ? fn : fn.parent;
+    if (declaration !== fn && declaration?.type !== 'variable_declarator') return 0;
+    const binding = declaration.childForFieldName('name');
+    if (binding?.type !== 'identifier') return 0;
+    const cached = byBinding.get(binding.id);
+    if (cached !== undefined) return cached;
+    references ??= callableReferences(root);
+    if (references.has('eval')) return 0;
+    let first = Infinity;
+    for (const ref of references.get(canonicalTypeScriptName(binding.text)) ?? []) {
+      if (ref.id === binding.id) continue;
+      // A function declaration containing the reference may have been called before its source.
+      if (ref.closest(['function_declaration', 'generator_function_declaration'])) {
+        first = 0;
+        break;
+      }
+      first = Math.min(first, evaluationPosition(ref, ref.startIndex));
+    }
+    byBinding.set(binding.id, first);
+    return first;
+  };
+}
+
+type WriteGuard = WrapperValue | 'conditional' | 'unreachable' | 'program';
+
+function ifWriteGuard(parent: SyntaxNode, child: SyntaxNode): WriteGuard {
+  const condition = parent.childForFieldName('condition');
+  if (child.id === condition?.id) return WrapperValue.Unknown;
+  const test = ungroup(condition)?.type;
+  if (test !== 'true' && test !== 'false') return 'conditional';
+  const consequence = child.id === parent.childForFieldName('consequence')?.id;
+  return (test === 'true') === consequence ? WrapperValue.Unknown : 'unreachable';
+}
+
+function binaryWriteGuard(parent: SyntaxNode, child: SyntaxNode, write: SyntaxNode): WriteGuard {
+  if (child.id !== parent.childForFieldName('right')?.id) return WrapperValue.Unknown;
+  const left = ungroup(parent.childForFieldName('left'));
+  const op = parent.childForFieldName('operator')?.type;
+  if ((op === '&&' && left?.type === 'false') || (op === '||' && left?.type === 'true'))
+    return 'unreachable';
+  if (logicalWriteMask[op] && isModuleIdentifier(left) && ungroup(child)?.id === write.id)
+    return logicalWriteMask[op];
+  return 'conditional';
+}
+
+function wrapperWriteGuard(parent: SyntaxNode, child: SyntaxNode, write: SyntaxNode): WriteGuard {
+  switch (parent.type) {
+    case 'program':
+      return 'program';
+    case 'parenthesized_expression':
+    case 'sequence_expression':
+    case 'expression_statement':
+    case 'statement_block':
+    case 'else_clause':
+    case 'variable_declarator':
+    case 'lexical_declaration':
+    case 'variable_declaration':
+    case 'arguments':
+      return WrapperValue.Unknown;
+    case 'call_expression':
+      return child.type === 'arguments' &&
+        parent.children.some((token) => token.type === 'optional_chain' || token.type === '?.')
+        ? 'conditional'
+        : WrapperValue.Unknown;
+    case 'if_statement':
+      return ifWriteGuard(parent, child);
+    case 'binary_expression':
+      return binaryWriteGuard(parent, child, write);
+    default:
+      return 'conditional';
+  }
+}
+
+function immediateInvocation(fn: SyntaxNode): SyntaxNode | undefined {
+  const callee = outerParenthesizedExpression(fn);
+  const call = callee.parent;
+  if (call?.type === 'call_expression' && call.childForFieldName('function')?.id === callee.id)
+    return call;
+}
+
+/** Unknown branch conditions join both paths. Indirect invocations have no known write position. */
+function wrapperWriteExecution(
+  write: SyntaxNode,
+  firstUse: (fn: SyntaxNode) => number,
+  afterLastExportStore: (at: number) => boolean,
+): { when: WrapperValue; conditional: boolean } | { deferredAt: number } | undefined {
+  let when = WrapperValue.Unknown;
+  let conditional = false;
+  let deferredCall: number | undefined;
+  // If a later export could use either wrapper, an earlier one is not a proven final default.
+  const deferred = (at: number) => {
+    if (at === Infinity) return undefined;
+    if (deferredCall === undefined) return { deferredAt: at };
+    return afterLastExportStore(at) ? undefined : { deferredAt: 0 };
+  };
+  for (let child = write, parent = write.parent; parent; child = parent, parent = parent.parent) {
+    if (FUNCTION_NODE_TYPES.has(parent.type) || parent.type === 'generator_function') {
+      const call = immediateInvocation(parent);
+      if (!call) return deferred(firstUse(parent));
+      if (
+        parent.type === 'generator_function' ||
+        parent.children.some((token) => token.type === 'async')
+      ) {
+        // Even an async prefix or an immediately resumed generator must reach this call first.
+        // An enclosing indirect function may itself have run before its declaration.
+        deferredCall = evaluationPosition(call, call.startIndex);
+      }
+      continue;
+    }
+    const guard = wrapperWriteGuard(parent, child, write);
+    switch (guard) {
+      case 'program':
+        return deferredCall === undefined ? { when, conditional } : deferred(deferredCall);
+      case 'unreachable':
+        return undefined;
+      case 'conditional':
+        conditional = true;
+        break;
+      default:
+        when &= guard;
+    }
+  }
+}
+
+type WrapperEvent =
+  | { at: number; kind: 'save'; savedAt: number }
+  | { at: number; kind: 'deferred'; when: WrapperValue }
+  | {
+      at: number;
+      kind: 'write';
+      value: WrapperValue;
+      when: WrapperValue;
+      savedAt?: number;
+      conditional?: boolean;
+    };
+
+/** A module-level var shares the CommonJS parameter. Other declarations shadow it. */
+function hasWrapperBinding(root: SyntaxNode, captures: CaptureMatch[]): boolean {
+  const scope = captures.find((capture) => capture['@scope.module']);
+  const names = scope?.['@scope.name-claims']?.text;
+  if (!names) return false;
+  for (const claim of JSON.parse(names) as NameClaim[]) {
+    if (claim.purpose === 'type' || canonicalTypeScriptName(claim.name) !== 'module') continue;
+    const pos = { row: claim.range.startLine - 1, column: claim.range.startCol };
+    let node: SyntaxNode | null = root.namedDescendantForPosition(pos);
+    while (node && node.type !== 'program') {
+      if (
+        node.type === 'variable_declaration' ||
+        node.type === 'ambient_declaration' ||
+        node.type === 'class_static_block'
+      )
+        break;
+      node = node.parent;
+    }
+    if (node?.type === 'program') return false;
+  }
+  return true;
+}
+
+/** A wrapper alias may reach the exports slot, but a different constant key cannot. */
+function mayStoreExports(target: SyntaxNode | null): boolean {
+  target = ungroup(target);
+  switch (target?.type) {
+    case 'member_expression':
+      return (
+        canonicalTypeScriptName(target.childForFieldName('property')?.text ?? '') === 'exports'
+      );
+    case 'subscript_expression': {
+      const key = literalMethodName(target.childForFieldName('index'));
+      return key === undefined || key === 'exports';
+    }
+    case 'pair_pattern':
+      return mayStoreExports(target.childForFieldName('value'));
+    case 'assignment_pattern':
+    case 'object_assignment_pattern':
+      return mayStoreExports(target.childForFieldName('left'));
+    case 'array_pattern':
+    case 'object_pattern':
+    case 'rest_pattern':
+      return target.namedChildren.some(mayStoreExports);
+    default:
+      return false;
+  }
+}
+
+function lastPossibleExportStore(root: SyntaxNode): number {
+  let last = -1;
+  for (const write of root.descendantsOfType([
+    'assignment_expression',
+    'augmented_assignment_expression',
+    'update_expression',
+    'unary_expression',
+  ])) {
+    const op = write.childForFieldName('operator')?.type;
+    if (write.type === 'unary_expression' && op !== 'delete') continue;
+    if (!mayStoreExports(write.childForFieldName('left') ?? write.childForFieldName('argument')))
+      continue;
+    // A nested callable can make the store after its position in the source.
+    if (write.closest([...FUNCTION_NODE_TYPES, 'generator_function'])) return Infinity;
+    last = Math.max(last, write.endIndex);
+  }
+  return last;
+}
+
+function appendWrapperWrite(
+  events: WrapperEvent[],
+  root: SyntaxNode,
+  { node, savedAt, globalUndefined }: LocalImportFacts['wrapperWrites'][number],
+  execution: NonNullable<ReturnType<typeof wrapperWriteExecution>>,
+): void {
+  const declarator = node.type === 'variable_declarator';
+  const direct = isModuleIdentifier(node.childForFieldName(declarator ? 'name' : 'left'));
+  let op = node.childForFieldName('operator')?.type.replace(/=$/u, '');
+  const assignment =
+    direct && (declarator || node.type === 'assignment_expression' || logicalWriteMask[op]);
+  const valueField = declarator ? 'value' : 'right';
+  let value = assignment ? ungroup(node.childForFieldName(valueField)) : null;
+  if (isModuleIdentifier(value)) return;
+  if (
+    (declarator || node.type === 'assignment_expression') &&
+    value?.type === 'binary_expression' &&
+    isModuleIdentifier(value.childForFieldName('left'))
+  ) {
+    const binary = value.childForFieldName('operator')?.type;
+    if (logicalWriteMask[binary]) {
+      op = binary;
+      value = ungroup(value.childForFieldName('right'));
+    }
+  }
+  const when = logicalWriteMask[op] ?? WrapperValue.Unknown;
+  if ('deferredAt' in execution) {
+    events.push({ at: execution.deferredAt, kind: 'deferred', when });
+    return;
+  }
+  const alias = assignment ? savedAt : undefined;
+  if (alias !== undefined) {
+    const snapshot = root.namedDescendantForIndex(alias - 1);
+    events.push({ at: evaluationPosition(snapshot, alias), kind: 'save', savedAt: alias });
+  }
+  events.push({
+    at: evaluationPosition(node),
+    kind: 'write',
+    value: literalWrapperValue(value, globalUndefined),
+    when: when & execution.when,
+    savedAt: alias,
+    conditional: execution.conditional,
+  });
+}
+
+/** Advance once through stores and const snapshots, in the same order as the export sites. */
+function wrapperAtExport(
+  root: SyntaxNode,
+  captures: CaptureMatch[],
+  writes: LocalImportFacts['wrapperWrites'],
+) {
+  if (!hasWrapperBinding(root, captures)) return () => false;
+  const events: WrapperEvent[] = [];
+  const firstUse = localCallableFirstUse(root);
+  let lastExportStore: number | undefined;
+  const afterLastExportStore = (at: number) => {
+    lastExportStore ??= lastPossibleExportStore(root);
+    return at > lastExportStore;
+  };
+  for (const write of writes) {
+    const execution = wrapperWriteExecution(write.node, firstUse, afterLastExportStore);
+    if (execution) appendWrapperWrite(events, root, write, execution);
+  }
+  events.sort((a, b) => a.at - b.at);
+  const snapshots = new Map<number, WrapperValue>();
+  let index = 0;
+  let current = WrapperValue.Original;
+  let deferredWhen = 0;
+  function apply(event: WrapperEvent) {
+    switch (event.kind) {
+      case 'save':
+        snapshots.set(event.savedAt, current);
+        return;
+      case 'deferred':
+        deferredWhen |= event.when;
+        break;
+      case 'write': {
+        if (!(current & event.when)) return;
+        const next =
+          event.savedAt === undefined
+            ? event.value
+            : (snapshots.get(event.savedAt) ?? WrapperValue.Unknown);
+        current = (event.conditional ? current : current & ~event.when) | next;
+        break;
+      }
+    }
+    if (current & deferredWhen) current = WrapperValue.Unknown;
+  }
+  return (position: number) => {
+    while (index < events.length && events[index].at <= position) apply(events[index++]);
+    return current === WrapperValue.Original;
+  };
+}
+
 /**
  * Synthesize the scope declaration for `module.exports = <function>` (#2723).
  *
@@ -159,7 +557,9 @@ export function synthesizeCjsDefaultExport(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
+  wrapperWrites: LocalImportFacts['wrapperWrites'],
 ): void {
+  let hasWrapper: ReturnType<typeof wrapperAtExport> | undefined;
   for (const child of root.namedChildren) {
     if (child.type !== 'expression_statement') continue;
     const assignment = child.namedChild(0);
@@ -187,6 +587,11 @@ export function synthesizeCjsDefaultExport(
     // would bind a second callable under one name, merging two functions onto
     // one node and fabricating a self-recursive call edge (#2729 review F4).
     if (ownName === null && defaultExportNameCollides(assignment, root, name)) continue;
+    hasWrapper ??= wrapperAtExport(root, out, wrapperWrites);
+    const wrapperBinding = hasWrapper(assignment.startIndex);
+    const exported = wrapperBinding && isCommonJsModule(root, filePath);
+    if (wrapperBinding && !exported && /\.tsx?$/.test(filePath))
+      recordPossibleCommonJsDefault(filePath, value);
 
     // Anchored on the INNER function so the declaration range matches the
     // `@scope.function` range — the same anchor discipline as every other
@@ -194,6 +599,17 @@ export function synthesizeCjsDefaultExport(
     out.push({
       '@declaration.function': nodeToCapture('@declaration.function', value),
       '@declaration.name': syntheticCapture('@declaration.name', ownName ?? value, name),
+      '@declaration.is-exported': syntheticCapture(
+        '@declaration.is-exported',
+        value,
+        String(exported),
+      ),
+      '@declaration.is-default-export': syntheticCapture(
+        '@declaration.is-default-export',
+        value,
+        String(exported),
+      ),
+      '@declaration.named-exports': syntheticCapture('@declaration.named-exports', value, '[]'),
     });
   }
 }
@@ -203,8 +619,8 @@ export function synthesizeCjsModuleExports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
-  validRequireCalls?: ReadonlyMap<number, ReadonlySet<string>>,
+  facts: LocalImportFacts,
 ): void {
-  synthesizeCjsReExports(root, out, validRequireCalls);
-  synthesizeCjsDefaultExport(root, filePath, out);
+  synthesizeCjsReExports(root, out, facts.validRequireCalls);
+  synthesizeCjsDefaultExport(root, filePath, out, facts.wrapperWrites);
 }
