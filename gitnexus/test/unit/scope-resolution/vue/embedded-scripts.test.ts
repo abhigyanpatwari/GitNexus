@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { vueProvider } from '../../../../src/core/ingestion/languages/vue.js';
 import { getTsParser } from '../../../../src/core/ingestion/languages/typescript/query.js';
-import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
+import {
+  extractParsedFile,
+  type ScopeCaptureSourceKind,
+} from '../../../../src/core/ingestion/scope-extractor-bridge.js';
 import { extractVueScript } from '../../../../src/core/ingestion/vue-sfc-extractor.js';
 import {
   getRelationships,
@@ -49,6 +52,25 @@ describe('Vue embedded script grammar and source positions', () => {
     });
   }, 120_000);
   afterAll(() => fs.rmSync(repo, { recursive: true, force: true }));
+
+  it('requires the explicit pre-extracted kind for bare script source', () => {
+    const source = '<script lang="ts">function setupCaller() { return 1; }</script>';
+    const script = extractVueScript(source)!.scriptContent;
+    const declarations = (text: string, meta?: { sourceKind?: ScopeCaptureSourceKind }) =>
+      extractParsedFile(
+        vueProvider,
+        text,
+        'component.vue',
+        undefined,
+        undefined,
+        meta,
+      )!.localDefs.map((def) => def.qualifiedName);
+    for (const meta of [undefined, { sourceKind: undefined }]) {
+      expect(declarations(source, meta)).toContain('setupCaller');
+      expect(declarations(script, meta)).not.toContain('setupCaller');
+    }
+    expect(declarations(script, { sourceKind: 'pre-extracted-script' })).toContain('setupCaller');
+  });
 
   it.each(['jsx', 'tsx', 'ts'])(
     'maps reordered %s script declarations to original source rows in both paths',

@@ -11,7 +11,22 @@ export function expectedReferenceAdditions(revision) {
   manifest ??= JSON.parse(
     fs.readFileSync(new URL('./expected-reference-additions.json', import.meta.url), 'utf8'),
   );
-  return Object.hasOwn(manifest, revision) ? manifest[revision] : undefined;
+  if (Object.hasOwn(manifest, revision)) return manifest[revision];
+  // Archived reports use the original two-tree keys. New reports can replay
+  // those receipts only for their complete, explicitly audited checkouts.
+  if (typeof revision === 'string' && revision.startsWith('checkout-sha256:')) {
+    return Object.values(manifest).find((entry) => entry.checkoutFingerprint === revision);
+  }
+}
+
+/** Check every node field when a pinned compiler comparison adds declaration positions. */
+export function assertSemanticNodes(revision, baseline, candidate) {
+  const expected = expectedReferenceAdditions(revision)?.declarationPositions;
+  if (expected) {
+    assert.deepEqual({ baseline, candidate }, expected, 'Unexpected declaration positions');
+  } else {
+    assert.deepEqual(candidate, baseline, 'Semantic nodes differ');
+  }
 }
 
 /** Both the parity producer and the performance checker require the same evidence. */

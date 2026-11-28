@@ -12,16 +12,78 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import path from 'path';
 import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
 
 const VUE_SCOPE_FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'vue-scope');
+
+describe('inherited method resolution in Vue scripts', () => {
+  const interfaces = readFileSync(
+    new URL(
+      '../../fixtures/compiler-conformance/typescript-interface-contracts/index.ts',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  const classes = [
+    'export class Base { read() {} }',
+    'export class Middle extends Base {}',
+    'export class Leaf extends Middle { probe() { return super.read(); } }',
+  ].join('\n');
+  const result = useFixture(
+    'vue-inherited-methods',
+    {
+      'plain.ts': interfaces,
+      'Typed.vue': `<script lang="ts">\n${interfaces}</script>`,
+      'Tsx.vue': `<script lang="tsx">\n${interfaces}</script>`,
+      'Js.vue': `<script>\n${classes}\n</script>`,
+      'Jsx.vue': `<script lang="jsx">\n${classes}\nexport function view() { return <div/>; }\n</script>`,
+    },
+    { skipDerivedGraphPhases: true, workerPoolSize: 1 },
+  );
+
+  it('selects the compiler declaration for both orders of the same interface bases', () => {
+    const { graph } = result();
+    const calls = [...graph.iterRelationshipsByType('CALLS')].filter(
+      (edge) => edge.reason !== 'interface-dispatch',
+    );
+    const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+    for (const file of ['plain.ts', 'Typed.vue', 'Tsx.vue']) {
+      const suffix = file === 'plain.ts' ? '#1' : '';
+      for (const [caller, derived, owner] of [
+        ['first', 'Joined', 'TextReader'],
+        ['second', 'Flipped', 'Reader'],
+      ]) {
+        const expected = [`Method:${file}:${owner}.read${suffix}`];
+        expect(
+          calls.filter((e) => e.sourceId === `Function:${file}:${caller}`).map((e) => e.targetId),
+        ).toEqual(expected);
+        expect(
+          overrides
+            .filter((e) => e.sourceId === `Interface:${file}:${derived}`)
+            .map((e) => e.targetId),
+        ).toEqual(expected);
+      }
+    }
+  });
+
+  it('resolves super through an intermediate JavaScript class in JS and JSX', () => {
+    const calls = [...result().graph.iterRelationshipsByType('CALLS')];
+    for (const file of ['Js.vue', 'Jsx.vue']) {
+      expect(
+        calls.filter((e) => e.sourceId === `Method:${file}:Leaf.probe`).map((e) => e.targetId),
+      ).toEqual([`Method:${file}:Base.read`]);
+    }
+  });
+});
 
 // ─── Composition API (`<script setup lang="ts">`) ───────────────────────────
 

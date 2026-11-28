@@ -716,7 +716,8 @@ export const streamAllCSVsToDisk = async (
           pending = methodWriter.addRow(
             [
               escapeCSVField(node.id),
-              escapeCSVField(node.properties.name || ''),
+              // COPY distinguishes a literal empty property key from a missing name.
+              node.properties.name === '' ? '""' : escapeCSVField(node.properties.name),
               escapeCSVField(node.properties.filePath || ''),
               escapeCSVNumber(node.properties.startLine, -1),
               escapeCSVNumber(node.properties.endLine, -1),

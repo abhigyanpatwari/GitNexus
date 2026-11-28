@@ -45,6 +45,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
 
@@ -54,6 +55,46 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-hoc-wrapped'), () => {});
   }, 60000);
+
+  it('keeps each block binding and its incoming and outgoing calls together', () => {
+    const file = 'src/block-callables.ts';
+    const prefix = `Function:${file}:`;
+    const functions = [...result.graph.iterNodes()].filter(
+      (node) => node.label === 'Function' && node.properties.filePath === file,
+    );
+    const calls = [...result.graph.iterRelationshipsByType('CALLS')];
+    const named = (name: string) =>
+      functions
+        .filter((node) => node.properties.name === name)
+        .sort((a, b) => Number(a.properties.startLine) - Number(b.properties.startLine));
+    const targets = (id: string) =>
+      calls.filter((edge) => edge.sourceId === id).map((edge) => edge.targetId);
+    const branch = named('branchTask');
+    expect(branch).toHaveLength(2);
+    expect(branch.map((node) => targets(node.id))).toEqual([[prefix + 'left'], [prefix + 'right']]);
+    const moduleTasks = named('moduleTask');
+    expect(moduleTasks).toHaveLength(2);
+    expect(moduleTasks[0].id).toBe(prefix + 'moduleTask');
+    expect(moduleTasks.map((node) => targets(node.id))).toEqual([
+      [prefix + 'left'],
+      [prefix + 'right'],
+    ]);
+    const unique = named('uniqueTask');
+    expect(unique.map((node) => node.id)).toEqual([prefix + 'uniqueTask']);
+    const grouped = named('grouped');
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((node) => targets(node.id).sort())).toEqual([
+      [prefix + 'left', prefix + 'leftExtra'],
+      [prefix + 'right', prefix + 'rightExtra'],
+    ]);
+    const moduleGroup = named('moduleGroup');
+    expect(moduleGroup.map((node) => node.id)).toEqual([prefix + 'moduleGroup']);
+    expect(targets(moduleGroup[0].id).sort()).toEqual([prefix + 'left', prefix + 'right']);
+    const fileTargets = targets(`File:${file}`);
+    for (const node of [...branch, ...moduleTasks, ...unique, ...grouped, ...moduleGroup]) {
+      expect(fileTargets).toContain(node.id);
+    }
+  });
 
   // ─────────────────────────────────────────────────────────────────
   // Positive: each HOC-wrapped const becomes a named Function whose
@@ -357,4 +398,194 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
       ).toEqual([]);
     }
   });
+});
+
+describe('callback registrations and lexical HOC bindings', () => {
+  const registration = `
+    export function timerTask() {}
+    export function intervalTask() {}
+    export function microTask() {}
+    export function frameTask() {}
+    export function idleTask() {}
+    export function mappedTask() {}
+    export function innerTask() {}
+    export function wrappedTask() {}
+    const wrap = fn => fn;
+    export const timer = setTimeout(() => timerTask(), 0), wrapped = wrap(() => wrappedTask());
+    export let interval = setInterval(function () { intervalTask(); }, 10);
+    export var microtask = queueMicrotask(() => microTask());
+    export const frame = globalThis.requestAnimationFrame(() => frameTask());
+    export const idle = requestIdleCallback(() => idleTask());
+    const custom = { setTimeout: wrap };
+    export const member = custom.setTimeout(() => wrappedTask());
+    export const mapped = [1].map(() => mappedTask());
+    export function schedule() {
+      const nested = setTimeout(() => innerTask(), 0);
+      return nested;
+    }
+    export function configure(setTimeout) {
+      const shadow = setTimeout(() => wrappedTask());
+      return shadow;
+    }
+  `;
+  const result = useFixture('ts-js-hoc-registrations', {
+    'registrations.ts': registration,
+    'registrations.js': registration,
+    'Plain.vue': `<script>
+${registration}
+</script>`,
+    'Typed.vue': `<script lang="ts">
+${registration}
+</script>`,
+  });
+  it.each(['registrations.js', 'registrations.ts', 'Plain.vue', 'Typed.vue'])(
+    'keeps %s registration handles as values and callable wrappers as functions',
+    (file) => {
+      const nodes = [...result().graph.iterNodes()].filter(
+        (node) => node.properties.filePath === file,
+      );
+      const functions = nodes
+        .filter((node) => node.label === 'Function')
+        .map((node) => node.properties.name);
+      const values = nodes
+        .filter((node) => node.label === 'Const' || node.label === 'Variable')
+        .map((node) => node.properties.name);
+      const handles = ['timer', 'interval', 'microtask', 'frame', 'idle', 'mapped'];
+      expect(functions.filter((name) => handles.includes(name))).toEqual([]);
+      expect(values).toEqual(expect.arrayContaining(handles));
+      const calls = getRelationships(result(), 'CALLS').filter(
+        (edge) => edge.targetFilePath === file,
+      );
+      const fileTasks = [
+        'frameTask',
+        'idleTask',
+        'intervalTask',
+        'mappedTask',
+        'microTask',
+        'timerTask',
+      ];
+      expect(
+        calls
+          .filter((edge) => edge.sourceLabel === 'File' && fileTasks.includes(edge.target))
+          .map((edge) => edge.target)
+          .sort(),
+      ).toEqual(fileTasks);
+      expect(
+        calls.filter((edge) => edge.target === 'innerTask').map((edge) => edge.source),
+      ).toEqual(['schedule']);
+      const wrappers = ['wrapped', 'member', 'shadow'];
+      expect(functions).toEqual(expect.arrayContaining(wrappers));
+      expect(
+        calls
+          .filter((edge) => edge.target === 'wrappedTask')
+          .map((edge) => edge.source)
+          .sort(),
+      ).toEqual(wrappers.sort());
+    },
+  );
+});
+
+describe('Node timer imports in callback initializers', () => {
+  const immediateBindings = `
+    function runImmediate() {}
+    const directHandle = setImmediate(() => runImmediate());
+    const globalHandle = global.setImmediate(() => runImmediate());
+    const currentHandle = globalThis.setImmediate(() => runImmediate());
+    function useCustom(setImmediate, globalThis) {
+      const localWrapper = setImmediate(() => runImmediate());
+      const memberWrapper = globalThis.setImmediate(() => runImmediate());
+      localWrapper(); memberWrapper();
+    }
+  `;
+  const esm = `
+    import { setTimeout as defer, setInterval } from 'node:timers';
+    import * as timers from 'timers';
+    import { setTimeout as userTimer } from './wrapper.js';
+    export function task() {}
+    export const delayed = defer(() => task(), 0);
+    export const recurring = setInterval(() => task(), 20);
+    export const immediate = timers.setImmediate(() => task());
+    export const custom = userTimer(() => task());
+    export function configure(defer) {
+      const local = defer(() => task());
+      return local;
+    }
+  `;
+  const commonjs = `
+    const { setTimeout: defer } = require('node:timers');
+    const { setInterval } = require('timers');
+    function task() {}
+    const delayed = defer(() => task(), 0), recurring = setInterval(() => task(), 20);
+    function configure(require) {
+      const { setTimeout: wrapper } = require('node:timers');
+      const local = wrapper(() => task());
+      return local;
+    }
+    let { setTimeout: reassigned } = require('node:timers');
+    reassigned = fn => fn;
+    const custom = reassigned(() => task());
+    module.exports = { delayed, recurring, configure, custom };
+  `;
+  const result = useFixture('explicit-node-timers', {
+    'wrapper.js': 'export function setTimeout(fn) { return fn; }',
+    'timers.mjs': esm + immediateBindings,
+    'timers.mts': esm + immediateBindings,
+    'timers.cjs': commonjs + immediateBindings,
+    'timers.cts': commonjs + immediateBindings,
+  });
+  it.each(['timers.mjs', 'timers.mts', 'timers.cjs', 'timers.cts'])(
+    'keeps ambient Immediate handles separate from shadowed callables in %s',
+    (file) => {
+      const nodes = result().graph.nodes.filter((node) => node.properties.filePath === file);
+      for (const name of ['directHandle', 'globalHandle', 'currentHandle']) {
+        expect(
+          nodes.filter((node) => node.properties.name === name).map((node) => node.label),
+        ).toEqual(['Const']);
+      }
+      const calls = getRelationships(result(), 'CALLS').filter(
+        (edge) => edge.targetFilePath === file,
+      );
+      expect(
+        calls
+          .filter((edge) => edge.source === 'useCustom')
+          .map((edge) => edge.target)
+          .filter((target) => ['localWrapper', 'memberWrapper'].includes(target))
+          .sort(),
+      ).toEqual(['localWrapper', 'memberWrapper']);
+      expect(
+        calls
+          .filter((edge) => edge.target === 'runImmediate')
+          .map((edge) => (edge.sourceLabel === 'File' ? 'module' : edge.source))
+          .sort(),
+      ).toEqual(['localWrapper', 'memberWrapper', 'module']);
+    },
+  );
+  it.each(['timers.mjs', 'timers.mts', 'timers.cjs'])(
+    'distinguishes Node and local bindings in %s',
+    (file) => {
+      const nodes = [...result().graph.iterNodes()].filter(
+        (node) => node.properties.filePath === file,
+      );
+      const scheduling = file.endsWith('.cjs')
+        ? ['delayed', 'recurring']
+        : ['delayed', 'immediate', 'recurring'];
+      expect(
+        nodes
+          .filter((node) => scheduling.includes(node.properties.name))
+          .map((node) => [node.properties.name, node.label])
+          .sort(),
+      ).toEqual(scheduling.map((name) => [name, 'Const']));
+      expect(
+        nodes
+          .filter((node) => ['custom', 'local'].includes(node.properties.name))
+          .map((node) => node.label),
+      ).toEqual(['Function', 'Function']);
+      const refs = getRelationships(result(), 'CALLS').filter(
+        (edge) => edge.targetFilePath === file && edge.target === 'task',
+      );
+      expect(
+        refs.map((edge) => (edge.sourceLabel === 'File' ? 'module' : edge.source)).sort(),
+      ).toEqual(['custom', 'local', 'module']);
+    },
+  );
 });
