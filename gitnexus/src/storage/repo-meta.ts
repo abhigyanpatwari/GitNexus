@@ -375,6 +375,10 @@ export interface RepoMeta {
    * core/lbug/schema.ts.
    */
   embeddingDims?: number;
+  /** Effective per-key property-dispatch budget for the published graph (#3924).
+   * null or absent means unlimited; a changed value forces graph reconciliation.
+   */
+  propertyDispatchBudget?: number | null;
   /**
    * Member names whose call sites were DROPPED because the receiver's type
    * could not be established (#2744, the second half of #2708). Read by

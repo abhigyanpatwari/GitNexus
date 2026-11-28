@@ -260,6 +260,7 @@ const LBUG_NATIVE = [
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
+  'test/integration/property-dispatch-budget-incremental.test.ts',
   'test/integration/query-symbol-integrity.test.ts',
   'test/integration/mcp-index-generation.test.ts',
   // A real refresh worker must preserve active readers or report native contention.

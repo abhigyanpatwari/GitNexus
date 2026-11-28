@@ -1,10 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import {
-  collectResolutionGroupFiles,
-  hasResolutionGroups,
-} from '../../src/core/incremental/resolution-groups.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+type ResolutionGroups = typeof import('../../src/core/incremental/resolution-groups.js');
+let collectResolutionGroupFiles: ResolutionGroups['collectResolutionGroupFiles'];
+let hasResolutionGroups: ResolutionGroups['hasResolutionGroups'];
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('incremental resolution groups', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.stubEnv('GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY', undefined);
+    const resolutionGroups = await import('../../src/core/incremental/resolution-groups.js');
+    collectResolutionGroupFiles = resolutionGroups.collectResolutionGroupFiles;
+    hasResolutionGroups = resolutionGroups.hasResolutionGroups;
+  });
+
   it('refreshes Java across directories when an unmentioned package type changes or is deleted', () => {
     const javaFiles = ['models/Foo.java', 'generated/Mid.java', 'app/A.java'];
     const mixed = [...javaFiles, 'models/Other.kt', 'models/Other.ts'];
@@ -56,8 +66,52 @@ describe('incremental resolution groups', () => {
     ['a Java file', ['web/app.ts', 'models/Foo.java'], true],
     ['a Go file', ['pkg/method.go'], true],
     ['only languages without a group', ['web/app.ts', 'models/Other.kt', 'README.md'], false],
+    ['filename-only source files', ['Rakefile', 'nested/Gemfile'], false],
     ['no files', [], false],
   ])('reports whether a repository with %s has a resolution group', (_label, paths, expected) => {
     expect(hasResolutionGroups(paths)).toBe(expected);
   });
+});
+
+describe('property-dispatch budget invalidation', () => {
+  it.each([
+    'added.ts',
+    'removed.js',
+    'pkg/deleted.go',
+    'views/deleted.vue',
+    'Rakefile',
+    'nested/Gemfile',
+    'removed/Guardfile',
+    'old/Vagrantfile',
+    'Brewfile',
+  ])(
+    'checks current source rows after a change to %s when the budget is enabled',
+    async (changed) => {
+      vi.resetModules();
+      vi.stubEnv('GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY', '5');
+      const { collectResolutionGroupFiles, hasResolutionGroups } =
+        await import('../../src/core/incremental/resolution-groups.js');
+      const sources = [
+        'left.ts',
+        'right.js',
+        'view.vue',
+        'pkg/model.go',
+        'Model.java',
+        'Rakefile',
+        'nested/Gemfile',
+        'Guardfile',
+        'Vagrantfile',
+        'Brewfile',
+        'lib/hooks.rb',
+      ];
+      expect(collectResolutionGroupFiles([changed], [...sources, 'README.md'])).toEqual(
+        new Set(sources),
+      );
+      expect(collectResolutionGroupFiles([], sources)).toEqual(new Set());
+      expect(collectResolutionGroupFiles(['README.md'], sources)).toEqual(new Set());
+      expect(hasResolutionGroups(['left.ts'])).toBe(true);
+      expect(hasResolutionGroups(['Rakefile'])).toBe(true);
+      expect(hasResolutionGroups(['README.md'])).toBe(false);
+    },
+  );
 });

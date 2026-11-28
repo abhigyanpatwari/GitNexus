@@ -31,6 +31,7 @@ export const REBUILD_REASON_KEYS = [
   'route-hook-config',
   'runner-identity',
   'parser-identity',
+  'property-dispatch-budget',
   'cjk-segmentation',
   'embedding-dims',
   'spring-actuator',

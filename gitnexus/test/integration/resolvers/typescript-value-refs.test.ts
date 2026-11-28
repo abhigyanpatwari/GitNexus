@@ -269,7 +269,7 @@ export function runJsBridge() {
     const capWarnings = logRecords.filter(
       (record) =>
         record.msg ===
-        'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
+        'property-dispatch: keys over a dispatch cap were dropped (no CALLS synthesized for them)',
     );
     expect(capWarnings).toHaveLength(1);
     expect(capWarnings[0]).toMatchObject({
