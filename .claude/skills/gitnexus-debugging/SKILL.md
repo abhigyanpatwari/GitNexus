@@ -37,9 +37,9 @@ diagnosis.
 ```
 0. Bind the repo once (list_repos only if not already known)
 1. If the suspect is unknown, query for the error/symptom with small result limits
-2. context({name: "<suspect>"})                    → See callers/callees/processes
+2. context({name: "<suspect>", repo: "my-app"})   → See callers/callees/processes
 3. Read a process resource only if its trace resolves an open question
-4. cypher({statement: "MATCH path..."})                 → Custom traces if needed
+4. cypher({statement: "MATCH path...", repo: "my-app"}) → Custom traces if needed
 ```
 
 > If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
