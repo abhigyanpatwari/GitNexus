@@ -1,4 +1,5 @@
 import type { TypeRef } from 'gitnexus-shared';
+import { syntaxOffsets, withoutTypeComments } from './type-parameters.js';
 
 /**
  * Parse top-level generic/template arguments from a type-like string.
@@ -85,7 +86,7 @@ const OPENING_BRACKET = /[<[]/;
  *
  * `undefined` for everything else, which is what both callers need: a list that
  * closes early (`User[][]`, `Repo<User>?`), one that never closes
- * (`Map<String, (Int) -> Unit>`), an empty one (`User[]`), one whose brackets
+ * (`Map<String, List<Int>`), an empty one (`User[]`), one whose brackets
  * cross families (`Foo<Bar]>`), or no bracket at all (`start === -1`). Shared
  * because the rule is one rule — `erasedTypeApplication` rebuilds the spelling
  * from it and `typeApplicationArguments` splits it, and two copies of a scan
@@ -100,7 +101,7 @@ function balancedTailList(text: string, start: number): string | undefined {
   // now match the opener it actually closes, so a crossed pair declines — which
   // is what the contract above says and what both callers read as "unknown".
   const expected: string[] = [];
-  for (let i = start; i < text.length; i++) {
+  for (const i of syntaxOffsets(text, start)) {
     const ch = text[i];
     if (ch === '<' || ch === '[') {
       expected.push(ch === '<' ? '>' : ']');
@@ -123,13 +124,13 @@ function splitTopLevelArguments(inner: string): string[] {
   let depth = 0;
   let tokenStart = 0;
   const push = (end: number): void => {
-    const token = inner.slice(tokenStart, end).trim();
+    const token = withoutTypeComments(inner.slice(tokenStart, end)).trim();
     if (token.length > 0) args.push(token);
   };
-  for (let i = 0; i < inner.length; i++) {
+  for (const i of syntaxOffsets(inner)) {
     const ch = inner[i];
-    if (ch === '<' || ch === '[' || ch === '(') depth++;
-    else if (ch === '>' || ch === ']' || ch === ')') depth--;
+    if (ch === '<' || ch === '[' || ch === '(' || ch === '{') depth++;
+    else if (ch === '>' || ch === ']' || ch === ')' || ch === '}') depth--;
     else if (ch === ',' && depth === 0) {
       push(i);
       tokenStart = i + 1;
@@ -260,7 +261,7 @@ export function templateConstraintsIdTag(payload: unknown): string {
  *   - `User[][]` — likewise, and it closes its first list before the end.
  *   - `std::vector<Item>` reduced to `vector<Item>` — the spelling does not
  *     start with the reduced name, so nothing was erased that this can restore.
- *   - `Repo<User>?`, `Map<String, (Int) -> Unit>` — trailing decoration and an
+ *   - `Repo<User>?`, `Map<String, List<Int>` — trailing decoration and an
  *     argument list that does not close where it must. Declining leaves the
  *     pre-existing behaviour, which is what "no transform" has to mean.
  *

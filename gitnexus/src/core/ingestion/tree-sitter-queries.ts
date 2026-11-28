@@ -14,8 +14,16 @@
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+  lexicalHocDefinitionQuery,
 } from './ts-js-hoc-utils.js';
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
+import { literalPropertyKeyQuery } from './languages/typescript/identifiers.js';
+
+// An anonymous default class takes its ESM export name in both grammars.
+const anonymousDefaultClassQuery = `
+(export_statement "default" @name value: (class !name) @definition.class)
+(parenthesized_expression (class !name) @definition.class)
+`;
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -23,8 +31,9 @@ ${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
-; Named class expressions own members just like declarations. Anonymous
-; expressions have no name and deliberately do not match this pattern.
+${anonymousDefaultClassQuery}
+
+; Named class expressions own members just like declarations.
 (class
   name: (type_identifier) @name) @definition.class
 
@@ -33,6 +42,10 @@ ${unboundCallableQuery('definition.function')}
 
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
+
+(enum_declaration name: (identifier) @name) @definition.enum
+(enum_body (property_identifier) @name @definition.property)
+(enum_assignment name: (_) @name) @definition.property
 
 ; Type aliases (A4). TypeScript was the only language whose aliases minted no
 ; node: Rust (type_item), Kotlin (type_alias), Swift (typealias_declaration)
@@ -88,6 +101,12 @@ ${unboundCallableQuery('definition.function')}
 (method_definition
   name: (private_property_identifier) @name) @definition.method
 
+; Literal class and interface keys take their name from the provider so that
+; escaped strings and different numeric spellings resolve to the same key.
+[(method_definition name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal)
+ (method_signature name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal)
+ (abstract_method_signature name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal)] @definition.method
+
 ; Abstract method signatures in abstract classes
 (abstract_method_signature
   name: (property_identifier) @name) @definition.method
@@ -99,12 +118,12 @@ ${unboundCallableQuery('definition.function')}
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (arrow_function))) @definition.function
+    value: (arrow_function) @callable)) @definition.function
 
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (function_expression))) @definition.function
+    value: (function_expression) @callable)) @definition.function
 
 ; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
 ; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
@@ -116,25 +135,25 @@ ${unboundCallableQuery('definition.function')}
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (generator_function))) @definition.function
+    value: (generator_function) @callable)) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
-      value: (arrow_function)))) @definition.function
+      value: (arrow_function) @callable))) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
-      value: (function_expression)))) @definition.function
+      value: (function_expression) @callable))) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
-      value: (generator_function)))) @definition.function
+      value: (generator_function) @callable))) @definition.function
 
 ; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
 ; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
@@ -391,41 +410,7 @@ ${unboundCallableQuery('definition.function')}
 ; being classified as a Function when it's actually a Const holding an array.
 ; Direct identifier calls and member expressions on non-array-methods (like
 ; React.memo) are still matched.
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (arrow_function))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (function_expression))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (arrow_function))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (function_expression))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+${lexicalHocDefinitionQuery}
 
 (export_statement
   declaration: (lexical_declaration
@@ -805,6 +790,7 @@ ${unboundCallableQuery('definition.function')}
 // JavaScript queries - works with tree-sitter-javascript
 export const JAVASCRIPT_QUERIES = `
 ${unboundCallableQuery('definition.function')}
+${anonymousDefaultClassQuery}
 (class_declaration
   name: (identifier) @name) @definition.class
 
@@ -820,6 +806,9 @@ ${unboundCallableQuery('definition.function')}
 (method_definition
   name: (property_identifier) @name) @definition.method
 
+(method_definition
+  name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @name @name.literal) @definition.method
+
 ; ES2022 #private methods
 (method_definition
   name: (private_property_identifier) @name) @definition.method
@@ -827,12 +816,12 @@ ${unboundCallableQuery('definition.function')}
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (arrow_function))) @definition.function
+    value: (arrow_function) @callable)) @definition.function
 
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (function_expression))) @definition.function
+    value: (function_expression) @callable)) @definition.function
 
 ; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
 ; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
@@ -1164,41 +1153,7 @@ ${unboundCallableQuery('definition.function')}
 ; are mirrored so JS code that uses \`var\` (or transpiler output) gets the
 ; same attribution as the registry-primary path.
 ; Excludes common array methods (map, filter, reduce, etc.) to avoid false positives.
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (arrow_function))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (function_expression))))) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (arrow_function))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (function_expression))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+${lexicalHocDefinitionQuery}
 
 (export_statement
   declaration: (lexical_declaration

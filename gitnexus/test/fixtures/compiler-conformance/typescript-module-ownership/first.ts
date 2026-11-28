@@ -1,0 +1,1 @@
+export { publish } from './left.js';
