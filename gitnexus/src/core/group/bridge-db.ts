@@ -22,6 +22,7 @@ import {
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 import { withGroupSyncLock } from './group-lock.js';
 import { createLogger } from '../logger.js';
+import { markFault } from '../fault-class.js';
 import { retryRename, writeFileAtomic } from '../../storage/fs-atomic.js';
 
 const bridgeLogger = createLogger('bridge-db', {
@@ -588,7 +589,9 @@ export async function queryBridge<T>(
   // are single-threaded — they're absent from bridgeEntryByHandle and skip the
   // lock at zero cost.
   const entry = bridgeEntryByHandle.get(handle);
-  return entry ? withHandleLock(entry, run) : run();
+  return (entry ? withHandleLock(entry, run) : run()).catch((err: unknown) => {
+    throw markFault(err, 'server');
+  });
 }
 
 /**

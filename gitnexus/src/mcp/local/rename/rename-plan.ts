@@ -19,6 +19,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { GraphNode } from 'gitnexus-shared';
 import { logger } from '../../../core/logger.js';
+import { faultOf, markFault, reportFault, type FaultClass } from '../../../core/fault-class.js';
+import { missingUnderLiveRoot } from '../path-fault.js';
 import {
   RenamePreviewPlans,
   renameSourceInventory,
@@ -55,14 +57,32 @@ export function repositoryPath(repoPath: string, filePath: string): string {
   return absolute;
 }
 
+/**
+ * Rethrow a source read error, marked client when the source vanished since it
+ * was read while the repository root is still a directory: the working copy
+ * changed, which a fresh preview resolves, as preview validation treats a
+ * missing path. A root that is gone or no longer a directory is the server's,
+ * whichever read failed first.
+ */
+const rethrowVanishedSource =
+  (repoPath: string) =>
+  async (error: unknown): Promise<never> => {
+    if (await missingUnderLiveRoot(error, repoPath)) markFault(error, 'client');
+    throw error;
+  };
+
 async function checkedRealPath(repoPath: string, filePath: string): Promise<string> {
   const absolute = repositoryPath(repoPath, filePath);
-  const [root, real] = await Promise.all([fs.realpath(repoPath), fs.realpath(absolute)]);
+  const [root, real] = await Promise.all([
+    fs.realpath(repoPath),
+    fs.realpath(absolute).catch(rethrowVanishedSource(repoPath)),
+  ]);
   repositoryPath(root, real);
   return real;
 }
 
 async function validateSnapshots(
+  repoPath: string,
   snapshots: ReadonlyMap<string, Buffer>,
   evidence: ReadonlyMap<string, RenameSourceVersion>,
 ): Promise<void> {
@@ -71,7 +91,9 @@ async function validateSnapshots(
   // Every source is still checked before each replacement, including unedited files.
   for (let start = 0; start < entries.length; start += 8) {
     const batch = entries.slice(start, start + 8);
-    const contents = await Promise.all(batch.map(([file]) => fs.readFile(file)));
+    const contents = await Promise.all(
+      batch.map(([file]) => fs.readFile(file).catch(rethrowVanishedSource(repoPath))),
+    );
     for (let index = 0; index < batch.length; index++) {
       const [file, snapshot] = batch[index]!;
       if (contents[index]!.equals(snapshot)) continue;
@@ -84,7 +106,9 @@ async function validateSnapshots(
   const evidenceFiles = [...evidence];
   for (let start = 0; start < evidenceFiles.length; start += 8) {
     const batch = evidenceFiles.slice(start, start + 8);
-    const versions = await Promise.all(batch.map(([file]) => readRenameSourceVersion(file)));
+    const versions = await Promise.all(
+      batch.map(([file]) => readRenameSourceVersion(file).catch(rethrowVanishedSource(repoPath))),
+    );
     for (let index = 0; index < batch.length; index++) {
       const [file, expected] = batch[index]!;
       const current = versions[index]!;
@@ -95,6 +119,58 @@ async function validateSnapshots(
       );
     }
   }
+}
+
+/**
+ * Fault class of each rename failure code, by where the failure comes from.
+ * Client: the request (its arguments, the new name, the preview it applies) or
+ * the working copy (it changed after the preview, or it holds code a rename
+ * cannot prove safe or does not support). Server: the index no longer matches
+ * the checkout, the planner or a language provider broke one of its own
+ * invariants or could not cover every source, or the plan exceeds a server
+ * budget. Codes come from this module, the preview store, the graph planner,
+ * shared edit preparation and language providers.
+ */
+export const RENAME_FAILURE_FAULTS: ReadonlyMap<string, FaultClass> = new Map([
+  ['invalid_argument', 'client'],
+  ['plan_required', 'client'],
+  ['invalid_plan', 'client'],
+  ['plan_mismatch', 'client'],
+  ['invalid_name', 'client'],
+  ['name_collision', 'client'],
+  ['source_changed', 'client'],
+  ['source_set_changed', 'client'],
+  ['resolution_changed', 'client'],
+  ['duplicate_file', 'client'],
+  ['outside_repository', 'client'],
+  ['ambiguous_reference', 'client'],
+  ['parse_error', 'client'],
+  ['unsupported_language', 'client'],
+  ['unsupported_boundary', 'client'],
+  ['unsupported_encoding', 'client'],
+  ['unsupported_source', 'client'],
+  ['unsupported_symbol_family', 'client'],
+  ['unsupported_occurrence', 'client'],
+  ['unsupported_reference', 'client'],
+  ['stale_graph', 'server'],
+  ['invalid_edit', 'server'],
+  ['overlapping_edits', 'server'],
+  ['no_locations', 'server'],
+  ['missing_snapshot', 'server'],
+  ['incomplete_semantics', 'server'],
+  ['plan_too_large', 'server'],
+]);
+
+/**
+ * Fault class of an error that stops a rename: the class marked where it was
+ * thrown, else a rename failure's class by its code, else the server's (an
+ * unlisted code included).
+ */
+export function renameFailureFault(error: unknown): FaultClass {
+  const marked = faultOf(error);
+  if (marked) return marked;
+  if (error instanceof RenameFailure) return RENAME_FAILURE_FAULTS.get(error.code) ?? 'server';
+  return 'server';
 }
 
 /** Validates the complete edit set and source versions before any write. */
@@ -147,8 +223,9 @@ export async function executeRenamePlan(
       files.set(file, { absolute, real, output });
       changes.push({ file_path: file, edits: reports });
     }
-    await validateSnapshots(expectedSnapshots, evidence);
+    await validateSnapshots(repoPath, expectedSnapshots, evidence);
   } catch (error) {
+    reportFault(renameFailureFault(error));
     return { ...blocked(plan.symbol, plan.new_name, error), coverage: plan.coverage };
   }
 
@@ -162,7 +239,9 @@ export async function executeRenamePlan(
       // change after an earlier write is reported as a partial operation.
       if (
         (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
-        !(await fs.readFile(file.absolute)).equals(expectedSnapshots.get(file.absolute)!)
+        !(await fs.readFile(file.absolute).catch(rethrowVanishedSource(repoPath))).equals(
+          expectedSnapshots.get(file.absolute)!,
+        )
       ) {
         throw new RenameFailure(
           'source_changed',
@@ -171,7 +250,7 @@ export async function executeRenamePlan(
       }
       // A rejected in-place write may already have truncated the source. Finish
       // a replacement beside the destination before installing it atomically.
-      const { mode } = await fs.stat(file.real);
+      const { mode } = await fs.stat(file.real).catch(rethrowVanishedSource(repoPath));
       temporaryDirectory = await fs.mkdtemp(
         path.join(path.dirname(file.real), '.gitnexus-rename-'),
       );
@@ -180,7 +259,7 @@ export async function executeRenamePlan(
       await fs.chmod(replacement, mode);
       // Unedited sources also contribute semantic evidence. Already installed
       // files must match their landed outputs rather than their old snapshots.
-      await validateSnapshots(expectedSnapshots, evidence);
+      await validateSnapshots(repoPath, expectedSnapshots, evidence);
       // Configuration discovery is bounded independently of the edit count.
       // Check after staging, just before the first installation; later source
       // checks retain the same cooperative-workspace race boundary as writes.
@@ -189,7 +268,9 @@ export async function executeRenamePlan(
       // last; validation and replacement remain separate filesystem operations.
       if (
         (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
-        !(await fs.readFile(file.absolute)).equals(expectedSnapshots.get(file.absolute)!)
+        !(await fs.readFile(file.absolute).catch(rethrowVanishedSource(repoPath))).equals(
+          expectedSnapshots.get(file.absolute)!,
+        )
       ) {
         throw new RenameFailure(
           'source_changed',
@@ -200,6 +281,7 @@ export async function executeRenamePlan(
       expectedSnapshots.set(file.absolute, Buffer.from(file.output, 'utf8'));
       landed.push(change);
     } catch (error) {
+      reportFault(renameFailureFault(error));
       return {
         ...result(plan.symbol, plan.new_name, landed),
         coverage: plan.coverage,
@@ -289,6 +371,7 @@ export async function renameSymbol(
     }
     return result;
   } catch (error) {
+    reportFault(renameFailureFault(error));
     if (!(error instanceof RenameFailure))
       logger.error(
         { err: error, symbolUid: symbol.uid, filePath: symbol.filePath },

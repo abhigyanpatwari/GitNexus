@@ -9,6 +9,8 @@
  * the `MCP_READ_ONLY_TOOLS` allowlist, which it is deliberately not part of.
  */
 
+import { clientError } from '../core/fault-class.js';
+
 export const MCP_REFRESH_TOOL = 'refresh_index';
 
 /**
@@ -74,7 +76,7 @@ export function resolveMcpRefreshLimits(env: NodeJS.ProcessEnv = process.env): M
  */
 export function assertMcpRefreshToolCall(toolName: string, refreshEnabled: boolean): void {
   if (toolName === MCP_REFRESH_TOOL && !refreshEnabled) {
-    throw new Error(
+    throw clientError(
       `Tool "${MCP_REFRESH_TOOL}" is disabled. Start the local MCP server with GITNEXUS_MCP_ENABLE_REFRESH=1 to enable it, or run \`gitnexus analyze\` in the repository.`,
     );
   }

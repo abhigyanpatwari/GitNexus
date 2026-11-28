@@ -56,6 +56,8 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | `gitnexus://group/{name}/contracts` | Contract Registry (provider/consumer rows + cross-links) |
 | `gitnexus://group/{name}/status`    | Per-member index + Contract Registry staleness           |
 
+Failed `tools/call` responses carry a `client` or `server` fault class in `_meta` (`gitnexus/src/core/fault-class.ts`; see [MCP tool error classification](docs/mcp-reference.md#mcp-tool-error-classification)).
+
 ## Where to change what
 
 | Concern                                                 | Start in                                                                                               |

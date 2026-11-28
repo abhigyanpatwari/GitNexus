@@ -1,3 +1,5 @@
+import { markFault } from '../core/fault-class.js';
+
 const BUDGETED_TOOLS = new Set(['query', 'context', 'impact']);
 
 export const MCP_TOKEN_ESTIMATE_BYTES = 4;
@@ -18,7 +20,14 @@ export function resolveMcpMaxTokens(
   env: NodeJS.ProcessEnv = process.env,
 ): number | undefined {
   if (!BUDGETED_TOOLS.has(toolName)) return undefined;
-  if (args?.maxTokens !== undefined) return parsePositiveInteger(args.maxTokens, 'maxTokens');
+  if (args?.maxTokens !== undefined) {
+    // The caller's own argument; an invalid environment default below stays a server fault.
+    try {
+      return parsePositiveInteger(args.maxTokens, 'maxTokens');
+    } catch (err) {
+      throw markFault(err, 'client');
+    }
+  }
 
   const configured = env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
   if (configured === undefined || configured.trim() === '') return undefined;

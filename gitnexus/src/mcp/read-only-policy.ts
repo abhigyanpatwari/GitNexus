@@ -1,4 +1,5 @@
 import { READ_ONLY_TOOL_ANNOTATIONS, type GITNEXUS_TOOLS } from './tools.js';
+import { clientError } from '../core/fault-class.js';
 
 type GitNexusTool = (typeof GITNEXUS_TOOLS)[number];
 
@@ -47,26 +48,26 @@ export function assertMcpReadOnlyToolCall(
 ): void {
   if (!readOnly) return;
   if (!MCP_READ_ONLY_TOOLS.has(toolName) && !MCP_READ_ONLY_ALIASES.has(toolName)) {
-    throw new Error(`Tool "${toolName}" is not available in GitNexus MCP read-only mode.`);
+    throw clientError(`Tool "${toolName}" is not available in GitNexus MCP read-only mode.`);
   }
   // `rename` is the one tool here that can write. Its read-only listing is
   // preview-only, so the dispatch contract must agree: only an omitted or
   // literal `true` reaches the backend. Anything else - `false`, `"false"`, `0`,
   // `null` - is rejected here rather than left to the planner's own type check.
   if (toolName === 'rename' && args?.dry_run !== undefined && args.dry_run !== true) {
-    throw new Error(
+    throw clientError(
       'Parameter "dry_run" must be omitted or true for "rename" in GitNexus MCP read-only mode; applying edits is not available.',
     );
   }
   if (typeof args?.repo === 'string' && args.repo.trim().startsWith('@')) {
-    throw new Error('Group routing is not available in GitNexus MCP read-only mode.');
+    throw clientError('Group routing is not available in GitNexus MCP read-only mode.');
   }
   // crossDepth/subgroup only do anything on the @group path rejected above,
   // but rejecting them here keeps the advertised schema and the dispatch
   // contract in agreement.
   for (const groupOnlyArg of ['crossDepth', 'subgroup']) {
     if (args?.[groupOnlyArg] !== undefined) {
-      throw new Error(
+      throw clientError(
         `Parameter "${groupOnlyArg}" is not available in GitNexus MCP read-only mode.`,
       );
     }

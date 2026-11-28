@@ -160,6 +160,81 @@ For single-repo callgraph results, `impact` removes whole symbols from the deepe
 
 Without explicit pagination, single-repo callgraph impact returns up to 30 symbols per depth. Client-supplied `offset: 0` and `summaryOnly: false` still use this default. Set `GITNEXUS_IMPACT_DEFAULT_LIMIT=0` for an unpaged result, or set `limit` and `offset` for explicit pages. Each symbol lists at most three processes; `processCount` records the full count when the list is shortened. Backend results used by the web UI and internal callers are unchanged.
 
+## MCP tool error classification
+
+A failed `tools/call` response carries a fault class in its result `_meta`, so
+a proxy or gateway in front of the MCP server can tell a caller's mistake from
+a server failure without parsing the response text:
+
+```json
+{
+  "content": [{ "type": "text", "text": "{\"error\":\"…\"}…" }],
+  "_meta": { "io.github.abhigyanpatwari.gitnexus/fault": "client" }
+}
+```
+
+- `client`: the caller can fix the call, for example invalid Cypher, a write
+  attempt, an unknown tool, symbol, repository, group or argument, a
+  `read_file` path that is a directory or otherwise not a readable file path,
+  a read-only or repository-policy denial, or a `maxTokens` the call set too
+  small for the result (a too-small `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` is
+  `server`).
+- `server`: the engine, its storage, or the server failed, for example a
+  LadybugDB failure, an exhausted connection pool, a query timeout in an
+  internal tool, a corrupted WAL, an index that cannot be opened, a file the
+  server may not read, or invalid server configuration.
+
+The key is set on exactly two kinds of result: results with `isError: true`,
+and results whose top-level object has an `error` field (without `isError`).
+Every other result has no key, including results that succeed only in part or
+report a failure in a nested field: a multi-repository `query` in which one
+repository failed (`per_repo[i].status: "error"`), a group `impact` whose local
+phase timed out (`local.error`), or a `group_context` member with
+`payload.error`. Read those fields to find partial failures. The response text
+and `isError` are the same as without the key. A result with `isError: true` or
+a top-level `error` but no key comes from a server older than this
+classification.
+
+An argument whose JSON type is not one the tool's `inputSchema` declares for a
+`string` or `array` property, or for a union of the two, is rejected before the
+tool runs, with `isError: true` and class `client`. The type check lets `null`
+through; the tool itself decides what `null` means (an omitted value for most
+properties, but some reject it, and a repository allowlist rejects `repo:
+null`). An unknown tool name (including one such as `constructor`) and a
+`repo` that is not a string on a tool without a schema are rejected the same
+way. These rejections are the only changes to response text: such calls used
+to fail inside the tool with an internal error, or for some properties succeed
+with the value ignored or converted to a string.
+
+A thrown error that the server did not classify counts as `server`: it is an
+unexpected failure. An `{ error }` result counts as `client` unless the tool
+reported a server fault while it ran.
+
+For `cypher`, an error the engine raises while preparing or running the
+caller's statement is classified by the LadybugDB exception category that
+opens its message (`<Category> exception: `): `Parser`, `Binder`, `Catalog`,
+`Conversion`, `Runtime` and `Overflow` are `client`; `IO`, `Buffer manager`,
+`Storage`, `Connection` and `Copy` are `server`, and so is an engine error with
+no recognized category, unless the statement names a `$parameter` that `params`
+does not supply (outside string literals and comments): the engine reports that
+mistake without a category, so it is `client`. A `Copy exception` is `server`
+even when the engine raises it for a malformed file the caller names in
+`LOAD FROM`; a file that does not exist is a `Binder exception` and `client`.
+Several statements in one `cypher` call are refused with
+`Connection Exception: … multiple statements`, which names no recognized
+category and is `server`. The statement's timeout and the read-only refusal are
+`client`. Failures to get or open the database, or to load the VECTOR
+extension a vector query needs, stay `server`, and so does a corrupted WAL. A
+failed `git diff` in
+`detect_changes` is classified `client` only when the caller's `base_ref` does
+not name a commit (`git rev-parse --verify`); a ref that resolves but whose
+diff fails, a missing or killed git, or a failure outside the `compare` scope
+is `server`.
+
+When a query uses too much memory, the server process exits with code 70 and
+sends no response. A proxy sees a closed transport and should count it as a
+server fault.
+
 ## Tool Examples
 
 ### Impact Analysis

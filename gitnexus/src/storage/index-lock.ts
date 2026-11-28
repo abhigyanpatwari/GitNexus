@@ -172,12 +172,28 @@ export class IndexLockTimeoutError extends Error {
   readonly holderKnown: boolean;
   /** Present only for acquisition/reclaim guard contention, requiring quiesced recovery. */
   readonly guardPath?: string;
-  constructor(holder: LockRecord, waitedMs: number, holderKnown = true, guardPath?: string) {
+  /**
+   * Whether a live process is proven to hold the lock. True on the socket
+   * backend, where the bind itself proves a live holder that cannot be named,
+   * and for a record from this host whose pid is alive (the check `isStale`
+   * makes) and that the lock file still holds when the wait times out. False
+   * for a foreign-host record, whose liveness is unknowable here, for a holder
+   * that released the lock, and for a malformed or vanishing lock file.
+   */
+  readonly liveHolder: boolean;
+  constructor(
+    holder: LockRecord,
+    waitedMs: number,
+    holderKnown = true,
+    guardPath?: string,
+    liveHolder = false,
+  ) {
     super(formatIndexLockTimeoutMessage(holder, waitedMs, holderKnown, guardPath));
     this.name = 'IndexLockTimeoutError';
     this.holder = holder;
     this.holderKnown = holderKnown;
     this.guardPath = guardPath;
+    this.liveHolder = liveHolder;
   }
 }
 
@@ -295,6 +311,31 @@ const isStale = (holder: LockRecord): boolean => {
   return false;
 };
 
+/** A record proves a live holder only from this host, where `isStale` can tell. */
+const provesLiveHolder = (holder: LockRecord): boolean =>
+  holder.hostname === HOSTNAME && !isStale(holder);
+
+/**
+ * Whether `holder` still owns the lock file and is proven alive. The file is
+ * read without the guard, so this only labels a timeout and decides nothing; a
+ * missing, unreadable or replaced record proves nothing.
+ */
+const stillHoldsLock = (lockPath: string, holder: LockRecord): boolean => {
+  let current: LockRecord | null;
+  try {
+    current = readRecord(lockPath);
+  } catch {
+    return false;
+  }
+  return (
+    current !== null &&
+    current.token === holder.token &&
+    current.pid === holder.pid &&
+    current.hostname === holder.hostname &&
+    provesLiveHolder(current)
+  );
+};
+
 /**
  * Placeholder holder for an {@link IndexLockTimeoutError} thrown while the lock
  * file exists but no valid record can be read (malformed/partial), or it keeps
@@ -323,7 +364,9 @@ const remainingGuardCreateWaitMs = (args: {
   code: string | undefined;
   err: unknown;
   guardPath: string;
+  lockPath: string;
   lastLiveHolder: LockRecord | null;
+  currentHolder: LockRecord | null;
 }): number => {
   const workloadDeadline = args.startedAt + args.timeoutMs;
   const guardDeadline = args.guardWaitSince + GUARD_TIMEOUT_MS;
@@ -344,6 +387,10 @@ const remainingGuardCreateWaitMs = (args: {
     remembered,
     args.now - args.startedAt,
     args.lastLiveHolder !== null,
+    undefined,
+    // Only the holder the latest inspection saw can still be there, and only
+    // if the lock file still names it now: it may have been released since.
+    args.currentHolder !== null && stillHoldsLock(args.lockPath, args.currentHolder),
   );
 };
 
@@ -545,6 +592,9 @@ const acquireViaFile = async (
   // when the overall wait budget expires during a brief peer inspect (EEXIST)
   // so we do not mislabel ordinary contention as an orphan guard.
   let lastLiveHolder: LockRecord | null = null;
+  // The workload holder our latest guarded inspection saw, or null when it saw
+  // none (no lock, an unreadable one, or a delete-pending one).
+  let currentHolder: LockRecord | null = null;
 
   for (;;) {
     const permissionDeadline =
@@ -574,7 +624,9 @@ const acquireViaFile = async (
           code,
           err,
           guardPath,
+          lockPath,
           lastLiveHolder,
+          currentHolder,
         });
         await sleep(jitteredDelay(pollMs, remainingMs, 0));
         continue;
@@ -702,6 +754,7 @@ const acquireViaFile = async (
       releaseAcquisitionGuard(guardPath, me, createdMain, lockPath);
     }
     const waited = Date.now() - startedAt;
+    currentHolder = holder;
 
     if (holder) {
       // Live holder → wait.
@@ -714,7 +767,16 @@ const acquireViaFile = async (
             `refreshing this index — waiting for it to finish.`,
         );
       }
-      if (waited >= timeoutMs) throw new IndexLockTimeoutError(holder, waited);
+      // The record was read under the guard, which is released by now: check
+      // that it still names the holder before calling the holder live.
+      if (waited >= timeoutMs)
+        throw new IndexLockTimeoutError(
+          holder,
+          waited,
+          true,
+          undefined,
+          stillHoldsLock(lockPath, holder),
+        );
       if (Date.now() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
         lastDiagnosticAt = Date.now();
         if (waited >= DIAGNOSTIC_INTERVAL_MS) {
@@ -870,8 +932,11 @@ const acquireViaSocket = async (
       opts.log?.('Another gitnexus analyze is refreshing this index — waiting for it to finish.');
     }
     const waited = Date.now() - startedAt;
-    // Socket backend exposes no owner metadata → holder identity is unknown (M3).
-    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
+    // Socket backend exposes no owner metadata → holder identity is unknown (M3),
+    // but EADDRINUSE proves the holder is alive.
+    if (waited >= timeoutMs) {
+      throw new IndexLockTimeoutError(unknownHolder(), waited, false, undefined, true);
+    }
     if (Date.now() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
       lastDiagnosticAt = Date.now();
       if (waited >= DIAGNOSTIC_INTERVAL_MS) {

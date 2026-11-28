@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { clientError } from '../core/fault-class.js';
 import type { LocalBackend, McpToolCallContext } from './local/local-backend.js';
 import { parseQueryRepositories } from './local/multi-repo-query.js';
 import { scrubGroupDescription } from './read-only-policy.js';
@@ -82,7 +83,7 @@ function startupResolutionError(reason: 'invalid' | 'ambiguous'): Error {
 }
 
 function unavailableRepositoryError(): Error {
-  return new Error('Repository is not available through this MCP server.');
+  return clientError('Repository is not available through this MCP server.');
 }
 
 export class McpRepositoryPolicy {
@@ -137,7 +138,9 @@ export class McpRepositoryPolicy {
       if (typeof explicit !== 'string') throw unavailableRepositoryError();
       if (explicit.trim().startsWith('@')) {
         if (this.restricted) {
-          throw new Error('Group routing is unavailable when an MCP repository allowlist is set.');
+          throw clientError(
+            'Group routing is unavailable when an MCP repository allowlist is set.',
+          );
         }
         return undefined;
       }
@@ -147,7 +150,7 @@ export class McpRepositoryPolicy {
     if (this.defaultRepo) return this.defaultRepo;
     if (this.restricted && this.allowed.length === 1) return this.allowed[0];
     if (this.restricted && this.allowed.length > 1) {
-      throw new Error('Specify an explicit repo because multiple repositories are allowed.');
+      throw clientError('Specify an explicit repo because multiple repositories are allowed.');
     }
     return undefined;
   }
@@ -224,12 +227,12 @@ export class McpRepositoryPolicy {
     ...context: [McpToolCallContext?]
   ): Promise<unknown> {
     if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
-      throw new Error('Repository arrays are supported only by query (and legacy search).');
+      throw clientError('Repository arrays are supported only by query (and legacy search).');
     }
     if (!this.configured) return backend.callTool(method, params, ...context);
     if (method === 'list_repos') return backend.listReposPage(params, this.listingVisibility());
     if (this.restricted && method.startsWith('group_')) {
-      throw new Error('Group tools are unavailable when an MCP repository allowlist is set.');
+      throw clientError('Group tools are unavailable when an MCP repository allowlist is set.');
     }
     return backend.callTool(method, this.normalizeToolArgs(params), ...context);
   }

@@ -319,6 +319,11 @@ const LBUG_NATIVE = [
   // coverage and platform jobs so an unavailable VECTOR fails loudly. Budget: four real analyze runs, so expect it to sit alongside the
   // VECTOR sibling's ~87s Windows measurement.
   'test/unit/incremental-index-extension-dml-gate.test.ts',
+  // MCP tool error fault class: tool calls against a real graph with engine
+  // failures injected below the native pool, and a group bridge.lbug the
+  // native engine fails to open (plus real group.yaml reads, see FILESYSTEM).
+  'test/integration/mcp-tool-fault-class.test.ts',
+  'test/unit/group-fault-class.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real
@@ -488,6 +493,13 @@ const FILESYSTEM = [
   // git-config failure path on windows-latest / macos-latest.
   'test/unit/gitnexus-rc-embeddings.test.ts',
   'test/unit/git-clone.test.ts',
+  // MCP tool error fault class from real filesystem errors: the code the OS
+  // picks for one path differs (Windows reports ENOENT where POSIX reports
+  // ENOTDIR or ENAMETOOLONG), and the class must not. Symlink loops, permission
+  // bits, a repository root replaced by a file, and the file lock backend.
+  'test/unit/mcp-local-input-fault-class.test.ts',
+  'test/unit/rename-fault-class.test.ts',
+  'test/unit/group-lock-fault-class.test.ts',
 ];
 
 const ALL_CROSS_PLATFORM = [

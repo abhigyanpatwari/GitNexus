@@ -1,5 +1,6 @@
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
+import { markFault } from '../fault-class.js';
 
 /** Shared integrity boundary for identities returned by graph and search queries. */
 export const SYMBOL_IDENTITY_RECOVERY_SUGGESTION =
@@ -9,6 +10,7 @@ export class SymbolIdentityError extends Error {
   constructor() {
     super('The index returned an invalid symbol identity. ' + SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
     this.name = 'SymbolIdentityError';
+    markFault(this, 'server');
   }
 }
 
