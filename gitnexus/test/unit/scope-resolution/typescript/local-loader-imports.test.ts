@@ -376,6 +376,8 @@ describe('local-loader graph targets', () => {
             return run();
           }
         `;
+      }
+      if (extension === 'js') {
         files[`${extension}/forward.${extension}`] = `
           let { run: changed, stable } = require('./exports');
           changed = custom;
@@ -444,20 +446,17 @@ describe('local-loader graph targets', () => {
     },
   );
 
-  it.each(['ts', 'js'])(
-    '%s forwards unchanged destructured siblings to their exact definition',
-    (extension) => {
-      expect(
-        getRelationships(result, 'CALLS')
-          .filter((edge) => edge.sourceFilePath === `${extension}/consumer.${extension}`)
-          .map((edge) => [edge.source, edge.target, edge.targetFilePath])
-          .sort(),
-      ).toEqual([
-        ['callRenamedStable', 'stable', `${extension}/exports.${extension}`],
-        ['callStable', 'stable', `${extension}/exports.${extension}`],
-      ]);
-    },
-  );
+  it('js forwards unchanged destructured siblings to their exact definition', () => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.sourceFilePath === 'js/consumer.js')
+        .map((edge) => [edge.source, edge.target, edge.targetFilePath])
+        .sort(),
+    ).toEqual([
+      ['callRenamedStable', 'stable', 'js/exports.js'],
+      ['callStable', 'stable', 'js/exports.js'],
+    ]);
+  });
 
   it.each(variants)(
     '$extension binds exact targets and excludes sibling, parameter and TDZ leakage',

@@ -14,6 +14,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
+import { getTsParser } from '../../../../src/core/ingestion/languages/typescript/query.js';
+import { synthesizeTsLocalImports } from '../../../../src/core/ingestion/languages/typescript/local-loaders.js';
+import { isRegistrationHandle } from '../../../../src/core/ingestion/ts-js-hoc-utils.js';
 import { emitTsScopeCaptures } from '../../../../src/core/ingestion/languages/typescript/captures.js';
 
 function tagsFor(src: string): string[][] {
@@ -795,28 +799,24 @@ export async function run(token: string) {
   return [a, b];
 }
 `;
-  const argumentFacts = () =>
-    emitTsScopeCaptures(src, 'test.ts')
+  it.each([
+    ['@reference.call.free', 'verifyToken', 'verifyToken'],
+    ['@reference.call.member', 'verify', undefined],
+  ] as const)('links the callable argument to its %s site', (kind, name, directCallee) => {
+    const matches = emitTsScopeCaptures(src, 'test.ts');
+    const call = matches.find((m) => m[kind] && m['@reference.name']?.text === name)?.[kind];
+    expect(call).toBeDefined();
+    const argumentsAtCalls = matches
       .filter((m) => m['@callable-flow.argument'] !== undefined)
       .map((m) => ({
-        call: m['@callable-flow.argument']!.text,
+        range: m['@callable-flow.argument']!.range,
         source: m['@callable-flow.source']!.text,
         directCallee: m['@callable-flow.direct-callee-name']?.text,
       }));
-
-  it('an awaited generic DIRECT call keeps its direct-callee-name', () => {
-    expect(argumentFacts()).toContainEqual({
-      call: 'await verifyToken<string>(token, () => {})',
+    expect(argumentsAtCalls).toContainEqual({
+      range: call?.range,
       source: '<anonymous>',
-      directCallee: 'verifyToken',
-    });
-  });
-
-  it('an awaited generic MEMBER call has no direct-callee-name', () => {
-    expect(argumentFacts()).toContainEqual({
-      call: 'await svc.verify<string>(token, () => {})',
-      source: '<anonymous>',
-      directCallee: undefined,
+      directCallee,
     });
   });
 });
@@ -856,4 +856,20 @@ export async function run() {
 `),
     ).toEqual(['pending']);
   });
+});
+
+it('shares registration facts across a same-source grammar fallback and clears them on scope re-extraction', () => {
+  const source = 'const timer = setTimeout(() => {}, 0);';
+  const workerTree = parseSourceSafe(getTsParser('fallback.tsx'), source);
+  const binding = workerTree.rootNode.descendantsOfType('variable_declarator')[0];
+  emitTsScopeCaptures(source, 'fallback.ts', workerTree);
+  expect(isRegistrationHandle(binding)).toBe(true);
+  const otherSource = 'const timer = wrapper(() => {}, 0);';
+  const unrelated = parseSourceSafe(getTsParser('fallback.tsx'), otherSource);
+  emitTsScopeCaptures(source, 'fallback.ts', unrelated);
+  expect(isRegistrationHandle(unrelated.rootNode.descendantsOfType('variable_declarator')[0])).toBe(
+    false,
+  );
+  synthesizeTsLocalImports(workerTree.rootNode, 'fallback.ts', []);
+  expect(isRegistrationHandle(binding)).toBe(false);
 });
