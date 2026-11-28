@@ -873,6 +873,22 @@ ${unboundCallableQuery('declaration.function')}
     (new_expression
       constructor: (identifier) @type-binding.type))) @type-binding.constructor
 
+;; \`const u = new User() satisfies Shape\` / \`const u = (new User())\`.
+;; Neither wrapper changes the value's type, so the constructor stays the
+;; binding. (\`satisfies\` only checks assignability; unlike \`as\`, it never
+;; narrows or widens what the declaration holds.)
+(variable_declarator
+  name: (identifier) @type-binding.name
+  value: (satisfies_expression
+    (new_expression
+      constructor: (identifier) @type-binding.type))) @type-binding.constructor
+
+(variable_declarator
+  name: (identifier) @type-binding.name
+  value: (parenthesized_expression
+    (new_expression
+      constructor: (identifier) @type-binding.type))) @type-binding.constructor
+
 ;; Double-cast: \`const u = new User() as unknown as any\` — as_expression
 ;; nested inside as_expression, with new_expression at the core.
 (variable_declarator
