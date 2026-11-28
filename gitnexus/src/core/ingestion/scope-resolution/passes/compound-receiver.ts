@@ -151,9 +151,9 @@ interface ResolveCompoundReceiverOptions {
    *  classifier grammar and per-language opt-in rules. */
   readonly stripReceiverCastExpressions?: boolean;
   /**
-   * With `stripReceiverCastExpressions`: when a cast's target type names no class,
-   * resolve nothing instead of falling back to the operand's own declared type.
-   * The cast replaces that type, so the fallback would guess. Default `false`.
+   * With `stripReceiverCastExpressions`, controls fallback when lookup of a
+   * simple cast target name fails. The default `false` permits operand lookup.
+   * The classifier handles recognized but unsupported outer targets separately.
    */
   readonly unresolvedCastTargetResolvesNothing?: boolean;
   /** Surface syntax this language uses to construct a value, so an

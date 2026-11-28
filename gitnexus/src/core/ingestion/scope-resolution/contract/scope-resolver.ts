@@ -2184,9 +2184,10 @@ export interface ScopeResolver {
   readonly stripReceiverCastExpressions?: boolean;
 
   /**
-   * Optional: with `stripReceiverCastExpressions`, a cast whose target type names no
-   * class resolves nothing, rather than the operand's own declared type. Default
-   * `false`.
+   * With `stripReceiverCastExpressions`, controls what happens when lookup of a
+   * simple cast target name fails. When `true`, leave the receiver unresolved.
+   * The default `false` permits lookup using the operand. A recognized but
+   * unsupported outer cast target stays unresolved regardless of this option.
    */
   readonly unresolvedCastTargetResolvesNothing?: boolean;
 
