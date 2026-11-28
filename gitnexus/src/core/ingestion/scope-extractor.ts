@@ -175,21 +175,7 @@ export function extract(
   for (let i = 0; i < scopeDrafts.length; i++) {
     const d = scopeDrafts[i];
     if (d.parent === null && d.kind !== 'Module') {
-      // `ownsReceivers` must be carried across: it is decided from the scope's
-      // own capture in pass 1 and re-parenting does not change what the scope
-      // binds. Dropping it here would silently un-mark every function scope in
-      // a file whose root parsed as ERROR (the only way a scope is orphaned).
-      scopeDrafts[i] = makeDraft(
-        d.id,
-        moduleScope.id,
-        d.kind,
-        d.range,
-        d.filePath,
-        d.ownsReceivers,
-        d.lexicalNames,
-        d.nameClaims,
-        d.lookupPolicy,
-      );
+      scopeDrafts[i] = { ...d, parent: moduleScope.id };
     }
   }
   const scopes = scopeDrafts.map(draftToScope);
@@ -384,6 +370,7 @@ function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
  * of each pass's writes.
  */
 interface ScopeDraft {
+  readonly typeParameters?: Scope['typeParameters'];
   readonly id: ScopeId;
   readonly parent: ScopeId | null;
   readonly kind: ScopeKind;
@@ -444,6 +431,7 @@ function draftToScope(draft: ScopeDraft): Scope {
     frozenBindings.set(name, Object.freeze(refs.slice()));
   }
   return {
+    ...(draft.typeParameters && { typeParameters: draft.typeParameters }),
     id: draft.id,
     parent: draft.parent,
     kind: draft.kind,
@@ -536,6 +524,7 @@ function pass1BuildScopes(
         parseScopeLexicalNames(cand.match),
         parseJsonCapture(cand.match['@scope.name-claims']) as ScopeDraft['nameClaims'],
         parseJsonCapture(cand.match['@scope.lookup-policy']) as ScopeDraft['lookupPolicy'],
+        cand.match['@scope.type-parameters']?.text,
       ),
     );
     stack.push(cand);
@@ -585,6 +574,7 @@ function makeDraft(
   lexicalNames?: ReadonlySet<string>,
   nameClaims?: ScopeDraft['nameClaims'],
   lookupPolicy?: ScopeDraft['lookupPolicy'],
+  typeParameterList?: string,
 ): ScopeDraft {
   return {
     id,
@@ -592,6 +582,7 @@ function makeDraft(
     kind,
     range,
     filePath,
+    typeParameters: (typeParameterList && parseTypeParameterList(typeParameterList)) || undefined,
     bindings: new Map(),
     ownedDefs: [],
     imports: [],
@@ -759,6 +750,12 @@ function buildDefFromDeclarationMatch(
   const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
   const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+  const isOverloadSignature = match['@declaration.overload-signature'] !== undefined;
+  // A signature can share the coarse types unless its provider normalized an
+  // annotation or inserted a marker (such as a trailing variadic sentinel).
+  const declaredParameterTypes =
+    parseJsonStringArrayCapture(match['@declaration.declared-parameter-types']) ??
+    (isOverloadSignature ? parameterTypes : undefined);
   const parameterTypeClasses = parseJsonParameterTypeClassesCapture(
     match['@declaration.parameter-type-classes'],
   );
@@ -782,6 +779,7 @@ function buildDefFromDeclarationMatch(
   const namedExports = parseJsonStringArrayCapture(match['@declaration.named-exports']);
   const typeOnlyExports = parseJsonStringArrayCapture(match['@declaration.type-only-exports']);
   const graphPosition = match['@declaration.graph-position']?.range;
+  const literalMemberName = match['@declaration.literal-member-name']?.text;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -793,9 +791,11 @@ function buildDefFromDeclarationMatch(
       ? { graphPosition: { startLine: graphPosition.startLine, startCol: graphPosition.startCol } }
       : {}),
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
+    ...(literalMemberName !== undefined ? { literalMemberName } : {}),
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
+    ...(declaredParameterTypes !== undefined ? { declaredParameterTypes } : {}),
     ...(parameterTypeClasses !== undefined ? { parameterTypeClasses } : {}),
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
@@ -803,6 +803,7 @@ function buildDefFromDeclarationMatch(
     ...(typeParameters !== undefined ? { typeParameters } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
+    ...(isOverloadSignature ? { isOverloadSignature: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
     ...(isExported !== undefined ? { isExported } : {}),
@@ -1400,6 +1401,7 @@ function pass5CollectReferences(
     // sibling via the full-path QualifiedNameIndex before the simple-tail walk
     // (#1982). Absent for unqualified references — resolution stays unchanged.
     const qualifiedCap = match['@reference.qualified-name'];
+    const heritageKind = match['@reference.heritage-kind']?.text;
     // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`);
     // `inherits` only, because a call/read/write anchor spans the whole call
     // expression, whose `<…>` would be an argument list, a comparison, or
@@ -1474,6 +1476,9 @@ function pass5CollectReferences(
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
         : {}),
+      ...(kind === 'inherits' && (heritageKind === 'EXTENDS' || heritageKind === 'IMPLEMENTS')
+        ? { heritageKind }
+        : {}),
       ...(typeArguments !== undefined ? { typeArguments } : {}),
       ...(propertyKeyCap?.text !== undefined && propertyKeyCap.text.length > 0
         ? { propertyKey: propertyKeyCap.text }
@@ -1510,6 +1515,7 @@ function heritageTypeArguments(
   nameCap: Capture,
 ): readonly string[] | undefined {
   const explicit = match['@reference.type-arguments']?.text;
+  if (explicit === '') return [];
   return explicit !== undefined
     ? typeApplicationArguments(explicit)
     : referenceTypeArguments(anchor.text, nameCap.text);
@@ -1963,10 +1969,13 @@ function rangesEqual(a: Range, b: Range): boolean {
  */
 const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
+  '@scope.type-parameters',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.literal-member-name',
   '@declaration.graph-position',
   '@declaration.is-synthetic',
+  '@declaration.is-exported',
   '@declaration.global',
   '@declaration.lexical-method',
   '@import.name',
@@ -1986,6 +1995,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.caller-scope',
   '@reference.lookup-scope',
   '@reference.lookup-purpose',
+  '@reference.heritage-kind',
   '@reference.receiver-chain',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's
@@ -2004,6 +2014,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-count',
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
+  '@declaration.declared-parameter-types',
   '@declaration.parameter-type-classes',
   '@declaration.return-type',
   '@declaration.template-constraints',
@@ -2016,6 +2027,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   // `normalizeNodeLabel` would return undefined for it, and the whole class def
   // would be dropped rather than merely losing its parameters.
   '@declaration.type-parameters',
+  '@declaration.overload-signature',
   '@declaration.is-explicit',
   '@declaration.is-deleted',
   // Synthesized on the HOC default-export function node itself, the same span as

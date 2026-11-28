@@ -60,6 +60,7 @@
  * resolved to a wrong target.
  */
 
+import { declaredNamespaceValue } from '../scope/published-namespace-member.js';
 import type {
   CallResultAssignmentSite,
   ParsedFile,
@@ -234,9 +235,11 @@ type ReceiverBoundProviderSubset = Pick<
   | 'namespaceBindingIdentity'
   | 'namespaceSkipsEnclosingClasses'
   | 'createReceiverNamespaceResolver'
+  | 'selectReceiverTypeOwner'
   | 'resolveReceiverMember'
   | 'receiverMemberLookupCoversAllCalls'
   | 'receiverCallSite'
+  | 'interfaceMembersAreTypeOnly'
   | 'resolveSelectedMethodImplementation'
   | 'suppressReceiverLookup'
   | 'isModuleExportAssignment'
@@ -258,7 +261,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedCallee'
   | 'resolveQualifiedTypeSpellings'
   | 'splitQualifiedCallee'
->;
+> &
+  Partial<Pick<ScopeResolver, 'languageProvider'>>;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
@@ -708,6 +712,10 @@ export function emitReceiverBoundCalls(
 }
 
 interface ReceiverBoundOptions {
+  /** Value definitions excluded from published ACCESSES edges by the graph bridge. */
+  readonly functionLocalValueDefIds?: ReadonlySet<string>;
+  /** Only these files have call sites to revisit. Declarations from all files remain visible. */
+  readonly siteFiles?: readonly ParsedFile[];
   /** Stable pass identity for provider indexes shared with return propagation. */
   readonly allFilePaths?: ReadonlySet<string>;
   readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
@@ -774,7 +782,8 @@ function emitReceiverBoundCallsInPass(
 ): ReceiverBoundResult {
   // Files without receiver sites still supply classes, inherited members and
   // namespace targets to the workspace indexes when any receiver needs them.
-  const firstFile = parsedFiles.findIndex((file) => file.referenceSites.some(isReceiverSite));
+  const siteFiles = options.siteFiles ?? parsedFiles;
+  const firstFile = siteFiles.findIndex((file) => file.referenceSites.some(isReceiverSite));
   if (firstFile === -1) {
     return { emitted: 0, dispatchFanoutSkipped: 0, dispatchFanoutSkippedNames: [] };
   }
@@ -1175,14 +1184,10 @@ function emitReceiverBoundCallsInPass(
   }
   // Direct subtypes of a type, keyed by the SUPERtype's def id.
   //
-  // Built from IMPLEMENTS **and** EXTENDS (#2829). IMPLEMENTS alone is not the
-  // set of implementations: `preEmitInheritanceEdges` classifies heritage by the
-  // TARGET's kind, so `interface B extends A` is stored as `B IMPLEMENTS A` and
-  // an INTERFACE lands in A's list; and a concrete class reaches its interface
-  // through `class C extends AbstractBase` (EXTENDS) + `AbstractBase implements
-  // I` (IMPLEMENTS), so it is two hops away and invisible to a depth-1 walk.
-  // Both shapes previously ended the fan-out on a bodiless declaration while the
-  // only executable target got no edge at all.
+  // Follow both IMPLEMENTS and EXTENDS (#2829). An interface can extend
+  // another interface, and a concrete class can inherit its implementation
+  // through an abstract base. In both cases dispatch must walk through the
+  // intermediate type to find the executable method.
   const subtypesBySupertypeDefId = new Map<string, SymbolDefinition[]>();
   const addSubtype = (superId: string, sub: SymbolDefinition): void => {
     let list = subtypesBySupertypeDefId.get(superId);
@@ -1261,6 +1266,11 @@ function emitReceiverBoundCallsInPass(
     if (graphId === undefined) return false;
     return graph.getNode(graphId)?.properties.isStatic === true;
   };
+  const separateReceiverKinds = provider.languageProvider?.separateStaticAndInstanceMethods;
+  const excludeFromInstance = separateReceiverKinds
+    ? isUnreachableByInstanceDispatch
+    : provider.isStaticOnly;
+  const excludeFromClass = (method: SymbolDefinition) => !isUnreachableByInstanceDispatch(method);
 
   const missingReceiverSubtypeDecision = (
     typeRef: TypeRef,
@@ -1543,6 +1553,7 @@ function emitReceiverBoundCallsInPass(
           !implementationUnmapped &&
           implMember.isDeleted !== true &&
           implMember.nodeId !== primaryMemberDef.nodeId &&
+          !(subDef.type === 'Interface' && provider.interfaceMembersAreTypeOnly) &&
           !isDeclarationOnly(implMember) &&
           !isUnreachableByInstanceDispatch(implMember)
         ) {
@@ -1669,8 +1680,8 @@ function emitReceiverBoundCallsInPass(
   };
 
   const resolveReceiverNamespace = provider.createReceiverNamespaceResolver?.(scopes, index);
-  for (let fileIndex = firstFile; fileIndex < parsedFiles.length; fileIndex++) {
-    const parsed = parsedFiles[fileIndex];
+  for (let fileIndex = firstFile; fileIndex < siteFiles.length; fileIndex++) {
+    const parsed = siteFiles[fileIndex];
     const firstSite = parsed.referenceSites.findIndex(isReceiverSite);
     if (firstSite === -1) continue;
     const namespaceCache = createNamespaceTargetCache(
@@ -2631,16 +2642,37 @@ function emitReceiverBoundCallsInPass(
       // namespace transitive traversal) implement `resolveQualifiedReceiverMember`.
       // Runs before Case 2 so namespace receivers don't accidentally match a
       // class with the same simple name.
-      if (provider.resolveQualifiedReceiverMember !== undefined) {
+      const publications =
+        targetFiles === undefined
+          ? declaredNamespaceValue(receiverName, memberName, site.inScope, scopes, site.atRange)
+          : undefined;
+      const declared =
+        publications?.size === 1 ? publications.values().next().value?.def : undefined;
+      const callable = site.callForm === 'constructor' ? 'Class' : 'Function';
+      if (
+        publications !== undefined &&
+        (!declared || (site.kind === 'call' && declared.type !== callable))
+      ) {
+        options.recordSourceBinding?.(site, {
+          status: publications && publications.size > 1 ? 'ambiguous' : 'blocked',
+          targetDefIds: publications && publications.size > 1 ? [...publications.keys()] : [],
+          basis: 'namespace-member',
+        });
+        handledSites.add(siteKey);
+        continue;
+      }
+      if (declared || provider.resolveQualifiedReceiverMember !== undefined) {
         sourceBindingGrounded = true;
-        const memberDef = provider.resolveQualifiedReceiverMember(
-          receiverName,
-          memberName,
-          site.inScope,
-          scopes,
-          parsedFiles,
-          site,
-        );
+        const memberDef =
+          declared ??
+          provider.resolveQualifiedReceiverMember?.(
+            receiverName,
+            memberName,
+            site.inScope,
+            scopes,
+            parsedFiles,
+            site,
+          );
         if (memberDef === 'ambiguous') {
           options.recordSourceBinding?.(site, {
             status: 'ambiguous',
@@ -2675,6 +2707,14 @@ function emitReceiverBoundCallsInPass(
             continue;
           }
           recordMember(memberDef);
+          if (
+            declared &&
+            (site.kind === 'read' || site.kind === 'write') &&
+            options.functionLocalValueDefIds?.has(memberDef.nodeId)
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -2727,6 +2767,7 @@ function emitReceiverBoundCallsInPass(
           site,
           scopes,
           model,
+          separateReceiverKinds ? excludeFromClass : undefined,
         );
         if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
         providerSelectedMember = languageResolution?.kind === 'resolved';
@@ -2735,10 +2776,22 @@ function emitReceiverBoundCallsInPass(
           languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
         let ambiguousOwnerId: string | undefined;
         for (const ownerId of memberDef ? [] : chain) {
-          const picked =
-            site.kind === 'call'
-              ? pickOverload(ownerId, memberName, site, model, provider)
-              : findOwnedMember(ownerId, memberName, model);
+          let picked: ReturnType<typeof pickFirstNonStaticOnly>;
+          if (site.kind !== 'call') {
+            picked = findOwnedMember(ownerId, memberName, model);
+          } else if (separateReceiverKinds) {
+            picked = pickFirstNonStaticOnly(
+              ownerId,
+              memberName,
+              site,
+              model,
+              provider,
+              excludeFromClass,
+            );
+          } else {
+            picked = pickOverload(ownerId, memberName, site, model, provider);
+          }
+          if (picked === STATIC_ONLY_FILTERED) continue;
           if (picked === OVERLOAD_AMBIGUOUS) {
             ambiguousOwnerId = ownerId;
             break;
@@ -3188,13 +3241,24 @@ function emitReceiverBoundCallsInPass(
           onNameFallback,
           qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
         };
-        const qualifiedOwner = classOfQualifiedTypeSpelling(
+        const selectedOwner = provider.selectReceiverTypeOwner?.(
           typeRef,
+          site,
           scopes,
-          provider.qualifiedTypeLookupSpelling,
-          typeLookup,
-          namespaceMemberVisible,
+          model,
+          isUnreachableByInstanceDispatch,
         );
+        const qualifiedOwner =
+          selectedOwner === null
+            ? null
+            : (selectedOwner ??
+              classOfQualifiedTypeSpelling(
+                typeRef,
+                scopes,
+                provider.qualifiedTypeLookupSpelling,
+                typeLookup,
+                namespaceMemberVisible,
+              ));
         let ownerDef =
           qualifiedOwner === undefined
             ? classBindingOfSimpleType(typeRef, typeApplication ?? typeRef.rawName, typeLookup)
@@ -3278,6 +3342,7 @@ function emitReceiverBoundCallsInPass(
             site,
             scopes,
             model,
+            excludeFromInstance,
           );
           if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
           providerSelectedMember = languageResolution?.kind === 'resolved';
@@ -3314,7 +3379,14 @@ function emitReceiverBoundCallsInPass(
           // companion members are not legal instance-dispatch
           // candidates.
           for (const ownerId of memberDef === undefined ? chain : []) {
-            const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
+            const picked = pickFirstNonStaticOnly(
+              ownerId,
+              memberName,
+              site,
+              model,
+              provider,
+              excludeFromInstance,
+            );
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
               ambiguousOwnerId = ownerId;
@@ -4204,44 +4276,22 @@ function pickOverload(
 export const OVERLOAD_AMBIGUOUS = Symbol('overload-ambiguous');
 
 /**
- * Sentinel returned by `pickFirstNonStaticOnly` when the only candidates
- * at the queried owner were filtered out by `provider.isStaticOnly`. Lets
- * the Case 4 chain walk distinguish "owner had no member of this name"
- * (return `undefined`, continue silently) from "owner had only static-
- * only members" (return this sentinel, continue and remember so the
- * post-chain handled-marker logic can suppress wrong-target re-emission
- * from `emitReferencesViaLookup`). See #1756 / remediation plan U2.
+ * All members with this name on the queried owner were excluded for the
+ * receiver. The chain walk continues with the next owner. Instance lookup
+ * remembers this result to suppress a later fallback to an excluded member.
  */
 const STATIC_ONLY_FILTERED = Symbol('static-only-filtered');
 
 /**
- * Receiver-bound member lookup that filters static-only candidates BEFORE
- * arity narrowing. Wraps the raw `lookupAllByOwner` → `narrowOverloadCandidates`
- * pipeline so:
+ * Looks up a member on one owner and applies `excludeMember` before
+ * narrowing overloads. The default predicate excludes static-only members
+ * for instance calls. A class receiver can supply the opposite predicate
+ * to select static members. Providers that separate both receiver kinds
+ * apply the predicate to fields that could shadow an inherited method.
  *
- *   1. Candidates flagged by `provider.isStaticOnly` (Kotlin companion-
- *      promoted methods today) never enter the narrowing stage. A same-
- *      name same-arity static + instance pair on one owner therefore does
- *      NOT collapse to `OVERLOAD_AMBIGUOUS` — the instance member wins
- *      unambiguously, matching Kotlin's compile-time resolution.
- *   2. The chain walk in `emitReceiverBoundCalls` Case 4 can fall through
- *      to ancestors when only static-only candidates exist at the
- *      most-derived owner (returns `STATIC_ONLY_FILTERED`), rather than
- *      aborting the site as the previous after-chain filter did.
- *
- * Returns:
- *   - `undefined` — no member with this name on this owner; chain walk
- *     continues silently.
- *   - `STATIC_ONLY_FILTERED` — at least one candidate existed but every
- *     one was static-only; chain walk continues and remembers so the
- *     post-chain handled-marker can fire if no ancestor binds.
- *   - `OVERLOAD_AMBIGUOUS` — narrowing on the surviving non-static
- *     candidates left >1 ambiguous match; chain walk aborts and the
- *     site is marked handled (existing sentinel handling preserved).
- *   - `SymbolDefinition` — single survivor (the chosen target).
- *
- * See remediation plan `docs/plans/2026-05-22-002-fix-lang-kotlin-1782-
- * remediation-plan.md` § U2 for the full rationale.
+ * Returns `undefined` for an absent member and `STATIC_ONLY_FILTERED` when
+ * the predicate excludes every candidate. An ambiguous set of surviving
+ * overloads returns `OVERLOAD_AMBIGUOUS`.
  */
 function pickFirstNonStaticOnly(
   ownerId: string,
@@ -4249,34 +4299,31 @@ function pickFirstNonStaticOnly(
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
   provider: ReceiverBoundProviderSubset,
+  excludeMember = provider.isStaticOnly,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | typeof STATIC_ONLY_FILTERED | undefined {
   const rawOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (rawOverloads.length === 0) {
-    // Non-callable member (field / property / variable) — ACCESSES
-    // write/read sites target these too. Static-only filtering doesn't
-    // apply to fields, so delegate straight to `lookupFieldByOwner`.
-    return model.fields.lookupFieldByOwner(ownerId, memberName);
+    const fields = model.fields.lookupAllByOwner(ownerId, memberName);
+    if (!fields.length) return undefined;
+    // Only a field on the receiver's side can shadow an inherited method.
+    if (
+      site.kind === 'call' &&
+      provider.languageProvider?.separateStaticAndInstanceMethods &&
+      excludeMember
+    )
+      return fields.find((field) => !excludeMember(field)) ?? STATIC_ONLY_FILTERED;
+    return fields[0];
   }
-  const isStaticOnly = provider.isStaticOnly;
-  let overloads: readonly SymbolDefinition[] = rawOverloads;
-  let filteredAny = false;
-  if (isStaticOnly !== undefined) {
-    const survivors: SymbolDefinition[] = [];
-    for (const candidate of rawOverloads) {
-      if (isStaticOnly(candidate) === true) {
-        filteredAny = true;
-        continue;
-      }
-      survivors.push(candidate);
-    }
-    overloads = survivors;
-  }
+  const overloads =
+    excludeMember === undefined
+      ? rawOverloads
+      : rawOverloads.filter((candidate) => excludeMember(candidate) !== true);
   if (overloads.length === 0) {
     // Every candidate was static-only; the caller (Case 4 chain walk)
     // should walk on to the next owner AND remember that filtering
     // happened so it can mark the site handled if the whole chain
     // ends with no legitimate match.
-    return filteredAny ? STATIC_ONLY_FILTERED : undefined;
+    return STATIC_ONLY_FILTERED;
   }
   if (overloads.length === 1) return overloads[0];
 

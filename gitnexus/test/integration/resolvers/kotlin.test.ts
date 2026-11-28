@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+import { compareStringTuples } from '../../../tools/compiler-conformance/compare.mjs';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -12,6 +13,7 @@ import {
   getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
 
@@ -3175,5 +3177,99 @@ describe('Kotlin package-qualified factory result types (#3498 follow-up)', () =
 
   it('keeps typing the companion factory result from its own class', () => {
     expect(callsFrom('companionMember', 'm')).toEqual(['Method:kqfmod/Types.kt:Other.m#0']);
+  });
+});
+
+it('matches nullable generic method parameters across inheritance', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.join(FIXTURES, '..', 'nullable-heritage', 'kotlin'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+  expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual(
+    [
+      'BoundedGeneric',
+      'Concrete',
+      'Direct',
+      'EscapedConcrete',
+      'Generic',
+      'InProjected',
+      'ListConcrete',
+      'NamedOut',
+      'NestedConcrete',
+      'NestedProjected',
+      'OutProjected',
+      'StarProjected',
+    ].map((owner) => [`Class:Types.kt:${owner}`, 'Method:Types.kt:Base.accept#1']),
+  );
+});
+
+describe('Kotlin nullable heritage with mixed parameter types', () => {
+  const result = useFixture('kotlin-mixed-nullable-heritage', {
+    'Valid.kt': `
+class Box<T>
+open class Base<T> {
+    open fun f(value: Box<T>?, callback: () -> Unit) { callback() }
+    open fun overloaded(value: Box<T>?, callback: (Int) -> Unit) { callback(0) }
+    open fun direct(value: T, callback: () -> Unit) { callback() }
+    open fun opaque(value: Box<T>?, callback: () -> String) {}
+    open fun nested(value: Box<Box<T?>>?, callback: () -> Unit) {}
+    open fun projected(value: Box<out T>?, callback: () -> Unit) {}
+}
+open class Mid<X> : Base<X?>()
+class Good : Mid<String>() {
+    override fun f(value: Box<String?>?, callback: () -> Unit) { callback() }
+    override fun overloaded(value: Box<String?>?, callback: (Int) -> Unit) { callback(0) }
+    override fun direct(value: String?, callback: () -> Unit) { callback() }
+    override fun opaque(value: Box<String?>?, callback: () -> String) {}
+    override fun nested(value: Box<Box<String?>>?, callback: () -> Unit) {}
+    override fun projected(value: Box<out String?>?, callback: () -> Unit) {}
+}
+open class Callbacks<A> {
+    open fun select(value: Box<A>?, callback: () -> Unit) {}
+    open fun select(value: Box<A>?, callback: (Int) -> Unit) {}
+}
+class OverrideBoth : Callbacks<String?>() {
+    override fun select(value: Box<String?>?, callback: () -> Unit) {}
+    override fun select(value: Box<String?>?, callback: (Int) -> Unit) {}
+}
+`,
+    'Invalid.kt': `
+class WrongBox : Mid<String>() {
+    override fun f(value: Box<Int?>?, callback: () -> Unit) {}
+}
+class WrongOuter : Mid<String>() {
+    override fun f(value: Box<String?>, callback: () -> Unit) {}
+}
+class WrongInner : Mid<String>() {
+    override fun f(value: Box<String>?, callback: () -> Unit) {}
+}
+class WrongCallback : Mid<String>() {
+    override fun opaque(value: Box<String?>?, callback: () -> Int) {}
+}
+class WrongArity : Mid<String>() {
+    override fun overloaded(value: Box<String?>?, callback: () -> Unit) {}
+}
+class WrongDirect : Mid<String>() {
+    override fun direct(value: String, callback: () -> Unit) {}
+}
+class WrongProjection : Mid<String>() {
+    override fun projected(value: Box<in String?>?, callback: () -> Unit) {}
+}
+`,
+  });
+
+  it('keeps the compiler-selected overrides and excludes signatures with incompatible box or callback types', () => {
+    const edges = [...result().graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+    expect(edges.map((edge) => [edge.sourceId, edge.targetId]).sort(compareStringTuples)).toEqual([
+      ...['direct', 'f', 'nested', 'opaque', 'overloaded', 'projected'].map((name) => [
+        'Class:Valid.kt:Good',
+        `Method:Valid.kt:Base.${name}#2`,
+      ]),
+      ...['() -> Unit', '(Int) -> Unit'].map((callback) => [
+        'Class:Valid.kt:OverrideBoth',
+        `Method:Valid.kt:Callbacks.select#2~Box<A>?,${callback}`,
+      ]),
+    ]);
   });
 });

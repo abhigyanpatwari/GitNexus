@@ -51,6 +51,7 @@
  */
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import type { ParameterInfo } from '../../method-types.js';
 import { typescriptMethodConfig } from '../../method-extractors/configs/typescript-javascript.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
@@ -58,20 +59,35 @@ interface TsArityMetadata {
   readonly parameterCount: number | undefined;
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;
+  readonly declaredParameterTypes?: readonly string[];
 }
 
-export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
+function overloadParameterType(parameter: ParameterInfo): string {
+  if (parameter.rawType != null) return parameter.rawType;
+  // An unannotated identifier is implicit any. A binding pattern constrains the
+  // argument's shape, and a rest parameter represents a sequence of arguments.
+  if (parameter.isVariadic || parameter.name.startsWith('{') || parameter.name.startsWith('['))
+    return '';
+  return 'any';
+}
+
+export function computeTsArityMetadata(
+  fnNode: SyntaxNode,
+  isOverloadSignature = false,
+): TsArityMetadata {
   const params = typescriptMethodConfig.extractParameters?.(fnNode) ?? [];
 
   let hasRest = false;
   let optionalCount = 0;
+  let needsWrittenTypes = false;
   const sharedTypes = declarationParameterTypes(params);
   let normalized: string[] | undefined;
   let index = 0;
   for (const p of params) {
     if (p.isVariadic) hasRest = true;
     else if (p.isOptional) optionalCount++;
-    const t = p.type !== null && p.type !== undefined ? stripGenericsAndArraySuffix(p.type) : '';
+    const t = stripGenericsAndArraySuffix(p.type ?? '');
+    if (isOverloadSignature && overloadParameterType(p) !== t) needsWrittenTypes = true;
     if (t !== sharedTypes[index]) {
       normalized ??= sharedTypes.slice();
       normalized[index] = t;
@@ -96,6 +112,9 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
     parameterCount,
     requiredParameterCount,
     parameterTypes,
+    ...(isOverloadSignature && (needsWrittenTypes || hasRest)
+      ? { declaredParameterTypes: params.map(overloadParameterType) }
+      : {}),
   };
 }
 
