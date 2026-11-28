@@ -6,6 +6,7 @@ import {
   checkLbugNative,
   glibcTooOldMessage,
   prepareLbugNativeBinary,
+  windowsInstallShadowMessage,
 } from '../../src/core/lbug/native-check.js';
 
 describe('checkLbugNative', () => {
@@ -303,6 +304,98 @@ describe('checkLbugNative', () => {
 
   it.each(nonGlibcCases)('returns null for %s, leaving the generic message', (_name, stderr) => {
     expect(glibcTooOldMessage(stderr)).toBeNull();
+  });
+
+  // Under WSL, a non-interactive `wsl.exe bash -lc` inherits the Windows PATH, so a
+  // Windows `npm i -g gitnexus` shim can win over the Linux install and Linux node
+  // then loads the Windows lbugjs.node. The binary's PE header gives it away.
+  // Minimal PE layout: `MZ`, e_lfanew at 0x3c, then the PE signature and COFF header.
+  const peHeader = (signature: string, peOffset = 0x40): Buffer => {
+    const buf = Buffer.alloc(peOffset + 4 + 20);
+    buf.write('MZ', 0, 'latin1');
+    buf.writeUInt32LE(peOffset, 0x3c);
+    buf.write(signature, peOffset, 'latin1');
+    return buf;
+  };
+  // e_lfanew points past the end of the file: no signature to find.
+  const peOffsetPastEof = Buffer.from(peHeader('PE\0\0').subarray(0, 0x40));
+  const PE_BYTES = peHeader('PE\0\0');
+  const ELF_BYTES = Buffer.from('\x7fELF\x02\x01\x01', 'latin1');
+  const windowsShadowCases: ReadonlyArray<
+    readonly [string, NodeJS.Platform, Buffer | null, boolean]
+  > = [
+    ['a Windows (PE) binary on Linux', 'linux', PE_BYTES, true],
+    // A large DOS stub can put the PE header past the first 4 KB of the file.
+    ['a Windows binary whose PE header sits past 4 KB', 'linux', peHeader('PE\0\0', 0x1100), true],
+    ['an MZ file whose e_lfanew points past the end of the file', 'linux', peOffsetPastEof, false],
+    [
+      'an MZ file cut off inside the PE signature',
+      'linux',
+      peHeader('PE').subarray(0, 0x42),
+      false,
+    ],
+    ['a PE signature with no COFF header', 'linux', PE_BYTES.subarray(0, 0x44), false],
+    ['a truncated COFF header', 'linux', PE_BYTES.subarray(0, -1), false],
+    ['a Linux (ELF) binary on Linux', 'linux', ELF_BYTES, false],
+    ['a truncated MZ file with no PE header on Linux', 'linux', Buffer.from('MZ\x90\x00'), false],
+    ['an MZ file whose e_lfanew misses the PE signature', 'linux', peHeader('XX\0\0'), false],
+    ['a one-byte file on Linux', 'linux', Buffer.from('M'), false],
+    ['an empty file on Linux', 'linux', Buffer.alloc(0), false],
+    ['an unreadable (absent) binary on Linux', 'linux', null, false],
+    ['a Windows binary on Windows itself', 'win32', PE_BYTES, false],
+    ['a Windows binary on macOS', 'darwin', PE_BYTES, false],
+  ];
+
+  it.each(windowsShadowCases)(
+    'Windows-install shadow hint for %s',
+    async (_name, platform, bytes, expectHint) => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-shadow-'));
+      try {
+        const binaryPath = path.join(tmpDir, 'lbugjs.node');
+        if (bytes !== null) await fs.writeFile(binaryPath, bytes);
+
+        const message = windowsInstallShadowMessage(binaryPath, platform);
+
+        if (!expectHint) {
+          expect(message).toBeNull();
+          return;
+        }
+        expect(message).toContain('is a Windows build');
+        expect(message).toContain(binaryPath);
+        expect(message).toContain('will NOT help');
+        // wsl.conf changes only apply once the distribution restarts.
+        expect(message).toContain('wsl --shutdown');
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('checkLbugNative explains a Windows lbugjs.node instead of prescribing a reinstall', async () => {
+    // Real probe, real Node: a PE file fails dlopen ("invalid ELF header" on Linux),
+    // which is exactly what the shadowed Windows install hits under WSL.
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-check-shadow-'));
+    try {
+      await fs.writeFile(path.join(tmpDir, 'lbugjs.node'), PE_BYTES);
+      await fs.writeFile(path.join(tmpDir, 'install.js'), '');
+
+      const result = checkLbugNative(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.kind).toBe('load_failed');
+      expect(result.message).toContain('failed to load');
+      if (process.platform === 'linux') {
+        expect(result.message).toContain('is a Windows build');
+        expect(result.message).not.toContain('install.js');
+        expect(result.message).not.toContain('To repair:');
+      } else {
+        // Elsewhere a PE file is not this failure class: keep the generic advice.
+        expect(result.message).not.toContain('is a Windows build');
+        expect(result.message).toContain('install.js');
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('returns ok:true when the load probe cannot be spawned (inconclusive, not a broken binary)', async () => {
