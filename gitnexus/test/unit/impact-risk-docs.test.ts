@@ -152,8 +152,9 @@ describe('impact skill risk table matches scoreImpactRisk (#2975)', () => {
     expect(scoreImpactRisk(input).risk).toBe(expected);
   });
 
-  it('documents upstream LOW as everything below the MEDIUM bound', () => {
+  it('documents LOW below the MEDIUM bounds in both directions', () => {
     expect(row('LOW').upstream).toBe(`Fewer than ${upstreamBound.MEDIUM} on a nonempty walk`);
+    expect(row('LOW').downstream).toBe('Below the MEDIUM thresholds');
   });
 
   it('documents an empty upstream walk as UNKNOWN, as the scorer rates it', () => {
