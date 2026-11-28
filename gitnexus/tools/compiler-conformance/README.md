@@ -94,3 +94,26 @@ node compare.mjs compiler.json analyzer.json
 The standalone comparator reads `sites` and `edges`. The Java report also exposes `constructors`, `heritage`, and `implementations` for consumers that compare those relationships. The Java conformance job compares them with the published graph.
 
 Each `methodAccess` entry identifies a source method by file, line, and column. Its `isPublic` field includes methods that Java makes implicitly public. Projects that compare method declarations check this flag against the graph's `isExported` property.
+
+## TypeScript fixtures
+
+After `npm run build`, run `node tools/compiler-conformance/typescript/check.mjs` from `gitnexus/`. It runs the native controls, then compares every registered project. Pass a project directory to run the controls and compare just that project. CI invokes the same command through `npm run test:conformance:typescript`. Add new source projects under `test/fixtures/compiler-conformance/typescript-<case>/`. The runner also compares existing projects listed in `typescript/projects.json`.
+
+The oracle uses the TypeScript compiler installed by the package lock. It reads the fixture's tsconfig when present. Projects without a config use strict checking and bundler module resolution. The compiler and GitNexus read the same source. For npm workspaces, the compiler gets a temporary copy with the local packages linked.
+
+For generic classes, the runner compares each type parameter's name, constraint, and default in declaration order. It joins the parameters from GitNexus scope resolution to the published class by source location.
+
+Each call comparison checks the source range and the selected declaration, including overloads. The runner separately compares published calls by caller, stored range and target. A class method's published identity encodes its owner, staticness and complete property name as a JSON tuple. Runtime interface-dispatch edges have their own product assertions in `test/integration/resolvers/typescript.test.ts`. The runner also compares graph edges for imports, named types, inheritance, overrides, and interface implementations. The declaration inventory compares named functions, classes, interfaces, and their methods in the projects listed for that check. Negative controls deliberately swap same-named targets and verify that the comparison fails.
+
+Fixtures that exercise compiler recovery declare their expected diagnostics in `typescript/diagnostics.json`. For example, TypeScript 7 reports two configuration errors in the legacy baseUrl fixture. Unlisted or missing diagnostics fail the job. For a type-only import used as a constructor, the runner checks that GitNexus leaves the call unbound. Annotated receivers still have compiler-selected methods.
+
+Three projects listed under `diagnosticsOnly` also pin compiler diagnostics. Their runtime graphs have separate Vitest suites in `test/integration/resolvers/`. `typescript-callable-alternatives` follows possible runtime callees, `typescript-hof-callbacks` attributes callbacks passed to higher-order functions, and `typescript-hoc-wrapped` publishes wrapper-bound functions. The default command labels these projects separately. Passing one of their directories explicitly runs the full graph comparison and reports the differences.
+
+For a call through an identifier with an inline function-type annotation, the compiler report records the parameter declaration and its annotated signature. Calls on an unchecked receiver can have no compiler-selected declaration. The comparison records those locations separately.
+
+To use the TypeScript producer with another analyzer, run the following from `gitnexus/` using a project that passes type checking. Both reports use the format described above.
+
+```sh
+node tools/compiler-conformance/typescript/compiler-report.mjs path/to/project CALLS > compiler.json
+node tools/compiler-conformance/compare.mjs compiler.json analyzer.json
+```

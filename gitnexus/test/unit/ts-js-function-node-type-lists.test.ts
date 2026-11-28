@@ -30,7 +30,8 @@
  * removing the class of bug, which the four-way hand-sync otherwise makes a
  * matter of vigilance. It fails on that drift, which is the point.
  *
- * Lists 1 and 2 are asserted EQUAL. Lists 3 and 4 are asserted as subsets with
+ * List 1 includes anonymous generic type signatures alongside the callable
+ * syntax in list 2. Lists 3 and 4 are asserted as subsets with
  * an explicit allowlist, because they encode a different question: a
  * `method_definition` binds its own `this` (so it is marked in the query) but
  * the class IS its `this`-owner (so neither walk may stop there).
@@ -45,8 +46,8 @@ import { THIS_BOUNDARY_NODE_TYPES } from '../../src/core/ingestion/type-extracto
 import { LEXICAL_FUNCTION_TYPES } from '../../src/core/ingestion/route-extractors/lexical-bindings.js';
 
 /**
- * Node types of every single-line `(node_type) @capture …` pattern in a query
- * that carries `capture`.
+ * Read captures on the outer node of each single-line pattern. A pattern can
+ * capture its type parameters before the closing parenthesis.
  *
  * Only single-line patterns are matched. A multi-line `@scope.function` pattern
  * would be missed — but it would then be missing from the extracted set while
@@ -56,10 +57,20 @@ import { LEXICAL_FUNCTION_TYPES } from '../../src/core/ingestion/route-extractor
  */
 const nodeTypesCapturedAs = (query: string, capture: string): Set<string> => {
   const found = new Set<string>();
-  const pattern = /^\((\w+)\)((?:[ \t]+@[\w.-]+)+)[ \t]*$/gm;
-  for (const match of query.matchAll(pattern)) {
-    const captures = match[2]!.trim().split(/\s+/);
-    if (captures.includes(capture)) found.add(match[1]!);
+  for (const line of query.split('\n')) {
+    const node = /^\((\w+)/.exec(line)?.[1];
+    const end = line.lastIndexOf(')');
+    if (
+      node &&
+      end >= 0 &&
+      line
+        .slice(end + 1)
+        .trim()
+        .split(/\s+/)
+        .includes(capture)
+    ) {
+      found.add(node);
+    }
   }
   return found;
 };
@@ -71,7 +82,15 @@ describe('the @scope.function patterns and FUNCTION_NODE_TYPES agree', () => {
     const fromQuery = nodeTypesCapturedAs(TYPESCRIPT_SCOPE_QUERY, '@scope.function');
 
     expect(fromQuery.size).toBeGreaterThan(0);
-    expect(sorted(fromQuery)).toEqual(sorted(TS_FUNCTION_NODE_TYPES));
+    expect(sorted(fromQuery)).toEqual(
+      sorted([
+        ...TS_FUNCTION_NODE_TYPES,
+        'function_type',
+        'constructor_type',
+        'call_signature',
+        'construct_signature',
+      ]),
+    );
   });
 
   it('JavaScript', () => {

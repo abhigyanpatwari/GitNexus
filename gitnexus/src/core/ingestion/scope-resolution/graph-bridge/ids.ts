@@ -54,22 +54,25 @@ const isResolveDefGraphIdMemoEnabled = (): boolean => {
   return value !== '0' && value !== 'false' && value !== 'off' && value !== 'no';
 };
 
-const defGraphIdMemoKey = (
-  filePath: string,
-  def: {
-    nodeId?: string;
-    graphPosition?: SourcePosition;
-    qualifiedName?: string;
-    type?: NodeLabel;
-    parameterTypes?: readonly string[];
-    parameterTypeClasses?: readonly ParameterTypeClass[];
-    parameterCount?: number;
-    templateArguments?: readonly string[];
-    templateConstraints?: unknown;
-    namespacePrefix?: string;
-  },
-): string =>
-  `${filePath}\0${def.nodeId ?? ''}\0${def.graphPosition?.startLine ?? ''}:${def.graphPosition?.startCol ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${(def.parameterTypeClasses ?? []).join(',')}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
+interface GraphDefinition {
+  /** Scope-resolution def id — carries the declaration position (#2699). */
+  nodeId?: string;
+  /** Graph position when the provider parses an embedded source buffer. */
+  graphPosition?: SourcePosition;
+  qualifiedName?: string;
+  literalMemberName?: string;
+  type?: NodeLabel;
+  parameterTypes?: readonly string[];
+  parameterTypeClasses?: readonly ParameterTypeClass[];
+  parameterCount?: number;
+  templateArguments?: readonly string[];
+  templateConstraints?: unknown;
+  /** #1982 bridge-held namespace path; see `SymbolDefinition.namespacePrefix`. */
+  namespacePrefix?: string;
+}
+
+const defGraphIdMemoKey = (filePath: string, def: GraphDefinition): string =>
+  `${filePath}\0${def.nodeId ?? ''}\0${def.graphPosition?.startLine ?? ''}:${def.graphPosition?.startCol ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.literalMemberName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${parameterShapeIdTag(def.parameterTypes, def.parameterTypeClasses)}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
 
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
@@ -265,21 +268,7 @@ function siblingCallableLabel(label: NodeLabel): NodeLabel | undefined {
 
 export function resolveDefGraphId(
   filePath: string,
-  def: {
-    /** Scope-resolution def id — carries the declaration position (#2699). */
-    nodeId?: string;
-    /** Graph position when the provider parses an embedded source buffer. */
-    graphPosition?: SourcePosition;
-    qualifiedName?: string;
-    type?: NodeLabel;
-    parameterTypes?: readonly string[];
-    parameterTypeClasses?: readonly ParameterTypeClass[];
-    parameterCount?: number;
-    templateArguments?: readonly string[];
-    templateConstraints?: unknown;
-    /** #1982 bridge-held namespace path; see `SymbolDefinition.namespacePrefix`. */
-    namespacePrefix?: string;
-  },
+  def: GraphDefinition,
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   if (!isResolveDefGraphIdMemoEnabled()) {
@@ -301,18 +290,7 @@ export function resolveDefGraphId(
 
 function resolveDefGraphIdUncached(
   filePath: string,
-  def: {
-    nodeId?: string;
-    graphPosition?: SourcePosition;
-    qualifiedName?: string;
-    type?: NodeLabel;
-    parameterTypes?: readonly string[];
-    parameterTypeClasses?: readonly ParameterTypeClass[];
-    parameterCount?: number;
-    templateArguments?: readonly string[];
-    templateConstraints?: unknown;
-    namespacePrefix?: string;
-  },
+  def: GraphDefinition,
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   const qn = def.qualifiedName;
@@ -339,7 +317,7 @@ function resolveDefGraphIdUncached(
         : definitionIdPosition(def.nodeId, filePath);
     const line = definitionPosition?.line;
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
-      const simple = simpleNameOf(qn);
+      const simple = def.literalMemberName ?? simpleNameOf(qn);
       if (definitionPosition !== undefined) {
         const exactHit = nodeLookup.get(
           exactPositionKey(
@@ -531,7 +509,7 @@ function resolveDefGraphIdUncached(
     const qualifiedHit = lookupTagged('');
     if (qualifiedHit !== undefined) return qualifiedHit;
   }
-  const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
+  const simpleName = def.literalMemberName ?? qn.slice(qn.lastIndexOf('.') + 1);
   // FAIL CLOSED before the label-agnostic simple key when a FUNCTION-LOCAL
   // callable of this name exists in the file. The guards above cover a def
   // that is itself a callable; a NON-callable def (`export const selected =
@@ -551,8 +529,9 @@ function resolveDefGraphIdUncached(
 /** Labels the structure phase registers function-local declarations under. */
 const LOCAL_CALLABLE_LABELS: readonly NodeLabel[] = ['Function', 'Method'];
 
-/** Derive the simple (unqualified) name of a def from its `qualifiedName`. */
+/** Return the unqualified name, preserving dots inside literal member keys. */
 export function simpleQualifiedName(def: SymbolDefinition): string | undefined {
+  if (def.literalMemberName !== undefined) return def.literalMemberName;
   const q = def.qualifiedName;
   if (q === undefined || q.length === 0) return undefined;
   const dot = q.lastIndexOf('.');

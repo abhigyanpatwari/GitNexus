@@ -1,0 +1,27 @@
+interface Sink {
+  put(x: boolean | number): 'first';
+  flush(): void;
+}
+interface Sink { put(x: number | string): 'second' }
+export function use(s: Sink, n: number) { return s.put(n); }
+export function first(s: Sink, b: boolean) { return s.put(b); }
+export function flush(s: Sink) { s.flush(); }
+
+interface Sink { append(...values: string[]): void; }
+interface Sink { append(count: number, ...values: string[]): void; }
+export function append(s: Sink) { s.append('a'); s.append(1, 'a'); }
+
+interface Sink { accept(value: unknown): 'older'; }
+interface Sink { accept(value: {}): 'newer'; }
+export function acceptRecord(s: Sink) { return s.accept({ id: 1 }); }
+
+interface Account { open(): void; }
+interface Account { close(): void; }
+class CloudAccount implements Account {
+  open() {}
+  close() {}
+}
+export function openAccount() {
+  const account: Account = new CloudAccount();
+  account.open();
+}
