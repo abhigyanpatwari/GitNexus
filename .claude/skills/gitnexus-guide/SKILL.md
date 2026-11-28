@@ -27,7 +27,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | Trace bugs / "Why is X failing?"             | `gitnexus-debugging`         |
 | Rename / extract / split / refactor          | `gitnexus-refactoring`       |
 | Tools, resources, schema reference           | `gitnexus-guide` (this file) |
-| Index, status, clean, wiki CLI commands      | `gitnexus-cli`               |
+| Index, status, clean/remove, wiki, group CLI | `gitnexus-cli`               |
 
 ## Tools Reference
 
@@ -50,6 +50,20 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `group_list`     | List configured multi-repo groups, or one group's config                 |
 | `group_sync`     | Rebuild a group's Contract Registry (cross-repo HTTP contract links); run after `group.yaml` changes or member re-index |
 | `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                    |
+| `read_file`      | Read a source file from an indexed checkout (respects content retention) |
+| `grep`           | Search indexed source text (respects content retention)                  |
+| `refresh_index`  | Opt-in index-only refresh (`GITNEXUS_MCP_ENABLE_REFRESH=1` on local `gitnexus mcp`); absent from the default catalog and never exposed by `gitnexus serve` |
+
+### Side effects (mutating / publishing tools)
+
+Most tools above are read-only. Treat these as mutations or publication — confirm intent and repository identity first:
+
+| Tool / path | Side effect |
+| --- | --- |
+| `group_sync` | Usually **writes/replaces** the group's `contracts.json` (and related artifacts such as `bridge.lbug`) under `~/.gitnexus/groups/`. |
+| `rename` with `dry_run: false` | **Writes** source files using the reviewed preview `plan_token`; never apply without reviewing the preview. |
+| `refresh_index` | Opt-in only (`GITNEXUS_MCP_ENABLE_REFRESH=1` on local MCP). Default `dry_run` is **false** (writes index storage). Call `dry_run: true` first. Index-only — does not regenerate AGENTS/CLAUDE/skills. Not available via `gitnexus serve`. |
+| CLI `analyze` / `clean` / `remove` / `wiki` | See `gitnexus-cli` — analyze writes index + generated context; clean/remove delete storage and unregister; wiki writes under index storage and may publish a public gist (`--gist` or interactive default-Yes). |
 
 ### Choose a focused response
 
@@ -196,16 +210,21 @@ Cross-repo (experimental): pass `repo: "@groupName"` to trace across a group's m
 
 ## Resources Reference
 
-Lightweight reads (~100-500 tokens) for navigation:
+Lightweight reads (~100-500 tokens) for navigation. This table matches the MCP
+resource definitions and templates exposed by the running server:
 
 | Resource                                       | Content                                   |
 | ---------------------------------------------- | ----------------------------------------- |
-| `gitnexus://repo/{name}/context`               | Stats, staleness check                    |
+| `gitnexus://repos`                             | All indexed repositories (discover first) |
+| `gitnexus://setup`                             | Setup / AGENTS guidance for indexed repos |
+| `gitnexus://repo/{name}/context`               | Stats, staleness check, available tools   |
 | `gitnexus://repo/{name}/clusters`              | All functional areas with cohesion scores |
 | `gitnexus://repo/{name}/cluster/{clusterName}` | Area members                              |
 | `gitnexus://repo/{name}/processes`             | All execution flows                       |
 | `gitnexus://repo/{name}/process/{processName}` | Step-by-step trace                        |
 | `gitnexus://repo/{name}/schema`                | Graph schema for Cypher                   |
+| `gitnexus://group/{name}/contracts`            | Group contract registry (optional query: type, repo, unmatchedOnly) |
+| `gitnexus://group/{name}/status`               | Per-member index / contract staleness     |
 
 ## Graph Schema
 

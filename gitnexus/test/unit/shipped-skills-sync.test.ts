@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { RENAMED_SKILL_DIRS } from '../../src/cli/setup.js';
 import { STANDARD_SKILL_CATALOG, type StandardSkillName } from '../../src/cli/standard-skills.js';
+import {
+  getResourceDefinitions,
+  getResourceTemplates,
+} from '../../src/mcp/resources.js';
 
 // The engineering skill family is authored once under .claude/skills/ and
 // shipped as byte-identical copies through the npm package's skills/ directory
@@ -253,6 +257,9 @@ describe('intended standard-skill improvements stay in every applicable copy', (
       '`tool_map`',
       '`group_list`',
       '`group_sync`',
+      '`read_file`',
+      '`grep`',
+      '`refresh_index`',
       '`TAINT_PATH`',
       'Cross-repo (experimental)',
       'Read `gitnexus://repo/{name}/schema` before writing Cypher',
@@ -260,6 +267,86 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     for (const file of standardSkillCopies('gitnexus-guide')) {
       const content = fs.readFileSync(file, 'utf-8');
       for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
+  // #2976: guide resource table must list every MCP definition/template URI, or
+  // agents miss supported families when the runtime surface grows.
+  it('lists every MCP resource family in every gitnexus-guide copy (#2976)', () => {
+    const uris = [
+      ...getResourceDefinitions().map((entry) => entry.uri),
+      ...getResourceTemplates().map((entry) => entry.uriTemplate),
+    ];
+    expect(uris.length).toBeGreaterThan(0);
+    for (const file of standardSkillCopies('gitnexus-guide')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const uri of uris) {
+        expect(content, `${file} missing ${uri}`).toContain(`\`${uri}\``);
+      }
+      expect(content).toContain('### Side effects (mutating / publishing tools)');
+    }
+  });
+
+  // #2976: guide side-effect table must name every mutating MCP surface we document.
+  it('lists mutating MCP tools in every gitnexus-guide side-effects table (#2976)', () => {
+    const required = [
+      '| `group_sync` |',
+      '| `rename` with `dry_run: false` |',
+      '| `refresh_index` |',
+      'GITNEXUS_MCP_ENABLE_REFRESH=1',
+      'Default `dry_run` is **false**',
+      'dry_run: true',
+      'Not available via `gitnexus serve`',
+      'Index, status, clean/remove, wiki, group CLI',
+      'CLI `analyze` / `clean` / `remove` / `wiki`',
+    ];
+    for (const file of standardSkillCopies('gitnexus-guide')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('### Side effects (mutating / publishing tools)');
+      for (const fragment of required) {
+        expect(content, `${file} missing ${fragment}`).toContain(fragment);
+      }
+    }
+  });
+
+  // #2976: CLI skill must warn on write/delete/publish and use runtime embedding keys.
+  it('documents side effects, provenance, and embedding keys in every gitnexus-cli copy (#2976)', () => {
+    const required = [
+      'Execution provenance (floating vs pinned)',
+      'gitnexus@latest',
+      'gitnexus@<installed version>',
+      'may still fall back',
+      '**Side effect:** writes the knowledge-graph index (LadybugDB)',
+      'GITNEXUS_STORAGE_PATH',
+      'GITNEXUS_STORAGE_ROOT',
+      '### clean — Delete the index',
+      '**Side effect (destructive):** deletes the repo\'s index storage',
+      '### remove — Delete a registered repo\'s index by name/path',
+      'Unlike `clean`, the target is any registered alias/name/absolute path',
+      '**Side effect:** writes wiki output under the repo\'s **index storage** path',
+      'GITNEXUS_STORAGE_PATH',
+      '**Side effect (publication):**',
+      'interactive TTY',
+      'default Yes',
+      'Actually delete (required); without it, preview only',
+      'ambiguous',
+      '### group sync — Rebuild multi-repo contracts',
+      'contracts.json',
+      'bridge.lbug',
+      'GITNEXUS_EMBEDDING_URL',
+      'GITNEXUS_EMBEDDING_MODEL',
+      'GITNEXUS_EMBEDDING_API_KEY',
+      'GITNEXUS_EMBEDDING_DIMS',
+      'GITNEXUS_EMBEDDING_MODEL_ID',
+      'LadybugDB',
+    ];
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) {
+        expect(content, `${file} missing ${fragment}`).toContain(fragment);
+      }
+      expect(content).not.toContain('OPENAI_API_KEY');
+      expect(content).not.toMatch(/KuzuDB/i);
     }
   });
 
