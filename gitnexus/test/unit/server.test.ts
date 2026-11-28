@@ -311,6 +311,52 @@ describe('getNextStepHint (via tool call response)', () => {
     );
   });
 
+  it('repo_overview hint points at focused query/context and complete cluster list', () => {
+    const hint = getNextStepHint('repo_overview', { repo: 'demo' });
+    expect(hint).toContain('query({search_query: "<concept>", repo: "demo"})');
+    expect(hint).toContain('context({name: "<symbol>", repo: "demo"})');
+    expect(hint).toContain('gitnexus://repo/demo/clusters');
+  });
+
+  it('repo_overview hint encodes only the repo segment of the resource URI', () => {
+    const repo = '/tmp/my project';
+    const hint = getNextStepHint('repo_overview', { repo });
+    expect(hint).toContain(`query({search_query: "<concept>", repo: "${repo}"})`);
+    expect(hint).toContain(`context({name: "<symbol>", repo: "${repo}"})`);
+    expect(hint).toContain('gitnexus://repo/%2Ftmp%2Fmy%20project/clusters');
+    expect(hint).not.toContain('gitnexus://repo//tmp/my project/clusters');
+  });
+
+  it.each(['a"b', 'C:\\Users\\rpatn', 'a"b\\c'])(
+    'serializes repository identifiers safely in hints (%s)',
+    (repo) => {
+      const serialized = JSON.stringify(repo);
+      const overviewHint = getNextStepHint('repo_overview', { repo });
+      expect(overviewHint).toContain(`query({search_query: "<concept>", repo: ${serialized}})`);
+      expect(overviewHint).toContain(`context({name: "<symbol>", repo: ${serialized}})`);
+      expect(overviewHint).toContain(`gitnexus://repo/${encodeURIComponent(repo)}/clusters`);
+
+      const queryHint = getNextStepHint('query', { repo, include_content: true });
+      expect(queryHint).toContain(`context({uid: "<id>", repo: ${serialized}})`);
+      expect(queryHint).toContain(
+        `context({uid: "<id>", include_content: true, repo: ${serialized}})`,
+      );
+
+      const contextHint = getNextStepHint('context', { name: 'Sym', repo });
+      expect(contextHint).toContain(
+        `impact({target: "Sym", direction: "upstream", repo: ${serialized}})`,
+      );
+
+      const renameHint = getNextStepHint(
+        'rename',
+        { new_name: 'go', repo, dry_run: false },
+        false,
+        { status: 'success', applied: true },
+      );
+      expect(renameHint).toContain(`detect_changes({repo: ${serialized}})`);
+    },
+  );
+
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
     const backend = createMockBackend({
       callTool: vi

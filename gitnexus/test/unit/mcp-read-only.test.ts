@@ -17,6 +17,7 @@ const READ_ONLY_TOOLS = [
   'query',
   'read_file',
   'rename',
+  'repo_overview',
   'route_map',
   'shape_check',
   'tool_map',
@@ -338,7 +339,7 @@ describe('MCP read-only mode', () => {
         expect.arrayContaining(['cypher', 'rename', 'group_list', 'group_sync']),
       );
       expect(tools.tools.map((tool) => tool.name)).not.toContain('rename_preview');
-      expect(tools.tools).toHaveLength(19);
+      expect(tools.tools).toHaveLength(20);
 
       const response = await session.client.callTool({
         name: 'cypher',

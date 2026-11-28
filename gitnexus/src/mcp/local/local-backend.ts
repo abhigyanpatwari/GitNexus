@@ -60,6 +60,11 @@ import {
   rethrowSymbolIdentityError,
 } from './query-result-integrity.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
+import {
+  formatRepoOverview,
+  generateRepoOverview,
+  type RepoOverviewRepoInput,
+} from './repo-map.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { shapeQueryProcessAttaches } from './query-process-attaches.js';
@@ -1888,6 +1893,15 @@ export class LocalBackend {
   private registryRefreshSequence = 0;
   private publishedRegistryRefresh = 0;
   private contextCache: Map<string, CodebaseContext> = new Map();
+  /**
+   * Process-local `repo_overview` cache. Keys are
+   * `${lbugPath}\u0000${sha256(publication identity)}\u0000${sha256(repo identity)}`;
+   * the second hash keeps handle-specific names/paths from aliasing when two
+   * checkouts share one graph. One in-flight promise per key gives single-flight
+   * behavior, and a cache hit issues zero Cypher queries. Staleness is always
+   * recomputed outside this cache by callTool.
+   */
+  private readonly repoOverviewCache = new Map<string, Promise<unknown>>();
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   // #2655: commit-behind freshness for the hot read tools. Stores the IN-FLIGHT
@@ -1927,6 +1941,90 @@ export class LocalBackend {
     const current = this.lastObservedPoolState.get(poolKey) ?? { dbIdentity: null };
     this.lastObservedPoolState.set(poolKey, { ...current, ...patch });
   }
+
+  /** Clear every cached overview for one lbug slot (all publication keys). */
+  private clearRepoOverviewCache(poolKey: string): void {
+    const prefix = `${poolKey}\u0000`;
+    for (const key of this.repoOverviewCache.keys()) {
+      if (key.startsWith(prefix)) this.repoOverviewCache.delete(key);
+    }
+  }
+
+  /**
+   * Identity of the graph publication this overview describes. `indexedAt`,
+   * stats, file identity and FTS status are exactly the signals `ensureInitialized`
+   * already tracks; no extra metadata I/O is needed on a warm request.
+   */
+  private async repoOverviewCacheKey(repo: RepoHandle): Promise<string> {
+    const state = this.lastObservedPoolState.get(repo.lbugPath);
+    const meta = state?.metadata ?? (await this.readToolMetadata(repo));
+    const dbIdentity = state?.dbIdentity ?? (await statDbIdentity(repo.lbugPath));
+    const ftsStatus = state?.ftsStatus ?? meta?.capabilities?.fts?.status;
+    const publication = JSON.stringify([
+      meta?.indexedAt ?? repo.indexedAt,
+      meta?.stats ?? repo.stats,
+      dbIdentity,
+      ftsStatus,
+    ]);
+    // Shared checkouts can point at the same immutable graph while keeping
+    // distinct identities. The overview payload embeds those identities, so
+    // they must participate in the key even when the publication is identical.
+    const subject = JSON.stringify({
+      id: repo.id,
+      name: repo.name,
+      repoPath: repo.repoPath,
+      stats: repo.stats ?? null,
+    });
+    return `${repo.lbugPath}\u0000${createHash('sha256').update(publication).digest('hex')}\u0000${createHash('sha256').update(subject).digest('hex')}`;
+  }
+
+  /**
+   * Stats rendered by `repo_overview` must describe the graph being queried.
+   * `ensureInitialized()` refreshes `lastObservedPoolState.metadata` for a new
+   * publication before this runs; `readToolMetadata()` applies the same
+   * graph-generation guard for a handle resolved but not yet bound. When that
+   * generation is unknown, or no metadata describes it, omit stats rather than
+   * pairing a stale registry snapshot with current Cypher rows.
+   */
+  private async repoOverviewStats(repo: RepoHandle): Promise<RepoOverviewRepoInput['stats']> {
+    if (repo.generationUnknown) return undefined;
+    const state = this.lastObservedPoolState.get(repo.lbugPath);
+    const meta = state?.metadata ?? (await this.readToolMetadata(repo));
+    if (repo.generationUnknown || !meta) return undefined;
+    return meta.stats ?? repo.stats;
+  }
+
+  /** Generate once per publication; concurrent callers share one promise. */
+  private async repoOverview(repo: RepoHandle): Promise<unknown> {
+    await this.ensureInitialized(repo);
+    const stats = await this.repoOverviewStats(repo);
+    const key = await this.repoOverviewCacheKey(repo);
+    const cached = this.repoOverviewCache.get(key);
+    if (cached) return cached;
+
+    const pending = (async () => {
+      const input: RepoOverviewRepoInput = {
+        id: repo.id,
+        name: repo.name,
+        repoPath: repo.repoPath,
+        stats,
+      };
+      const overview = await generateRepoOverview(input, {
+        executeParameterized: (cypher, params) =>
+          executeParameterized(repo.lbugPath, cypher, params),
+      });
+      return { ...overview, markdown: formatRepoOverview(overview) };
+    })();
+    // A failed generation must not poison the publication key. Do not evict a
+    // newer generation's promise if a stale request fails after a publication.
+    void pending.catch(() => {
+      if (this.repoOverviewCache.get(key) === pending) this.repoOverviewCache.delete(key);
+    });
+    this.clearRepoOverviewCache(repo.lbugPath);
+    this.repoOverviewCache.set(key, pending);
+    return pending;
+  }
+
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -2280,6 +2378,7 @@ export class LocalBackend {
       this.toolStalenessCache.delete(key);
       this.lastObservedPoolState.delete(key);
       this.reinitPromises.delete(key);
+      this.clearRepoOverviewCache(key);
       closeLbug(key).catch(() => {});
     }
 
@@ -2795,12 +2894,15 @@ export class LocalBackend {
         // Even a deferred reader needs its old ref compared to the new HEAD.
         // Invalidate once per publication; concurrent checks still deduplicate.
         this.toolStalenessCache.delete(poolKey);
+        this.clearRepoOverviewCache(poolKey);
       }
       const stampChanged =
         !!meta?.indexedAt && meta.indexedAt !== (previous?.indexedAt ?? repo.indexedAt);
       const identityChanged = dbIdentityChanged(previous?.dbIdentity ?? null, diskIdentity);
       const ftsStatus = meta?.capabilities?.fts?.status;
       if (!warm || stampChanged || identityChanged || previous?.ftsStatus !== ftsStatus) {
+        // The graph this overview summarized is no longer the published graph.
+        this.clearRepoOverviewCache(poolKey);
         await initLbug(poolKey, poolKey);
         this.initializedRepos.add(poolKey);
       }
@@ -3249,6 +3351,15 @@ export class LocalBackend {
       return this.callToolAtGroupRepo(method, p);
     }
 
+    // repo_overview is a single-repository orientation sample. Group mode is
+    // not implemented: a bounded seed set must not silently cover one member.
+    if (method === 'repo_overview' && typeof p.repo === 'string' && p.repo.startsWith('@')) {
+      return {
+        error:
+          'repo_overview does not support @group routing. Use one indexed repository name or path.',
+      };
+    }
+
     // These tools read the checkout, not a pinned index. `branch` would still
     // rewrite lbugPath/lastCommit and withToolStaleness would label checkout
     // bytes with that pin. Reject before selectToolRepository applies it.
@@ -3276,6 +3387,10 @@ export class LocalBackend {
     );
 
     switch (method) {
+      case 'repo_overview':
+        // The overview payload itself is cached per publication; staleness is
+        // deliberately recomputed for every call outside the cache.
+        return this.withToolStaleness(repo, await this.repoOverview(repo), true);
       case 'query':
         return this.withToolStaleness(repo, await this.query(repo, p), true);
       case 'cypher': {
@@ -11367,6 +11482,7 @@ export class LocalBackend {
       await reapEmbeddingSidecarSafely();
       this.repos.clear();
       this.contextCache.clear();
+      this.repoOverviewCache.clear();
       this.initializedRepos.clear();
     }
   }

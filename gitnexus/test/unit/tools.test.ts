@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 19 tools are defined (per-repo + group_list/group_sync)
+ * - All 20 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -23,14 +23,16 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('keeps the complete tool catalog below 70 KB of recurring agent context', () => {
+  it('keeps the complete tool catalog below 72 KB of recurring agent context', () => {
     // Every exposed tool is sent before the agent chooses one. This is a byte
     // budget, not a tokenizer estimate or a claim about end-to-end dollar cost.
-    expect(Buffer.byteLength(JSON.stringify(GITNEXUS_TOOLS), 'utf8')).toBeLessThanOrEqual(70_000);
+    // The 20th tool (repo_overview) needs a slightly larger ceiling than the
+    // original 70 KB cap, but stays tightly bounded.
+    expect(Buffer.byteLength(JSON.stringify(GITNEXUS_TOOLS), 'utf8')).toBeLessThanOrEqual(72_000);
   });
 
-  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(19);
+  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep + repo_overview)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(20);
   });
 
   it('exposes one rename tool; there is no separate rename_preview (use dry_run)', () => {
@@ -64,8 +66,22 @@ describe('GITNEXUS_TOOLS', () => {
         'trace',
         'read_file',
         'grep',
+        'repo_overview',
       ]),
     );
+  });
+
+  it('repo_overview advertises a bounded single-repo schema and sampling caveat', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'repo_overview')!;
+    expect(tool).toBeDefined();
+    expect(Object.keys(tool.inputSchema.properties).sort()).toEqual(['branch', 'repo']);
+    expect(tool.inputSchema.required).toEqual([]);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.description).toMatch(/SAMPLED CANDIDATES/);
+    expect(tool.description).toMatch(/nondeterministic/);
+    expect(tool.description).toMatch(/INFERRED/);
+    expect(tool.description).toMatch(/No group mode or maxTokens/);
+    expect(tool.inputSchema.properties.maxTokens).toBeUndefined();
   });
 
   it('each tool has name, description, and inputSchema', () => {

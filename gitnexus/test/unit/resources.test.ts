@@ -169,6 +169,16 @@ describe('parseResourceUri', () => {
     });
   });
 
+  it('round-trips an encoded path-valued repo identifier', () => {
+    const encoded = encodeURIComponent('/tmp/demo');
+    const p = parseResourceUri(`gitnexus://repo/${encoded}/clusters`);
+    expect(p).toEqual({
+      kind: 'repo',
+      repoName: '/tmp/demo',
+      resourceType: 'clusters',
+    });
+  });
+
   it('rejects unknown group resource tail', () => {
     expect(() => parseResourceUri('gitnexus://group/foo/bar')).toThrow('Unknown group resource');
   });

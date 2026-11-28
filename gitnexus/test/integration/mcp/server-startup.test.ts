@@ -246,6 +246,7 @@ describe('MCP server end-to-end startup', () => {
       // The published GitNexus tool set. Adjust if the surface changes.
       const expectedTools = [
         'list_repos',
+        'repo_overview',
         'query',
         'context',
         'impact',
