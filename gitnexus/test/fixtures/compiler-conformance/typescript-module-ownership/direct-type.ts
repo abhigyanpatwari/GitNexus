@@ -1,0 +1,1 @@
+export interface publish { save(): void }

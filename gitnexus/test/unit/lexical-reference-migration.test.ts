@@ -62,6 +62,19 @@ function compare(
 }
 
 describe('lexical benchmark reference migration parity', () => {
+  it('replays an archived receipt only for its historical key or exact checkout fingerprint', async () => {
+    const { expectedReferenceAdditions } = await import(
+      new URL('../../bench/lib/reference-additions.mjs', import.meta.url).href
+    );
+    const historical =
+      '4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e';
+    const fingerprint =
+      'checkout-sha256:f712b9fbd5fb0676c13f0e2b298aadbc08c47eb3cd8d2200901e551f3d9af28b';
+    const receipt = expectedReferenceAdditions(historical);
+    expect(receipt).toBeDefined();
+    expect(expectedReferenceAdditions(fingerprint)).toBe(receipt);
+    expect(expectedReferenceAdditions(fingerprint.slice(0, -1) + '0')).toBeUndefined();
+  });
   it('accepts a single migrated call even if another target shares its AST start', () => {
     expect(() => compare([edge(`${prefix}:1:0`)], [edge(`${prefix}:1:0:1:5`)])).not.toThrow();
   });

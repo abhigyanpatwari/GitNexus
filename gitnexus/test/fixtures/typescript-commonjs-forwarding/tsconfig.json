@@ -1,0 +1,7 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es2022",
+    "types": []
+  }
+}
