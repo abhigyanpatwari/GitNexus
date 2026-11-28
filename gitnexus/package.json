@@ -57,6 +57,7 @@
     "test": "vitest run",
     "test:conformance:typescript": "node tools/compiler-conformance/typescript/check.mjs",
     "test:conformance:java": "node tools/compiler-conformance/java/check.mjs",
+    "test:conformance:python": "node tools/compiler-conformance/python/check.mjs",
     "pretest:java": "node scripts/build.js",
     "test:java": "npm run test:conformance:java",
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
