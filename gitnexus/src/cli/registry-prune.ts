@@ -52,23 +52,17 @@ function emitResult(result: PruneBranchesResult, asJson: boolean): void {
   }
 
   if (
-    !result.registered &&
-    !result.error &&
-    result.pruned.length === 0 &&
-    result.failed.length === 0
-  ) {
-    console.log(`No GitNexus index found for ${result.repoPath}; nothing to prune.`);
-    return;
-  }
-
-  if (
     !result.error &&
     result.pruned.length === 0 &&
     result.skippedLive.length === 0 &&
     result.failed.length === 0 &&
     result.probeFailed.length === 0
   ) {
-    console.log('No stale branch indexes found.');
+    console.log(
+      result.registered
+        ? 'No stale branch indexes found.'
+        : `No GitNexus index found for ${result.repoPath}; nothing to prune.`,
+    );
     return;
   }
 

@@ -9,6 +9,7 @@ import {
   listRegisteredRepos,
   registerRepo,
   saveMeta,
+  unregisterRepo,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import * as staleModule from '../../src/storage/stale-branch-slots.js';
@@ -187,27 +188,33 @@ describe('registry prune-branches (#3332)', () => {
     }
   });
 
-  it('skips a candidate recreated between classification and deletion and prints skippedLive', async () => {
-    const { repo, dirs } = await seedBranches({
-      deleted: ['feat/raced'],
-      live: [],
-    });
-    const orig = gitModule.listLocalHeads;
-    vi.spyOn(gitModule, 'listLocalHeads')
-      .mockImplementationOnce((p, o) => orig(p, o))
-      .mockReturnValueOnce(['main', 'feat/raced']);
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it.each([true, false])(
+    'reports a branch recreated before deletion (registered=%s)',
+    async (registered) => {
+      const { repo, dirs } = await seedBranches({
+        deleted: ['feat/raced'],
+        live: [],
+      });
+      if (!registered) await unregisterRepo(repo);
+      const orig = gitModule.listLocalHeads;
+      vi.spyOn(gitModule, 'listLocalHeads')
+        .mockImplementationOnce((p, o) => orig(p, o))
+        .mockReturnValueOnce(['main', 'feat/raced']);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    const result = await pruneBranchesCommand({ repo });
+      const result = await pruneBranchesCommand({ repo });
 
-    expect(result.pruned).toEqual([]);
-    expect(result.skippedLive).toEqual(['feat/raced']);
-    expect(process.exitCode).toBeUndefined();
-    await expect(fs.access(dirs['feat/raced'])).resolves.toBeUndefined();
-    const output = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(output).toContain('Skipped 1 live branch(es): feat/raced');
-    expect(output).not.toContain('No stale branch indexes found.');
-  });
+      expect(result.registered).toBe(registered);
+      expect(result.pruned).toEqual([]);
+      expect(result.skippedLive).toEqual(['feat/raced']);
+      expect(process.exitCode).toBeUndefined();
+      await expect(fs.access(dirs['feat/raced'])).resolves.toBeUndefined();
+      const output = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(output).toContain('Skipped 1 live branch(es): feat/raced');
+      expect(output).not.toContain('No stale branch indexes found.');
+      expect(output).not.toContain('No GitNexus index found');
+    },
+  );
 
   it('records failed removals and sets process.exitCode = 1', async () => {
     const { repo } = await seedBranches({
