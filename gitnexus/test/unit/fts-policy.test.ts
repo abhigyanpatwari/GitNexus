@@ -150,9 +150,17 @@ describe('explicit FTS opt-out', () => {
         distance: 0.1,
       },
     ]);
-    const result = await hybridSearch('handler', 10, executeQuery, semantic, 'disabled-by-flag');
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
+    const { results, ftsAvailable, ftsQueryErrors } = await hybridSearch(
+      'handler',
+      10,
+      executeQuery,
+      semantic,
+      'disabled-by-flag',
+    );
+    expect(ftsAvailable).toBe(false);
+    expect(ftsQueryErrors).toEqual([]);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
       name: 'handler',
       sources: ['semantic'],
       filePath: 'src/handler.ts',
