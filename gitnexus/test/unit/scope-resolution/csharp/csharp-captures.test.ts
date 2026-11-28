@@ -151,3 +151,30 @@ it('captures primitive parameter bindings so they shadow lexical names', () => {
     ['third', 'bool'],
   ]);
 });
+
+it('records nullable constraints on their type owner and preserves the separate call signature', () => {
+  const source = `partial class Mid<X, Y> where X : /* value */ unmanaged where Y : class? {
+    void Accept(ref X /* nullable */ ? item, int number, params string[] labels) {}
+  }`;
+  const matches = emitCsharpScopeCaptures(source, 'Mid.cs');
+  const owner = matches.find((m) => m['@declaration.class']);
+  expect(JSON.parse(owner!['@declaration.template-constraints']!.text)).toEqual({
+    partial: true,
+    valueParameters: ['X'],
+    referenceParameters: ['Y'],
+  });
+  const method = matches.find((m) => m['@declaration.method']);
+  expect(method?.['@declaration.template-constraints']).toBeUndefined();
+  expect(JSON.parse(method!['@declaration.parameter-types']!.text)).toEqual([
+    'ref X',
+    'int',
+    'string[]',
+    'params',
+  ]);
+  expect(JSON.parse(method!['@declaration.declared-parameter-types']!.text)).toEqual([
+    'ref X?',
+    'int',
+    'string[]',
+    'params',
+  ]);
+});

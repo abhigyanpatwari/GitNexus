@@ -1255,6 +1255,13 @@ function attachArityMetadata(grouped: Record<string, Capture>, declNode: SyntaxN
       String(meta.requiredParameterCount),
     );
   }
+  if (meta.declaredParameterTypes && grouped['@declaration.method']) {
+    grouped['@declaration.declared-parameter-types'] = syntheticCapture(
+      '@declaration.declared-parameter-types',
+      declNode,
+      JSON.stringify(meta.declaredParameterTypes),
+    );
+  }
   if (meta.parameterTypes !== undefined) {
     grouped['@declaration.parameter-types'] = syntheticCapture(
       '@declaration.parameter-types',

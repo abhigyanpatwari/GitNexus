@@ -2,6 +2,7 @@ import type { ParsedFile, ReferenceSite } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import { hasCommonJsWrapper } from './module-exports.js';
 
 /**
  * True when `site` writes a member of `module.exports` and `module` is the
@@ -18,7 +19,7 @@ export function isCommonJsExportAssignment(
   scopes: ScopeResolutionIndexes,
   parsed: ParsedFile,
 ): boolean {
-  if (parsed.captureSideChannel !== true) return false;
+  if (!hasCommonJsWrapper(parsed)) return false;
   if (site.kind !== 'write') return false;
   if (!isModuleExportsReceiver(site)) return false;
   const claim = lookupNameClaim(site.inScope, 'module', scopes, {

@@ -84,6 +84,12 @@ const FIXTURES: Fixture[] = [
         export class MockRepo implements Repo { save(u: string): void {} }`,
       'sub-impl.ts': `import { SubRepo } from './sub-repo';
         export class SubImpl implements SubRepo { save(u: string): void {} }`,
+      'values.ts': `interface Base { value: string }
+        interface Refined extends Base { value: 'ready' }
+        class Concrete implements Refined { value: 'ready' = 'ready' }
+        interface Holder { model: Base }
+        export function readValue(holder: Holder) { return holder.model.value; }
+        export const value = readValue({ model: new Concrete() });`,
       'base-impl.ts': `import { BaseRepo } from './base-repo';
         export class BaseImpl extends BaseRepo { save(u: string): void {} }`,
       'service.ts': `import { Repo } from './repo';
@@ -162,5 +168,18 @@ for (const fixture of FIXTURES) {
     it('gives the parameter receiver the same edges as the field receiver', () => {
       expect(saveTargets(result, paramCaller)).toEqual(saveTargets(result, fieldCaller));
     });
+
+    if (fixture.language === 'TypeScript') {
+      it('follows a redeclared interface field through to its concrete implementation', () => {
+        const targets = getRelationships(result, 'ACCESSES')
+          .filter((edge) => edge.source === 'readValue' && edge.target === 'value')
+          .map((edge) => [edge.rel.targetId, edge.rel.reason])
+          .sort();
+        expect(targets).toEqual([
+          ['Property:values.ts:Base.value', 'global'],
+          ['Property:values.ts:Concrete.value', 'interface-dispatch'],
+        ]);
+      });
+    }
   });
 }

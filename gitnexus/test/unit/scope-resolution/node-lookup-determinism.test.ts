@@ -272,6 +272,24 @@ describe('resolveDefGraphId memo', () => {
     else process.env[MEMO_ENV] = previousMemoEnv;
   });
 
+  it('keeps overloads with the same parameter types and different reference shapes distinct', () => {
+    const filePath = 'overloads.hpp';
+    const def = { type: 'Function', qualifiedName: 'pick', parameterTypes: ['T'] } as const;
+    const lvalue = { base: 'T', cv: 'none', indirection: 'lvalue-ref', pointerDepth: 0 } as const;
+    const rvalue = { ...lvalue, indirection: 'rvalue-ref' } as const;
+    const lookup = new Map([
+      [qualifiedKey(filePath, 'Function', 'pick~shape:T:none:lvalue-ref:0'), 'lvalue-overload'],
+      [qualifiedKey(filePath, 'Function', 'pick~shape:T:none:rvalue-ref:0'), 'rvalue-overload'],
+    ]);
+
+    expect(resolveDefGraphId(filePath, { ...def, parameterTypeClasses: [lvalue] }, lookup)).toBe(
+      'lvalue-overload',
+    );
+    expect(resolveDefGraphId(filePath, { ...def, parameterTypeClasses: [rvalue] }, lookup)).toBe(
+      'rvalue-overload',
+    );
+  });
+
   it('returns the same id on a repeated lookup and does not leak across rebuilt lookups', () => {
     const method = {
       id: `Method:${FILE}:Service.save#1`,

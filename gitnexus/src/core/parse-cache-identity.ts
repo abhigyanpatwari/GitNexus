@@ -48,11 +48,13 @@ export const PARSE_CACHE_BASE_FILES = [
 
 /** Non-grammar parser dependencies; grammar names come from the runtime loader registry. */
 export const PARSE_CACHE_PACKAGE_INPUTS = [
+  '@babel/parser',
   'tree-sitter',
   'node-gyp-build',
   'js-yaml',
   'smol-toml',
   'glob',
+  'minimatch',
   'ignore',
 ] as const;
 

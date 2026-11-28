@@ -530,11 +530,13 @@ interface LanguageProviderConfig {
    * must be the one the class-like node is minted under
    * (`<label>:<file>:<name>`), so a member's owner id and the node id agree
    * by construction.
+   * Return `false` when this container has no published type and its members
+   * must stay separate from every enclosing class.
    * Default: undefined (containers are named by the generic derivation). */
   readonly resolveContainerTypeOwner?: (
     container: SyntaxNode,
     filePath: string,
-  ) => { readonly name: string; readonly label: NodeLabel } | null;
+  ) => { readonly name: string; readonly label: NodeLabel } | null | false;
 
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
@@ -614,6 +616,22 @@ interface LanguageProviderConfig {
   /** MRO strategy for multiple inheritance resolution.
    *  Default: 'first-wins'. */
   readonly mroStrategy?: MroStrategy;
+  /** Static and instance methods have separate override and implementation contracts. */
+  readonly separateStaticAndInstanceMethods?: boolean;
+  /** Compare language-specific override annotations after ordinary type substitution.
+   * A nearer CLR/ABI-identical slot can prohibit fallback to a deeper ancestor. */
+  readonly overrideSignature?: {
+    applies(types: readonly string[], returnType: string | undefined): boolean;
+    compare(context: {
+      overriding: readonly string[];
+      inherited: readonly string[];
+      ownMethod: GraphNode['properties'];
+      baseMethod: GraphNode['properties'];
+      ownFormals?: ReadonlySet<string>;
+      baseFormals?: ReadonlySet<string>;
+      specializeReturns: () => readonly [string | undefined, string | undefined];
+    }): 'match' | 'different' | 'blocked' | undefined;
+  };
 
   // ── Language-specific extraction hooks ────────────────────────────
   /** Call extractor for extracting call site information (calledName, callForm,
@@ -1112,6 +1130,7 @@ interface LanguageProviderConfig {
      */
     sourceMeta?: {
       readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+      readonly parseContext?: string;
       /** Explicit language of an embedded script, interpreted by its provider. */
       readonly scriptLanguage?: string;
       /** Row offset from an embedded parse buffer to graph-source positions. */

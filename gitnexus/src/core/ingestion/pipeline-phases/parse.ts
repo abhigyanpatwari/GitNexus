@@ -78,6 +78,7 @@ export interface ParseOutput {
   readonly usedWorkerPool: boolean;
   /** Files actually dispatched to parser workers after parse-cache lookup. */
   readonly reparsedFileCount: number;
+  readonly fileParseContexts: ReadonlyMap<string, string>;
   /**
    * Per-file `ParsedFile` artifacts produced by workers' calls to
    * `extractParsedFile`. Threaded through to `scopeResolutionPhase`
