@@ -23,19 +23,26 @@ export function markdownSafeBranch(branch: string): string {
 }
 
 /** Regression-review sentence inside the detect_changes bullet (#243, #3509). */
-export function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
-  const safeBranch = markdownSafeBranch(defaultBranch);
-  const target = JSON.stringify(safeBranch);
+export function regressionReviewGuidance(
+  defaultBranch: string | undefined,
+  runner?: string,
+): string {
+  const fetchTarget =
+    defaultBranch === undefined
+      ? "determine the selected repository's target branch and fetch it"
+      : `fetch target branch ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
   const cliFallback = runner
     ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
     : '';
-  return `For regression review, fetch target branch ${target} from its remote; compute its merge base with the reviewed HEAD and pass that SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
+  return `For regression review, ${fetchTarget} from its remote; compute its merge base with the reviewed HEAD and pass that SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
 }
 
 export interface ToolUsagePolicyOptions {
   /** CLI prefix, for example `node .gitnexus/run.cjs`. */
   runner: string;
-  defaultBranch: string;
+  defaultBranch?: string;
+  /** Render preview-only rename guidance for a read-only MCP server. */
+  readOnly?: boolean;
   /** Index was built with `--pdg`. Gates the PDG bullets. */
   hasPdg?: boolean;
   /** Index includes opt-in Spring Actuator runtime evidence. */
@@ -47,7 +54,10 @@ export interface ToolUsagePolicyOptions {
  * `generateGitNexusContent` get the exact section that function embeds.
  */
 export function renderToolUsagePolicy(opts: ToolUsagePolicyOptions): string {
-  const { runner, defaultBranch, hasPdg = false, hasSpringActuator = false } = opts;
+  const { runner, defaultBranch, readOnly, hasPdg = false, hasSpringActuator = false } = opts;
+  const renameGuidance = readOnly
+    ? 'use `rename` with `dry_run: true` to review semantic spans and coverage. Rename is preview-only in read-only mode.'
+    : 'use `rename` with `dry_run: true`, review semantic spans and coverage, then apply with `dry_run: false` and its `plan_token`.';
   return `## Always Do
 
 - **MUST run impact before code/config/test edits.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis. Docs-only exempt.${
@@ -73,7 +83,7 @@ export function renderToolUsagePolicy(opts: ToolUsagePolicyOptions): string {
 
 - NEVER edit code/config/tests without MCP/CLI impact.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use \`rename\` with \`dry_run: true\`, review semantic spans and coverage, then apply with \`dry_run: false\` and its \`plan_token\`.
+- NEVER rename symbols with find-and-replace — ${renameGuidance}
 - NEVER commit before MCP/CLI graph change analysis.`;
 }
 
@@ -82,13 +92,13 @@ const SERVER_INSTRUCTIONS_PREAMBLE = 'Follow this GitNexus tool-usage policy.';
 /**
  * `instructions` for the MCP initialize result.
  *
- * Baseline policy only: {@link DEFAULT_POLICY_RUNNER}, target branch `main`,
- * and no per-index PDG or Spring Actuator lines. The file block passes the
- * index's own options to {@link renderToolUsagePolicy}.
+ * Uses {@link DEFAULT_POLICY_RUNNER} and asks callers to determine the selected
+ * repo's target branch. The file block passes its index-specific options to
+ * {@link renderToolUsagePolicy}.
  */
-export function mcpServerInstructions(): string {
+export function mcpServerInstructions(readOnly = false): string {
   return `${SERVER_INSTRUCTIONS_PREAMBLE}\n\n${renderToolUsagePolicy({
     runner: DEFAULT_POLICY_RUNNER,
-    defaultBranch: 'main',
+    readOnly,
   })}`;
 }

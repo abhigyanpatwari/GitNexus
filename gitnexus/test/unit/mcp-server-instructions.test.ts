@@ -66,20 +66,25 @@ describe('MCP initialize instructions', () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
       expect(client.getInstructions()).toBe(mcpServerInstructions());
+      expect(client.getInstructions()).toContain(
+        "determine the selected repository's target branch",
+      );
+      expect(client.getInstructions()).not.toContain('fetch target branch "main"');
     } finally {
       await client.close();
       await server.close();
     }
   });
 
-  it('returns the same policy when the server is read-only', async () => {
+  it('returns preview-only rename guidance when the server is read-only', async () => {
     vi.stubEnv('GITNEXUS_MCP_READ_ONLY', '1');
     const server = createMCPServer(createMockBackend());
     const client = new Client({ name: 'instructions-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
-      expect(client.getInstructions()).toBe(mcpServerInstructions());
+      expect(client.getInstructions()).toContain('Rename is preview-only in read-only mode.');
+      expect(client.getInstructions()).not.toContain('dry_run: false');
     } finally {
       await client.close();
       await server.close();

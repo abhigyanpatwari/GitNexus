@@ -228,7 +228,7 @@ export function createMCPServer(
         resources: {},
         prompts: {},
       },
-      instructions: mcpServerInstructions(),
+      instructions: mcpServerInstructions(readOnly),
     },
   );
 

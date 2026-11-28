@@ -102,7 +102,10 @@ describe('tool-usage policy source', () => {
       defaultBranch: 'main',
     });
     expect(policySection(GOLDEN.default)).toBe(baseline);
-    expect(mcpServerInstructions()).toBe(`Follow this GitNexus tool-usage policy.\n\n${baseline}`);
+    const serverPolicy = renderToolUsagePolicy({ runner: DEFAULT_POLICY_RUNNER });
+    expect(mcpServerInstructions()).toBe(
+      `Follow this GitNexus tool-usage policy.\n\n${serverPolicy}`,
+    );
     expect(mcpServerInstructions()).not.toContain('## Resources');
     expect(mcpServerInstructions()).not.toContain('## CLI');
     expect(mcpServerInstructions()).not.toContain('pdg_query');
@@ -124,7 +127,7 @@ describe('tool-usage policy source', () => {
     expect(server).not.toContain(bullet);
     expect(aiContext).toContain("from '../mcp/tool-usage-policy.js'");
     expect(server).toContain("from './tool-usage-policy.js'");
-    expect(server).toContain('instructions: mcpServerInstructions()');
+    expect(server).toContain('instructions: mcpServerInstructions(readOnly)');
   });
 
   it('writes that same policy into CLAUDE.md and AGENTS.md', async () => {

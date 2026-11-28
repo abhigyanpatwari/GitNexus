@@ -115,9 +115,9 @@ When a repo contains an `.agents/` directory, the standard and generated skills 
 
 The `initialize` response includes `instructions`: the Always Do / Never Do tool-usage policy. It tells the model to run `impact` before an edit, run `detect_changes` before a commit, treat `risk: UNKNOWN` as unresolved, and prefer `query`, `context`, and `impact` over text search. Hosts that honor server instructions, including Claude Code and Cursor, surface that field to the model for the session.
 
-`gitnexus analyze` writes the same policy into the managed block in `AGENTS.md` and `CLAUDE.md`. Both copies are rendered from `gitnexus/src/mcp/tool-usage-policy.ts`, so a wording change reaches the server and the next analyze together. The server covers every indexed repository, so its copy uses the default project-local runner (`node .gitnexus/run.cjs`) and target branch `main`. Per-index `--pdg` and Spring Actuator lines stay in the file block when that index was built with them. Symbol counts, resource links, and the skills table stay in the file block.
+`gitnexus analyze` writes the same policy into the managed block in `AGENTS.md` and `CLAUDE.md`. Both copies are rendered from `gitnexus/src/mcp/tool-usage-policy.ts`, so a wording change reaches the server and the next analyze together. The server uses the default project-local runner (`node .gitnexus/run.cjs`) and asks clients to determine the selected repository's target branch. Per-index `--pdg` and Spring Actuator lines stay in the file block when that index was built with them. Symbol counts, resource links, and the skills table stay in the file block.
 
-The field is always sent. `GITNEXUS_MCP_READ_ONLY` limits which tools are callable; the instructions stay the baseline policy above.
+The field is always sent. With `GITNEXUS_MCP_READ_ONLY=1`, the server describes `rename` as preview-only.
 
 ## MCP read-only mode
 
