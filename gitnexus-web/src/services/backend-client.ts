@@ -1208,13 +1208,15 @@ export const fetchActiveAnalyzeJobs = async (): Promise<ActiveAnalyzeJob[]> => {
   return jobs;
 };
 
-/** Poll analysis job status. */
-export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
+type AnalyzeJobStatus = JobStatus & Pick<ActiveAnalyzeJob, 'repoId'>;
+
+/** Poll analysis job status, including the repo ID once the job completes. */
+export const getAnalyzeStatus = async (jobId: string): Promise<AnalyzeJobStatus> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze/${encodeURIComponent(jobId)}`,
   );
   await assertOk(response);
-  return response.json() as Promise<JobStatus>;
+  return response.json() as Promise<AnalyzeJobStatus>;
 };
 
 /** Fetch the ops / execution metrics snapshot. */

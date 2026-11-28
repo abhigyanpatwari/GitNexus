@@ -76,7 +76,7 @@ export function useActiveAnalyzeJobs(enabled: boolean, onJobComplete?: () => voi
             continue;
           }
           if (final.status !== 'complete') continue;
-          const repoId = job.repoId;
+          const repoId = final.repoId ?? job.repoId;
           if (repoId) setReadyRepoIds((ids) => (ids.includes(repoId) ? ids : [...ids, repoId]));
           onJobCompleteRef.current?.();
         }

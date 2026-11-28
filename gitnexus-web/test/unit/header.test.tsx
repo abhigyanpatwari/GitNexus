@@ -433,6 +433,34 @@ describe('Header', () => {
       expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
     });
 
+    it('shows Ready when a cloning job only gains a repo ID on completion', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockResolvedValueOnce([runningJob({ status: 'cloning', repoId: undefined })])
+        .mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      const onReposChanged = vi.fn();
+      const { rerender } = render(
+        <Header availableRepos={repos().slice(0, 1)} onReposChanged={onReposChanged} />,
+      );
+      const trigger = screen.getByTestId('repo-switcher-trigger');
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1);
+      fireEvent.click(trigger);
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith('job-running');
+      expect(onReposChanged).toHaveBeenCalledWith(repos());
+      rerender(<Header availableRepos={repos()} onReposChanged={onReposChanged} />);
+      const ready = screen.getByTestId('repo-status-ready');
+      expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+    });
+
     it('does not show Ready when the job that left the list failed', async () => {
       vi.useFakeTimers();
       vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
