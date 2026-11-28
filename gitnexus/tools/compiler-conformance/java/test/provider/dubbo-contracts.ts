@@ -89,6 +89,22 @@ describe('Dubbo cross-repository source facts', () => {
     assert.deepEqual(consumers, []);
   });
 
+  it('links an implicitly imported Runnable signature across repositories', () => {
+    const endpoints = sites(
+      CONSUMER.replace('account.list()', 'account.submit(() -> {})'),
+      PROVIDER.replace(
+        'public String list()',
+        'public String submit(java.lang.Runnable task) { return ""; }\n  public String list()',
+      ),
+      API.replace('String list();', 'String submit(Runnable task);\n  String list();'),
+    );
+
+    assert.deepEqual(
+      endpoints.map((contracts) => contracts.find((site) => site.method === 'submit')?.parameters),
+      [['java.lang.Runnable'], ['java.lang.Runnable'], ['java.lang.Runnable']],
+    );
+  });
+
   it('resolves overloads with different arities', () => {
     const [, , consumers] = sites(
       CONSUMER.replace('account.list()', 'account.get(1L)'),

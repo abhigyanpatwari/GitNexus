@@ -79,6 +79,7 @@ const JAVA_LANG = new Set([
   'Void',
   'Number',
   'CharSequence',
+  'Runnable',
   'Throwable',
   'Exception',
 ]);
