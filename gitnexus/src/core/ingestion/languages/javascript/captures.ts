@@ -35,6 +35,7 @@ import {
   recordConditionalEsmExports,
 } from '../typescript/module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { anonymousDefaultClassKeyword } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from '../typescript/class-identity.js';
 import {
   findNodeAtRange,
@@ -726,10 +727,8 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
  * leg (removed in #942), which the worker pipeline drops for registry-primary
  * languages, yielding 0 inheritance edges in worker mode (issue #1951).
  *
- * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
- * base, matching the legacy JavaScript heritage query's class scope and its
- * supertype shape descriptor (`javascriptHeritageShapes`:
- * `['identifier', 'member_expression']`). JavaScript classes have a single
+ * Named declarations and anonymous default-export declarations can supply
+ * an identifier or member expression as their heritage base. JavaScript classes have a single
  * `extends` base and no `implements`, so every emission is an EXTENDS (decided
  * downstream from the resolved target's symbol kind in
  * `preEmitInheritanceEdges`).
@@ -743,7 +742,7 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
  *
  * Deliberately NOT emitted (preserving parity with the legacy query, incl. the
  * #1943 HOC behavior):
- *   - `class` EXPRESSION nodes (legacy captures `class_declaration` only).
+ *   - Class expressions outside a direct or parenthesized anonymous default export.
  *   - `call_expression` / HOC bases (`extends withFoo(Bar)`) — not a legacy
  *     heritage shape; left to the normal call-resolution path.
  *
@@ -760,7 +759,9 @@ function synthesizeJsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
       if (child !== null) stack.push(child);
     }
 
-    if (node.type !== 'class_declaration') continue;
+    const kind = node.type;
+    if (kind !== 'class_declaration' && (kind !== 'class' || !anonymousDefaultClassKeyword(node)))
+      continue;
 
     // Find the `class_heritage` child (holds the single `extends` base).
     let heritage: SyntaxNode | null = null;
@@ -871,7 +872,7 @@ export function emitJsScopeCaptures(
         );
       }
     }
-    synthesizeTsJsClassIdentity(grouped, groupedNodes);
+    if (!synthesizeTsJsClassIdentity(grouped, groupedNodes)) continue;
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose ESM import_statement / re-export export_statement.

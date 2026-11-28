@@ -28,16 +28,17 @@ import {
   needsScopedHeritageArguments,
   type HeritageSubstitutions,
 } from '../../heritage-substitutions.js';
-import type {
-  CallResultAssignmentSite,
-  ParsedFile,
-  ReferenceSite,
-  RegistryProviders,
-  Scope,
-  ScopeId,
-  SymbolDefinition,
+import {
+  makeScopeId,
+  type CallResultAssignmentSite,
+  type ParsedFile,
+  type ReferenceSite,
+  type RegistryProviders,
+  type Scope,
+  type ScopeId,
+  type SymbolDefinition,
+  type TypeRef,
 } from 'gitnexus-shared';
-import { makeScopeId, type TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { GraphReferenceIntegrityError } from '../../../graph/relationship-integrity.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -462,7 +463,7 @@ function explicitInheritanceBase(
       uniqueQualifiedNameFallback: false,
     });
   }
-  const member = publishedNamespaceMember(claim.bindings, path, scopes);
+  const member = publishedNamespaceMember(claim.bindings, path, scopes, options.purpose);
   return member && isClassLike(member.def.type) ? member.def : undefined;
 }
 

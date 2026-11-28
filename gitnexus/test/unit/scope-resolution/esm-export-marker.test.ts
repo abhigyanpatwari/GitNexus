@@ -564,6 +564,21 @@ describe('CommonJS callable default exports', () => {
 
   it.each([
     ['', '(async () => { await Promise.resolve(); module = {}; })();', 'candidate'],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); function edit(a) { a[0]++; delete a["old"]; ({entry: a[1]} = {}); }',
+      'candidate',
+    ],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); const m = module; function edit() { [m["exports"]] = []; }',
+      undefined,
+    ],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); function edit(m, key) { delete m[key]; }',
+      undefined,
+    ],
     ['', '(async () => { module = {}; await 0; })();', 'candidate'],
     ['(async () => { module = {}; await 0; })();', '', undefined],
     ['start();', 'function start() { (async () => { module = {}; })(); }', undefined],

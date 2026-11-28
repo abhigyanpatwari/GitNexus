@@ -105,6 +105,9 @@ ${unboundCallableQuery('declaration.function')}
 (class
   name: (identifier) @declaration.name) @declaration.class @class.expression
 
+(export_statement "default" @declaration.name value: (class !name) @declaration.class)
+(parenthesized_expression (class !name) @declaration.class)
+
 ;; Declarations — methods (inside class bodies), including private \`#name\` ones
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method

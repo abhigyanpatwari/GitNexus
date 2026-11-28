@@ -20,6 +20,7 @@
  * either don't trigger the call branch or skip this pass entirely.
  */
 
+import { declaredNamespaceValue } from '../scope/published-namespace-member.js';
 import type { Range, Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -360,6 +361,17 @@ function resolveConstructionExpressionClass(
         )
         .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
       return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;
+    }
+    const published = declaredNamespaceValue(
+      namespaceName,
+      exportedName,
+      inScope,
+      scopes,
+      options.lookupPosition,
+    );
+    if (published !== undefined) {
+      const def = published?.size === 1 ? published.values().next().value?.def : undefined;
+      return def && isClassLike(def.type) ? def : undefined;
     }
   }
 

@@ -20,13 +20,14 @@ import type { CaptureMatch, NameClaim } from 'gitnexus-shared';
 import {
   FUNCTION_NODE_TYPES,
   nodeToCapture,
+  outerParenthesizedExpression,
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { deriveDefaultExportHocName } from '../../ts-js-hoc-utils.js';
 import { defaultExportNameCollides, isCommonJsModule } from './cjs-export-assignment.js';
 import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
-import { canonicalTypeScriptName, numericLiteralValue } from './identifiers.js';
+import { canonicalTypeScriptName, literalMethodName, numericLiteralValue } from './identifiers.js';
 import type { LocalImportFacts } from './local-loaders.js';
 import { recordPossibleCommonJsDefault } from './module-kind.js';
 
@@ -280,8 +281,7 @@ function wrapperWriteExecution(
   };
   for (let child = write, parent = write.parent; parent; child = parent, parent = parent.parent) {
     if (FUNCTION_NODE_TYPES.has(parent.type) || parent.type === 'generator_function') {
-      let callee = parent;
-      while (callee.parent?.type === 'parenthesized_expression') callee = callee.parent;
+      const callee = outerParenthesizedExpression(parent);
       if (
         callee.parent?.type === 'call_expression' &&
         callee.parent.childForFieldName('function')?.id === callee.id
@@ -377,6 +377,32 @@ function hasWrapperBinding(root: SyntaxNode, captures: CaptureMatch[]): boolean 
   return true;
 }
 
+/** A wrapper alias may reach the exports slot, but a different constant key cannot. */
+function mayStoreExports(target: SyntaxNode | null): boolean {
+  target = ungroup(target);
+  switch (target?.type) {
+    case 'member_expression':
+      return (
+        canonicalTypeScriptName(target.childForFieldName('property')?.text ?? '') === 'exports'
+      );
+    case 'subscript_expression': {
+      const key = literalMethodName(target.childForFieldName('index'));
+      return key === undefined || key === 'exports';
+    }
+    case 'pair_pattern':
+      return mayStoreExports(target.childForFieldName('value'));
+    case 'assignment_pattern':
+    case 'object_assignment_pattern':
+      return mayStoreExports(target.childForFieldName('left'));
+    case 'array_pattern':
+    case 'object_pattern':
+    case 'rest_pattern':
+      return target.namedChildren.some(mayStoreExports);
+    default:
+      return false;
+  }
+}
+
 /** Advance once through stores and const snapshots, in the same order as the export sites. */
 function wrapperAtExport(
   root: SyntaxNode,
@@ -398,15 +424,8 @@ function wrapperAtExport(
       ])) {
         const op = write.childForFieldName('operator')?.type;
         if (write.type === 'unary_expression' && op !== 'delete') continue;
-        const target = ungroup(
-          write.childForFieldName('left') ?? write.childForFieldName('argument'),
-        );
         if (
-          target?.type !== 'subscript_expression' &&
-          target?.type !== 'object_pattern' &&
-          target?.type !== 'array_pattern' &&
-          (target?.type !== 'member_expression' ||
-            canonicalTypeScriptName(target.childForFieldName('property')?.text ?? '') !== 'exports')
+          !mayStoreExports(write.childForFieldName('left') ?? write.childForFieldName('argument'))
         )
           continue;
         // A nested callable can make the store after its position in the source.

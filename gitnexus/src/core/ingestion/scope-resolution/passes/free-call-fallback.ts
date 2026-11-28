@@ -17,6 +17,7 @@
  * generalization plan.
  */
 
+import { declaredNamespaceValue } from '../scope/published-namespace-member.js';
 import type {
   DefId,
   NameClaimResult,
@@ -374,8 +375,31 @@ export function emitFreeCallFallback(
         // `use`/`pub use` often mint no lexical class binding. An
         // imported sibling file of a different name is not evidence.
         // A local namespace import shadows a module import with the same name.
+        const separator = site.rawQualifiedName?.lastIndexOf('.') ?? -1;
+        const publications =
+          separator > 0 && site.rawQualifiedName
+            ? declaredNamespaceValue(
+                site.rawQualifiedName.slice(0, separator),
+                site.name,
+                site.inScope,
+                scopes,
+                site.atRange,
+              )
+            : undefined;
+        const declared =
+          publications?.size === 1 ? publications.values().next().value?.def : undefined;
+        if (publications !== undefined && declared?.type !== 'Class') {
+          options.recordSourceBinding?.(site, {
+            status: publications && publications.size > 1 ? 'ambiguous' : 'blocked',
+            targetDefIds: publications && publications.size > 1 ? [...publications.keys()] : [],
+            basis: 'namespace-member',
+          });
+          handledSites.add(siteKey(parsed.filePath, site));
+          continue;
+        }
         let classDef =
-          namespaceConstructor && site.rawQualifiedName
+          declared ??
+          (namespaceConstructor && site.rawQualifiedName
             ? findClassBindingInScope(
                 site.inScope,
                 site.rawQualifiedName,
@@ -393,7 +417,7 @@ export function emitFreeCallFallback(
                   ...classLookupOptions,
                   uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
                 },
-              );
+              ));
         if (classDef === undefined && !namespaceConstructor) {
           classDef =
             findClassBindingInScope(site.inScope, site.name, scopes, undefined, {

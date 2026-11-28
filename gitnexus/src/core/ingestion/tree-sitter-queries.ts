@@ -19,14 +19,19 @@ import {
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
 import { literalPropertyKeyQuery } from './languages/typescript/identifiers.js';
 
+// An anonymous default class takes its ESM export name in both grammars.
+const anonymousDefaultClassQuery = `
+(export_statement "default" @name value: (class !name) @definition.class)
+(parenthesized_expression (class !name) @definition.class)
+`;
+
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
 ${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
-; A default-exported anonymous class has a module export name.
-(export_statement "default" @name value: (class !name) @definition.class)
+${anonymousDefaultClassQuery}
 
 ; Named class expressions own members just like declarations.
 (class
@@ -785,6 +790,7 @@ ${lexicalHocDefinitionQuery}
 // JavaScript queries - works with tree-sitter-javascript
 export const JAVASCRIPT_QUERIES = `
 ${unboundCallableQuery('definition.function')}
+${anonymousDefaultClassQuery}
 (class_declaration
   name: (identifier) @name) @definition.class
 

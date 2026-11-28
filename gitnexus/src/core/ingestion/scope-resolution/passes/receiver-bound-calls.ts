@@ -60,6 +60,7 @@
  * resolved to a wrong target.
  */
 
+import { declaredNamespaceValue } from '../scope/published-namespace-member.js';
 import type {
   CallResultAssignmentSite,
   ParsedFile,
@@ -2639,16 +2640,37 @@ function emitReceiverBoundCallsInPass(
       // namespace transitive traversal) implement `resolveQualifiedReceiverMember`.
       // Runs before Case 2 so namespace receivers don't accidentally match a
       // class with the same simple name.
-      if (provider.resolveQualifiedReceiverMember !== undefined) {
+      const publications =
+        targetFiles === undefined
+          ? declaredNamespaceValue(receiverName, memberName, site.inScope, scopes, site.atRange)
+          : undefined;
+      const declared =
+        publications?.size === 1 ? publications.values().next().value?.def : undefined;
+      const callable = site.callForm === 'constructor' ? 'Class' : 'Function';
+      if (
+        publications !== undefined &&
+        (!declared || (site.kind === 'call' && declared.type !== callable))
+      ) {
+        options.recordSourceBinding?.(site, {
+          status: publications && publications.size > 1 ? 'ambiguous' : 'blocked',
+          targetDefIds: publications && publications.size > 1 ? [...publications.keys()] : [],
+          basis: 'namespace-member',
+        });
+        handledSites.add(siteKey);
+        continue;
+      }
+      if (declared || provider.resolveQualifiedReceiverMember !== undefined) {
         sourceBindingGrounded = true;
-        const memberDef = provider.resolveQualifiedReceiverMember(
-          receiverName,
-          memberName,
-          site.inScope,
-          scopes,
-          parsedFiles,
-          site,
-        );
+        const memberDef =
+          declared ??
+          provider.resolveQualifiedReceiverMember?.(
+            receiverName,
+            memberName,
+            site.inScope,
+            scopes,
+            parsedFiles,
+            site,
+          );
         if (memberDef === 'ambiguous') {
           options.recordSourceBinding?.(site, {
             status: 'ambiguous',
@@ -4241,44 +4263,22 @@ function pickOverload(
 export const OVERLOAD_AMBIGUOUS = Symbol('overload-ambiguous');
 
 /**
- * Sentinel returned by `pickFirstNonStaticOnly` when the only candidates
- * at the queried owner were filtered out by `provider.isStaticOnly`. Lets
- * the Case 4 chain walk distinguish "owner had no member of this name"
- * (return `undefined`, continue silently) from "owner had only static-
- * only members" (return this sentinel, continue and remember so the
- * post-chain handled-marker logic can suppress wrong-target re-emission
- * from `emitReferencesViaLookup`). See #1756 / remediation plan U2.
+ * All members with this name on the queried owner were excluded for the
+ * receiver. The chain walk continues with the next owner. Instance lookup
+ * remembers this result to suppress a later fallback to an excluded member.
  */
 const STATIC_ONLY_FILTERED = Symbol('static-only-filtered');
 
 /**
- * Receiver-bound member lookup that filters static-only candidates BEFORE
- * arity narrowing. Wraps the raw `lookupAllByOwner` → `narrowOverloadCandidates`
- * pipeline so:
+ * Looks up a member on one owner and applies `excludeMember` before
+ * narrowing overloads. The default predicate excludes static-only members
+ * for instance calls. A class receiver can supply the opposite predicate
+ * to select static members. Providers that separate both receiver kinds
+ * apply the predicate to fields that could shadow an inherited method.
  *
- *   1. Candidates flagged by `provider.isStaticOnly` (Kotlin companion-
- *      promoted methods today) never enter the narrowing stage. A same-
- *      name same-arity static + instance pair on one owner therefore does
- *      NOT collapse to `OVERLOAD_AMBIGUOUS` — the instance member wins
- *      unambiguously, matching Kotlin's compile-time resolution.
- *   2. The chain walk in `emitReceiverBoundCalls` Case 4 can fall through
- *      to ancestors when only static-only candidates exist at the
- *      most-derived owner (returns `STATIC_ONLY_FILTERED`), rather than
- *      aborting the site as the previous after-chain filter did.
- *
- * Returns:
- *   - `undefined` — no member with this name on this owner; chain walk
- *     continues silently.
- *   - `STATIC_ONLY_FILTERED` — at least one candidate existed but every
- *     one was static-only; chain walk continues and remembers so the
- *     post-chain handled-marker can fire if no ancestor binds.
- *   - `OVERLOAD_AMBIGUOUS` — narrowing on the surviving non-static
- *     candidates left >1 ambiguous match; chain walk aborts and the
- *     site is marked handled (existing sentinel handling preserved).
- *   - `SymbolDefinition` — single survivor (the chosen target).
- *
- * See remediation plan `docs/plans/2026-05-22-002-fix-lang-kotlin-1782-
- * remediation-plan.md` § U2 for the full rationale.
+ * Returns `undefined` for an absent member and `STATIC_ONLY_FILTERED` when
+ * the predicate excludes every candidate. An ambiguous set of surviving
+ * overloads returns `OVERLOAD_AMBIGUOUS`.
  */
 function pickFirstNonStaticOnly(
   ownerId: string,

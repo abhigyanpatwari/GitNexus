@@ -207,6 +207,8 @@ ${unboundCallableQuery('declaration.function')}
 (export_statement "default" @declaration.name
   value: (class !name
     type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class)
+(parenthesized_expression (class !name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class)
 
 (abstract_class_declaration
   name: (type_identifier) @declaration.name

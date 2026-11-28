@@ -17,7 +17,7 @@ import type { AstFrameworkPatternConfig, LanguageProvider } from '../language-pr
 import {
   typescriptClassConfig,
   javascriptClassConfig,
-  resolveTsJsContainerTypeOwner,
+  resolveTsJsEnclosingTypeOwner,
   createTsJsClassExtractor,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
@@ -562,7 +562,7 @@ export const typescriptProvider = defineLanguage({
   shouldSkipDefinitionCapture: skipRegistrationHandleFunction,
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(typescriptClassConfig),
-  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
+  resolveContainerTypeOwner: resolveTsJsEnclosingTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
@@ -668,7 +668,7 @@ export const javascriptProvider = defineLanguage({
   shouldSkipDefinitionCapture: skipRegistrationHandleFunction,
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(javascriptClassConfig),
-  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
+  resolveContainerTypeOwner: resolveTsJsEnclosingTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({

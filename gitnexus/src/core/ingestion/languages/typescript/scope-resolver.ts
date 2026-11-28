@@ -12,6 +12,7 @@
  * ./query.ts (TYPESCRIPT_SCOPE_QUERY constant).
  */
 
+import { indexPublishedNamespaceRoots } from '../../scope-resolution/scope/published-namespace-member.js';
 import type { NodeLabel, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import {
@@ -123,6 +124,7 @@ const typescriptScopeResolver: ScopeResolver = {
   },
   populateImportNamespaces(files, indexes) {
     bindGlobalDeclarations(files, indexes);
+    indexPublishedNamespaceRoots(files, indexes);
     indexTsCallArguments(files, indexes);
   },
   isGlobalNameFallbackPlausible: projectNameFallback,

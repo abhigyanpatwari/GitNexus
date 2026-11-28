@@ -229,7 +229,7 @@ export function createReferenceLookup(
       const member =
         namespaceImport || ownedMember
           ? undefined
-          : publishedNamespaceMember(claim.bindings, parts.slice(1), scopes);
+          : publishedNamespaceMember(claim.bindings, parts.slice(1), scopes, options.purpose);
       const definition =
         ownedMember ??
         (namespaceImport

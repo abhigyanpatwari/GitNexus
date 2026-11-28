@@ -2,7 +2,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig } from '../../class-types.js';
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { outerParenthesizedExpression, type SyntaxNode } from '../../utils/ast-helpers.js';
 import type { LanguageProvider } from '../../language-provider.js';
 import { createClassExtractor } from '../generic.js';
 import { positionQualifiedCallableName } from '../../workers/callable-id.js';
@@ -117,24 +117,47 @@ const shared: Omit<ClassExtractionConfig, 'language'> = {
   },
 };
 
-export function isAnonymousDefaultClass(node: SyntaxNode): boolean {
-  return (
-    node.type === 'class' &&
-    !node.childForFieldName('name') &&
-    node.parent?.type === 'export_statement' &&
-    node.parent.children.some((child) => child?.type === 'default')
-  );
+const groupedClassKeywords = new WeakMap<SyntaxNode['tree'], Map<number, SyntaxNode | undefined>>();
+
+function defaultKeyword(statement: SyntaxNode | null): SyntaxNode | undefined {
+  if (statement?.type === 'export_statement')
+    return statement.children.find((child) => child.type === 'default');
+}
+
+/** ECMAScript named evaluation carries `default` through grouping parentheses. */
+export function anonymousDefaultClassKeyword(node: SyntaxNode): SyntaxNode | undefined {
+  if (node.type !== 'class' || node.childForFieldName('name')) return;
+  const parent = node.parent;
+  if (parent?.type !== 'parenthesized_expression') return defaultKeyword(parent);
+  // Extraction asks for the enclosing class of each member. Follow deep grouping once per class.
+  const tree = node.tree;
+  let keywords = tree && groupedClassKeywords.get(tree);
+  if (keywords?.has(node.id)) return keywords.get(node.id);
+  const keyword = defaultKeyword(outerParenthesizedExpression(parent).parent);
+  if (tree) {
+    if (!keywords) {
+      keywords = new Map();
+      groupedClassKeywords.set(tree, keywords);
+    }
+    keywords.set(node.id, keyword);
+  }
+  return keyword;
+}
+
+function anonymousDefaultClassName(node: SyntaxNode): string | undefined {
+  return anonymousDefaultClassKeyword(node)?.text;
 }
 
 export const typescriptClassConfig: ClassExtractionConfig = {
   ...shared,
   language: SupportedLanguages.TypeScript,
-  extractName: (node) => (isAnonymousDefaultClass(node) ? 'default' : undefined),
+  extractName: anonymousDefaultClassName,
 };
 
 export const javascriptClassConfig: ClassExtractionConfig = {
   ...shared,
   language: SupportedLanguages.JavaScript,
+  extractName: anonymousDefaultClassName,
 };
 
 // Use the same enclosing namespace and class segments as the published ID,
@@ -177,3 +200,10 @@ export const resolveTsJsContainerTypeOwner = ((node: SyntaxNode) => {
   const owner = ownerExtractor.extract(node);
   return owner === null ? null : { name: owner.qualifiedName, label: owner.type };
 }) satisfies NonNullable<LanguageProvider['resolveContainerTypeOwner']>;
+
+/** A class expression with no graph owner still owns its members lexically. */
+export const resolveTsJsEnclosingTypeOwner = ((node: SyntaxNode) =>
+  resolveTsJsContainerTypeOwner(node) ??
+  (node.type === 'class' ? false : null)) satisfies NonNullable<
+  LanguageProvider['resolveContainerTypeOwner']
+>;

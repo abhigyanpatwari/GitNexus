@@ -30,7 +30,7 @@ import { recordCommonJsModuleKind, recordConditionalEsmExports } from './module-
 import { enumConstants, type EnumValues } from './enum-arguments.js';
 import { argumentEvidence, callRangeKey, type CallEvidence } from './argument-evidence.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { isAnonymousDefaultClass } from '../../class-extractors/configs/typescript-javascript.js';
+import { anonymousDefaultClassKeyword } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from './class-identity.js';
 import {
   findNodeAtRange,
@@ -40,6 +40,7 @@ import {
 } from '../../utils/ast-helpers.js';
 import {
   collectEsmExportEvidence,
+  localExportSpecifiers,
   addEsmExportMarkerCaptures,
   recordEsmDefault,
 } from '../../ts-js-export-marker.js';
@@ -47,7 +48,12 @@ import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
-import { canonicalTypeScriptName, literalMethodName, signedNumericLiteral } from './identifiers.js';
+import {
+  canonicalModuleExportName,
+  canonicalTypeScriptName,
+  literalMethodName,
+  signedNumericLiteral,
+} from './identifiers.js';
 import { defaultFactoryResult } from './default-factory.js';
 import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
@@ -72,6 +78,30 @@ import {
   isBlockedPairCallbackRegistration,
   isDefaultExportHocFunctionNode,
 } from '../../ts-js-hoc-utils.js';
+
+/** Each ambient namespace block owns its export list, even when declarations merge. */
+function namespaceExportEvidence(body: SyntaxNode, filePath: string) {
+  const ambient = /\.d\.[cm]?ts$/i.test(filePath) || body.closest('ambient_declaration') !== null;
+  let implicit = ambient;
+  const aliases = new Map<string, { values: Set<string>; types: Set<string> }>();
+  if (ambient) {
+    for (const statement of body.namedChildren) {
+      if (statement.type !== 'export_statement' || statement.childForFieldName('declaration'))
+        continue;
+      implicit = false;
+      const clause = statement.namedChildren.find((child) => child.type === 'export_clause');
+      if (!clause || statement.childForFieldName('source')) continue;
+      for (const { name, publicName, typeOnly } of localExportSpecifiers(statement, clause)) {
+        const key = canonicalModuleExportName(publicName.text);
+        if (key === null) continue;
+        let entry = aliases.get(name);
+        if (!entry) aliases.set(name, (entry = { values: new Set(), types: new Set() }));
+        (typeOnly ? entry.types : entry.values).add(key);
+      }
+    }
+  }
+  return { implicit, aliases };
+}
 
 /** tree-sitter-typescript node types for function-like scopes that may
  *  carry a synthesized `this` binding. Kept in sync with the
@@ -435,7 +465,7 @@ export function emitTsScopeCaptures(
     ? defaultFactoryResult(tree.rootNode)
     : undefined;
   let defaultDeclaration: Record<string, Capture> | undefined;
-  const implicitNamespaceExports = new Map<number, boolean>();
+  const namespaceExports = new Map<number, ReturnType<typeof namespaceExportEvidence>>();
   let awaitedCalls: Map<string, Capture> | undefined;
   let bracketReceivers: Map<string, string> | undefined;
   let callArguments: CallEvidence | undefined;
@@ -498,7 +528,7 @@ export function emitTsScopeCaptures(
         );
       }
     }
-    synthesizeTsJsClassIdentity(grouped, groupedNodes);
+    if (!synthesizeTsJsClassIdentity(grouped, groupedNodes)) continue;
     const qualified = grouped['@reference.qualified-name'];
     if (qualified?.text.includes('\\'))
       grouped[qualified.name] = { ...qualified, text: canonicalTypeScriptName(qualified.text) };
@@ -856,34 +886,38 @@ export function emitTsScopeCaptures(
     if (returnedDefault && unbound?.id === returnedDefault.value.id) defaultDeclaration = grouped;
     const declaredName = groupedNodes['@declaration.name'];
     const declarator = declaredName?.parent;
-    const declaration = declarator?.type === 'variable_declarator' ? declarator.parent : declarator;
+    const declaration =
+      declarator?.type === 'variable_declarator' ||
+      (declarator?.type === 'internal_module' && declarator.parent?.type === 'expression_statement')
+        ? declarator.parent
+        : declarator;
     const statement =
       declaration?.parent?.type === 'export_statement' ? declaration.parent : declaration;
     if (declaredName && statement?.parent?.parent?.type === 'internal_module') {
       // The enclosing namespace owns this export list. File-level visibility
       // is recorded independently by addEsmExportMarkerCaptures.
       const body = statement.parent;
-      let implicit = implicitNamespaceExports.get(body.id);
-      if (implicit === undefined) {
-        // Ambient namespace members are public unless an explicit export
-        // declaration or assignment defines that namespace's export surface.
-        const ambient =
-          /\.d\.[cm]?ts$/i.test(filePath) || body.closest('ambient_declaration') !== null;
-        implicit =
-          ambient &&
-          !body.namedChildren.some(
-            (child) => child.type === 'export_statement' && !child.childForFieldName('declaration'),
-          );
-        implicitNamespaceExports.set(body.id, implicit);
+      let publications = namespaceExports.get(body.id);
+      if (!publications) {
+        publications = namespaceExportEvidence(body, filePath);
+        namespaceExports.set(body.id, publications);
       }
-      const names =
-        statement.type === 'export_statement' || implicit
-          ? [canonicalTypeScriptName(declaredName.text)]
-          : [];
+      const local = canonicalTypeScriptName(declaredName.text);
+      const aliases = publications.aliases.get(local);
+      const names = new Set(aliases?.values);
+      if (statement.type === 'export_statement' || publications.implicit) names.add(local);
+      const erased = aliases && [...aliases.types].filter((name) => !names.has(name));
+      if (erased?.length) {
+        grouped['@declaration.type-only-exports'] = syntheticCapture(
+          '@declaration.type-only-exports',
+          declaredName,
+          JSON.stringify(erased),
+        );
+      }
       grouped['@declaration.named-exports'] = syntheticCapture(
         '@declaration.named-exports',
         declaredName,
-        JSON.stringify(names),
+        JSON.stringify([...names]),
       );
     }
 
@@ -1047,7 +1081,7 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
     'abstract_class_declaration',
     'class',
   ])) {
-    if (node.type === 'class' && !isAnonymousDefaultClass(node)) continue;
+    if (node.type === 'class' && !anonymousDefaultClassKeyword(node)) continue;
     // `interface B extends A, C` hangs its bases off an `extends_type_clause`
     // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
     // class path below cannot reach them (#2842 review). The clause's `type`

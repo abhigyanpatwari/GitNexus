@@ -281,6 +281,21 @@ export function hasEsmSyntax(root: SyntaxNode, sourceText?: string): boolean {
   );
 }
 
+/** Source-less export clauses bind each public spelling to a local declaration. */
+export function* localExportSpecifiers(statement: SyntaxNode, clause: SyntaxNode) {
+  const erased = statement.children.some((token) => token.type === 'type');
+  for (const spec of clause.namedChildren) {
+    if (spec.type !== 'export_specifier') continue;
+    const local = spec.childForFieldName('name');
+    if (!local) continue;
+    yield {
+      name: decodeIdentifierEscapes(local.text),
+      publicName: spec.childForFieldName('alias') ?? local,
+      typeOnly: erased || spec.children.some((token) => token.type === 'type'),
+    };
+  }
+}
+
 /**
  * Scan a file's top level once. `undefined` means the file's export surface
  * cannot be read at all (ambient `.d.ts`), so no marker should be emitted.
@@ -308,23 +323,16 @@ export function collectEsmExportEvidence(
       if (stmt.childForFieldName('source') !== null) continue;
       for (const child of stmt.namedChildren) {
         if (child.type === 'export_clause') {
-          const typeOnly = stmt.children.some((token) => token.type === 'type');
-          for (const spec of child.namedChildren) {
-            if (spec.type !== 'export_specifier') continue;
-            const nameNode = spec.childForFieldName('name');
-            if (!nameNode?.text) continue;
-            const name = decodeIdentifierEscapes(nameNode.text);
+          for (const { name, publicName, typeOnly } of localExportSpecifiers(stmt, child)) {
             namedLocals.add(name);
-            const publicName = spec.childForFieldName('alias') ?? nameNode;
-            const erased = typeOnly || spec.children.some((token) => token.type === 'type');
             localSpecifiers ??= new Map();
             let entries = localSpecifiers.get(name);
             if (!entries) {
               entries = [];
               localSpecifiers.set(name, entries);
             }
-            entries.push({ publicName, typeOnly: erased });
-            if (!erased && canonicalModuleExportName(publicName.text) === 'default')
+            entries.push({ publicName, typeOnly });
+            if (!typeOnly && canonicalModuleExportName(publicName.text) === 'default')
               defaultLocals.add(name);
           }
         } else if (child.type === 'identifier') {

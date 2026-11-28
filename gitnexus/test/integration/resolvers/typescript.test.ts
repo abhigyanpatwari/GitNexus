@@ -1620,3 +1620,62 @@ export function hoistedInline() {
     expect(dropped).toEqual(['15:m', '19:m']);
   });
 });
+
+describe('TypeScript ambient namespace export aliases', () => {
+  const result = useFixture('ambient-namespace-exports', {
+    'tsconfig.json': JSON.stringify({
+      compilerOptions: { target: 'ES2022', module: 'ESNext', moduleResolution: 'bundler' },
+      files: ['decl.d.ts', 'use.ts'],
+    }),
+    'decl.d.ts': `declare namespace API {
+  class Internal { run(): number }
+  class Private { hidden(): number }
+  function local(): number;
+  const notCallable: number;
+  namespace Interior { function nestedCall(): number; }
+  export {Interior as Nested, Internal as Public, Internal as Alternative, local as left, local as right, notCallable as numberValue};
+  export type {Internal as TypeView};
+}
+declare namespace API { function merged(): number; }
+declare namespace Other {
+  class Internal { other(): number }
+  export {Internal as Public};
+}
+`,
+    'use.ts': `export function both() { return API.left() + API.right(); }
+export function typed(a: API.Alternative, b: API.TypeView) { return a.run() + b.run(); }
+export function constructed() { return new API.Public().run(); }
+export function other(c: Other.Public) { return c.other(); }
+export function mergedBody() { return API.merged(); }
+export function nested() { return API.Nested.nestedCall(); }
+// @ts-expect-error private declaration spelling
+export function privateName() { return new API.Internal().run(); }
+// @ts-expect-error unexported declaration
+export function hidden() { return new API.Private().hidden(); }
+// @ts-expect-error erased class alias
+export function erased() { return new API.TypeView().run(); }
+// @ts-expect-error private local function
+export function privateFunction() { return API.local(); }
+// @ts-expect-error non-callable namespace value
+export function numberCall() { return API.numberValue(); }
+`,
+  });
+
+  it('uses the published spelling and retains distinct calls to the same declaration', () => {
+    const calls = getRelationships(result(), 'CALLS')
+      .filter((edge) => edge.sourceFilePath === 'use.ts')
+      .map((edge) => [edge.source, edge.target])
+      .sort();
+    expect(calls).toEqual([
+      ['both', 'local'],
+      ['both', 'local'],
+      ['constructed', 'Internal'],
+      ['constructed', 'run'],
+      ['mergedBody', 'merged'],
+      ['nested', 'nestedCall'],
+      ['other', 'other'],
+      ['typed', 'run'],
+      ['typed', 'run'],
+    ]);
+  });
+});

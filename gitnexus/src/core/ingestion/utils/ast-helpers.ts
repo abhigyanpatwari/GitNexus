@@ -18,6 +18,18 @@ export function sourceRangeKey(range: Range): string {
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
 
+/** Keep the same expression while stepping out through grouping parentheses. */
+export function outerParenthesizedExpression(node: SyntaxNode): SyntaxNode {
+  for (
+    let parent = node.parent;
+    parent?.type === 'parenthesized_expression';
+    parent = node.parent
+  ) {
+    node = parent;
+  }
+  return node;
+}
+
 /**
  * Qualify a name by its enclosing `mod_item` scope, so two same-tail items nested
  * under different modules get DISTINCT paths (`outer.Inner` vs `other.Inner`).
@@ -1003,10 +1015,7 @@ export const findEnclosingClassInfo = (
    * binding wrapper, an enclosing callable, an anonymous ordinal). Null falls
    * through to the generic derivation.
    */
-  resolveContainerTypeOwner?: (
-    container: SyntaxNode,
-    filePath: string,
-  ) => { readonly name: string; readonly label: NodeLabel } | null,
+  resolveContainerTypeOwner?: LanguageProvider['resolveContainerTypeOwner'],
   resolveDetachedOwnerName?: LanguageProvider['resolveDetachedOwnerName'],
 ): EnclosingClassInfo | null => {
   let current = node.parent;
@@ -1073,6 +1082,7 @@ export const findEnclosingClassInfo = (
       resolveEnclosingOwner(current) === current
     ) {
       const syntheticOwner = resolveContainerTypeOwner(current, filePath);
+      if (syntheticOwner === false) return null;
       if (syntheticOwner !== null) {
         return {
           classId: generateId(syntheticOwner.label, `${filePath}:${syntheticOwner.name}`),
@@ -1109,6 +1119,7 @@ export const findEnclosingClassInfo = (
       // class-like node is minted under, so owner id == node id.
       if (resolveContainerTypeOwner !== undefined) {
         const containerOwner = resolveContainerTypeOwner(current, filePath);
+        if (containerOwner === false) return null;
         if (containerOwner !== null) {
           return {
             classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),

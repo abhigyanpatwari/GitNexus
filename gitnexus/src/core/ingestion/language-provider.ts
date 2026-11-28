@@ -530,11 +530,13 @@ interface LanguageProviderConfig {
    * must be the one the class-like node is minted under
    * (`<label>:<file>:<name>`), so a member's owner id and the node id agree
    * by construction.
+   * Return `false` when this container has no published type and its members
+   * must stay separate from every enclosing class.
    * Default: undefined (containers are named by the generic derivation). */
   readonly resolveContainerTypeOwner?: (
     container: SyntaxNode,
     filePath: string,
-  ) => { readonly name: string; readonly label: NodeLabel } | null;
+  ) => { readonly name: string; readonly label: NodeLabel } | null | false;
 
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
