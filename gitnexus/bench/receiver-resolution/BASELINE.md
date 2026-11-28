@@ -1587,3 +1587,11 @@ call to `this.#items.push(item)` in `Store.add`. Removing that duplicate from
 the benchmark corpus reduced TypeScript call drops from 21 to 20 and total
 call drops from 177 to 176. Both resolver versions reported the same 20
 TypeScript sites when run on the updated corpus.
+
+### Swift indexed element (SWIFT-01)
+
+The Swift provider now answers `elementTypeOf` for array sugar: `[User]`, or
+`[User]?` / `[User]!` indexed through `?[` / `![`, yields `User`; a dictionary
+`[K: V]` and every other spelling decline. `indexElement`
+(`repos: [User]`, `repos[0].save()`) moves VISIBLE-GAP -> RESOLVES. No fixture
+under `lang-resolution` changed, and the count arm is identical.

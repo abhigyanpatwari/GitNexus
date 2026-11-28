@@ -412,6 +412,32 @@ const BRACKETED_CALL_SUFFIXES = new Map<string, string>([
   ['call_suffix', 'value_arguments'], // Swift `repos[0]`
 ]);
 
+/**
+ * Subscript arguments that select a RANGE, not one element. `repos[0..<2]` is
+ * an `ArraySlice`, so reading it as an index step would type `.first` as a
+ * member of the element: a wrong owner whenever the element declares `first`.
+ */
+const RANGE_SUBSCRIPT_ARGUMENT_TYPES = new Set([
+  'range_expression', // Swift `repos[0..<2]`, `repos[0...1]`
+  'open_end_range_expression', // Swift `repos[1...]`
+  'open_start_range_expression', // Swift `repos[..<2]`
+]);
+
+/** Does a bracketed subscript select a range or exceed the argument wrapper limit? */
+function isRangeSubscriptCall(node: SyntaxNode): boolean {
+  const argumentList = node.lastNamedChild?.firstNamedChild;
+  return (
+    argumentList?.namedChildren.some((argument) => {
+      const value = argument.childForFieldName('value') ?? argument;
+      const unwrapped = unwrapTransparentReceiver(value);
+      return (
+        RANGE_SUBSCRIPT_ARGUMENT_TYPES.has(unwrapped.type) ||
+        (unwrapped !== value && isTransparentReceiverWrapper(unwrapped))
+      );
+    }) ?? false
+  );
+}
+
 /** Is `node` a call node that is really a subscript, `repos[0]`? */
 function isBracketedSubscriptCall(node: SyntaxNode): boolean {
   if (!CALL_EXPRESSION_TYPES.has(node.type)) return false;
@@ -765,6 +791,8 @@ export function extractMixedChain(
     // nothing — the await step could never be reached.
     current = unwrapTransparentReceiver(current);
     const subscriptCall = isBracketedSubscriptCall(current);
+    // A range is not an element; no index step can type what it yields.
+    if (subscriptCall && isRangeSubscriptCall(current)) return undefined;
     if (CALL_EXPRESSION_TYPES.has(current.type) && !subscriptCall) {
       // ── Call expression: extract method name + inner receiver ────────────
       const callee =

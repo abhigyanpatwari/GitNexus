@@ -21,7 +21,7 @@ and no same-named call to a different owner. WRONG-TARGET records incorrect edge
 | `nonNullAssert`         | RESOLVES       | `svc.getUser().optionalAddress!.save()`                                                    |
 | `awaitParen`            | RESOLVES       | `(await svc.getUserAsync()).save()`                                                        |
 | `explicitTypeArgs`      | N/A            | Swift infers generic parameters; there is no call-site type-argument spelling on a method. |
-| `indexElement`          | VISIBLE-GAP    | `repos[0].save()`                                                                          |
+| `indexElement`          | RESOLVES       | `repos[0].save()`                                                                          |
 | `fieldReceiverCall`     | RESOLVES       | `self.repo.save()`                                                                         |
 | `decoratedReceiverBase` | N/A            | Swift `self` carries no type decoration.                                                   |
 | `decoratedFieldType`    | RESOLVES       | `self.repo?.save()`                                                                        |
@@ -32,14 +32,16 @@ Swift is registered in `SCOPE_RESOLVERS`. Optional grammar availability is an
 environment condition, not a global Node 22 blocker.
 
 The combined #3666/#3667 implementation resolves the typed Swift benchmark cells
-`plainChain`, `plainDeepChain`, `optionalChain`, `nonNullAssert` and `awaitParen`.
+`plainChain`, `plainDeepChain`, `optionalChain`, `nonNullAssert` and `awaitParen`,
+and `indexElement` resolves through the provider's `elementTypeOf` (SWIFT-01).
 Hoisted return lookup checks declaration ownership. Exact captured fixed/variadic
 Swift override replay has positive regression controls; this does not establish
 argument-label or generic-aware overload completeness.
 
-`indexElement` is now a VISIBLE-GAP: the walker reads the subscript spelling, but
-Swift has no `elementTypeOf` hook. Argument-aware inherited-overload selection and
-associated/generic type handling remain bounded follow-up work.
+`swiftElementType` reads the element out of array sugar (`[User]`, also through
+`?[` / `![` on an optional array) and declines dictionaries and every other
+spelling. Argument-aware inherited-overload selection and associated/generic type
+handling remain bounded follow-up work.
 
 Sources: [receiver baseline](../../gitnexus/bench/receiver-resolution/BASELINE.md),
 [Swift resolver](../../gitnexus/src/core/ingestion/languages/swift/scope-resolver.ts),
@@ -49,7 +51,9 @@ Sources: [receiver baseline](../../gitnexus/bench/receiver-resolution/BASELINE.m
 
 | ID       | Evidence           | Gap or boundary                                                                                                          | Next planning step and acceptance                                                                                                           |
 | -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| SWIFT-01 | Measured gap       | `indexElement` is visible but Swift has no elementTypeOf hook.                                                           | Carry a proven element type through the provider and assert its exact member owner; preserve unsupported-container and same-name negatives. |
+| SWIFT-01 | Fixed              | `indexElement` was visible but Swift had no elementTypeOf hook. `swiftElementType` now answers array sugar; the [walker spelling rows](../../gitnexus/test/integration/resolvers/receiver-chain-walker-spellings.test.ts) assert exact `User.save` / `Address.save` owners and keep dictionary and partial `[[User]]` indexes unresolved. | Done. |
+| SWIFT-04 | Measured gap       | `repos[0].save()` on `repos: Array<User>` stays unresolved: parameter capture keeps only `Array`, so no element reaches `elementTypeOf`. | Preserve the written generic spelling for parameters, then answer `Array<T>` in `swiftElementType`. |
+| SWIFT-05 | Measured gap       | `holder.users[0].save()` on a `[User]` field stays unresolved: the field step hands the index step no written spelling. | Carry the field's declared spelling through the fold's field step; keep the field-index row in the walker spellings test. |
 | SWIFT-02 | Recorded boundary  | Inherited overload selection is bounded; fixed/variadic positives do not prove argument-label or generic-aware dispatch. | Specify one callable identity rule at a time and retain the current override replay positives and owner-mismatch negatives.                 |
 | SWIFT-03 | Historical reports | The extraction, inheritance and module items below have not all been revalidated.                                        | Reproduce each item on a pinned base before assigning implementation priority. Record both reference resolution and extraction evidence.    |
 

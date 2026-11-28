@@ -72,7 +72,7 @@ import {
   mirrorSwiftSiblingTypeBindings,
   type SwiftResolveContext,
 } from './index.js';
-import { stripSwiftTypePreservingDecoration } from './interpret.js';
+import { stripSwiftTypePreservingDecoration, swiftElementType } from './interpret.js';
 import { groupSwiftFilesByModule } from './target-grouping.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
@@ -85,6 +85,7 @@ const swiftScopeResolver: ScopeResolver = {
     canonicalizeWorkspaceBindings(parsedFiles, canonicalName),
   language: SupportedLanguages.Swift,
   languageProvider: swiftProvider,
+  elementTypeOf: swiftElementType,
   importEdgeReason: 'swift-scope: import',
 
   // Load the workspace's Swift modules (root and nested SwiftPM targets,
