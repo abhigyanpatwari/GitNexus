@@ -334,7 +334,8 @@ export interface PipelineOptions {
  *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
  *     → crossFile → scopeResolution → [springAutoConfiguration, springAop,
  *       springDestinations] → pruneLocalSymbols
- *     → mro → springAopInheritance → symfonyConfig → di → communities → processes
+ *     → mro → springAopInheritance → di → communities → processes
+ *   parse → symfonyConfig
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
  * object, and `.register()` it at the appropriate position below. Opt-in
