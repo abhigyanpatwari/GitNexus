@@ -16,6 +16,15 @@
  */
 
 import fs from 'fs/promises';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
 import path from 'path';
 import { createRequire } from 'node:module';
 import type Parser from 'tree-sitter';
@@ -58,10 +67,96 @@ export interface NodeWorkspacePackage {
 export interface NodeWorkspacePackages {
   /** Package name (`@repo/utils`, `utils`) -> that package. */
   readonly byName: ReadonlyMap<string, NodeWorkspacePackage>;
+  /** Nearest package.json controls module format, including unnamed and non-workspace packages. */
+  readonly packageModules?: ReadonlyMap<string, boolean>;
 }
 
 const SCAN_MAX_DIRS = 20_000;
 const SCAN_MAX_DEPTH = 24;
+
+/** Only directories omitted by the bounded workspace-name discovery need extra format probes. */
+interface PackageFormatFrontier {
+  readonly repoRoot: string;
+  readonly roots: ReadonlySet<string>;
+  readonly declarations: Map<string, boolean | null>;
+  readonly cacheLimit: number;
+}
+const formatsBeyondScan = new WeakMap<NodeWorkspacePackages, PackageFormatFrontier>();
+
+/** Mirrors the directory walk: read only a regular, in-repo manifest and skip absent inputs. */
+function readUnscannedPackageFormat(repoRoot: string, directory: string): boolean | null {
+  const manifest = path.join(repoRoot, directory, 'package.json');
+  try {
+    const fd = openSync(
+      manifest,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || realpathSync.native(manifest) !== manifest) return null;
+      // Match the canonical directory entry to the opened file, including on Windows
+      // where O_NOFOLLOW is unavailable. Read through that same descriptor.
+      const entry = lstatSync(manifest, { bigint: true });
+      if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino) return null;
+      const contents = JSON.parse(readFileSync(fd, 'utf8'));
+      return contents && typeof contents === 'object' ? contents.type === 'module' : null;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function formatBeyondScan(directory: string, frontier: PackageFormatFrontier): boolean | null {
+  if (!directory || path.isAbsolute(directory)) return null;
+  const ancestors = [directory];
+  let dir = directory;
+  while (!frontier.roots.has(dir)) {
+    if (dir === '.') return null;
+    dir = path.posix.dirname(dir);
+    ancestors.push(dir);
+  }
+  // The scan supplies canonical repo-relative paths. Standalone callers must stay inside
+  // the same source tree, including the walk's directory and symlink exclusions.
+  if (path.posix.normalize(directory) !== directory || directory.includes('\\')) return null;
+  if (
+    ancestors.some((candidate) =>
+      isHardcodedIgnoredDirectoryAtPath(frontier.repoRoot, path.join(frontier.repoRoot, candidate)),
+    )
+  )
+    return null;
+
+  for (const candidate of ancestors) {
+    let format = frontier.declarations.get(candidate);
+    if (format === undefined) {
+      format = readUnscannedPackageFormat(frontier.repoRoot, candidate);
+      if (frontier.declarations.size >= frontier.cacheLimit) {
+        frontier.declarations.delete(frontier.declarations.keys().next().value!);
+      }
+      frontier.declarations.set(candidate, format);
+    }
+    if (format !== null) return format;
+  }
+  return null;
+}
+
+/** Node uses the nearest package.json, including unnamed packages. */
+export function nodePackageIsEsm(file: string, packages?: NodeWorkspacePackages | null): boolean {
+  if (!packages?.packageModules) return false;
+  const frontier = formatsBeyondScan.get(packages);
+  if (frontier) {
+    const format = formatBeyondScan(path.posix.dirname(file), frontier);
+    if (format !== null) return format;
+  }
+  let directory = file;
+  for (;;) {
+    const slash = directory.lastIndexOf('/');
+    directory = slash === -1 ? '' : directory.slice(0, slash);
+    const esm = packages.packageModules.get(directory);
+    if (esm !== undefined || !directory) return esm === true;
+  }
+}
 
 /**
  * The package name a bare specifier addresses, or `null` when the specifier
@@ -246,9 +341,7 @@ function matchesDirOrAncestor(re: RegExp, dir: string): boolean {
  *
  * The subset npm, pnpm, yarn and lerna actually use in `workspaces` /
  * `packages`: `*` within a segment, `**` across segments, `?`, and a leading
- * `!` for exclusion (handled by the caller). Deliberately not a general glob
- * engine — the patterns are a documented, narrow dialect, and `minimatch` is
- * only present here transitively through `glob`.
+ * `!` for exclusion (handled by the caller). Other characters are literal.
  */
 function globToRegExp(pattern: string): RegExp {
   const normalized = pattern.replace(/^\.\//, '').replace(/\/$/, '');
@@ -479,6 +572,20 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown> |
   }
 }
 
+/** A checkout can sit inside a package. A node_modules directory ends that package's scope. */
+async function inheritsEsmPackage(repoRoot: string): Promise<boolean> {
+  const directory = path.resolve(repoRoot);
+  if (path.basename(directory) === 'node_modules') return false;
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+    return manifest?.type === 'module';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  }
+  const parent = path.dirname(directory);
+  return parent !== directory && inheritsEsmPackage(parent);
+}
+
 async function readYamlPackages(filePath: string): Promise<string[]> {
   let raw: string;
   try {
@@ -510,13 +617,67 @@ export function invalidateNodeWorkspacePackages(repoRoot: string): void {
   workspacePackagesMemo.delete(path.resolve(repoRoot));
 }
 
-export async function loadNodeWorkspacePackages(
+type PackageLoadOptions = { fresh?: boolean; filePaths?: readonly string[] };
+export type WorkspacePackageOptions = PackageLoadOptions | { scanFiles: readonly string[] };
+
+// Scan passes allocate one inventory for all providers. A later pass gets a new
+// array even when its filenames match; rename refreshes never enter this cache.
+const packagesByScan = new WeakMap<
+  readonly string[],
+  { root: string; pending: Promise<NodeWorkspacePackages | null> }
+>();
+
+export function loadNodeWorkspacePackages(
   repoRoot: string,
-  options?: { fresh?: boolean },
+  options: WorkspacePackageOptions = {},
+): Promise<NodeWorkspacePackages | null> {
+  if (!('scanFiles' in options)) return loadWorkspacePackageSnapshot(repoRoot, options);
+  const files = options.scanFiles;
+  const root = path.resolve(repoRoot);
+  const existing = packagesByScan.get(files);
+  if (existing?.root === root) return existing.pending;
+  const pending = loadWorkspacePackageSnapshot(root, { fresh: true, filePaths: files }).catch(
+    (err: unknown) => {
+      if (packagesByScan.get(files)?.pending === pending) packagesByScan.delete(files);
+      throw err;
+    },
+  );
+  packagesByScan.set(files, { root, pending });
+  return pending;
+}
+
+async function loadWorkspacePackageSnapshot(
+  repoRoot: string,
+  options?: PackageLoadOptions,
 ): Promise<NodeWorkspacePackages | null> {
   // Rename capabilities must observe package changes without replacing the
   // indexing pass's shared memo or joining an older in-flight acquisition.
-  if (options?.fresh) return loadNodeWorkspacePackagesUncached(repoRoot);
+  const packages = options?.fresh
+    ? await loadNodeWorkspacePackagesUncached(repoRoot)
+    : await cachedWorkspacePackages(repoRoot);
+  const frontier = packages && formatsBeyondScan.get(packages);
+  if (!packages || !frontier || !options?.filePaths) return packages;
+
+  // Freeze the formats governing the actual scan or rename inputs before parsing. Only a
+  // standalone lookup without a source inventory needs the on-demand frontier afterwards.
+  const capture = {
+    ...frontier,
+    declarations: new Map<string, boolean | null>(),
+    cacheLimit: Infinity,
+  };
+  const directories = new Set<string>();
+  for (const file of options.filePaths) {
+    if (/\.[jt]sx?$/i.test(file)) directories.add(path.posix.dirname(file));
+  }
+  for (const directory of directories) formatBeyondScan(directory, capture);
+  const packageModules = new Map(packages.packageModules);
+  for (const [directory, format] of capture.declarations) {
+    if (format !== null) packageModules.set(directory, format);
+  }
+  return { byName: packages.byName, packageModules };
+}
+
+function cachedWorkspacePackages(repoRoot: string): Promise<NodeWorkspacePackages | null> {
   const key = path.resolve(repoRoot);
   const cached = workspacePackagesMemo.get(key);
   if (cached !== undefined) return cached;
@@ -534,6 +695,47 @@ export async function loadNodeWorkspacePackages(
   return pending;
 }
 
+type ScanDirectory = { dir: string; depth: number };
+
+async function readWorkspaceDirectoryManifest(
+  repoRoot: string,
+  { dir, depth }: ScanDirectory,
+  queue: ScanDirectory[],
+  unscanned: Set<string>,
+) {
+  // Same-depth name collisions resolve first-wins, so use a stable directory order.
+  const entries = await readDirSorted(dir);
+  if (!entries) return;
+  let hasManifest = false;
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const childDir = path.join(dir, entry.name);
+      if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
+      if (depth < SCAN_MAX_DEPTH) queue.push({ dir: childDir, depth: depth + 1 });
+      else unscanned.add(repoRelativeDir(repoRoot, childDir));
+    } else if (entry.isFile() && entry.name === 'package.json') {
+      hasManifest = true;
+    }
+  }
+  if (!hasManifest) return;
+  const manifest = await readJsonFile(path.join(dir, 'package.json'));
+  if (manifest) return { dir, manifest };
+}
+
+// The next directory may be discovered by the preceding read. Yield one read at a time.
+async function* workspaceManifests(repoRoot: string, unscanned: Set<string>) {
+  const queue: ScanDirectory[] = [{ dir: repoRoot, depth: 0 }];
+  for (let i = 0; i < queue.length && i < SCAN_MAX_DIRS; i++)
+    yield readWorkspaceDirectoryManifest(repoRoot, queue[i], queue, unscanned);
+  if (queue.length > SCAN_MAX_DIRS) {
+    for (let i = SCAN_MAX_DIRS; i < queue.length; i++)
+      unscanned.add(repoRelativeDir(repoRoot, queue[i].dir));
+    logger.warn(
+      `[node] package.json scan of ${repoRoot} hit the ${SCAN_MAX_DIRS}-directory cap; workspace packages below it will not resolve`,
+    );
+  }
+}
+
 /**
  * Collect the `package.json` of every ADMITTED workspace package.
  *
@@ -546,63 +748,41 @@ async function loadNodeWorkspacePackagesUncached(
 ): Promise<NodeWorkspacePackages | null> {
   const scope = await loadWorkspaceScope(repoRoot);
   const byName = new Map<string, NodeWorkspacePackage>();
-  const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
-  let queueHead = 0;
-  let dirsScanned = 0;
-
-  while (queueHead < queue.length) {
-    if (dirsScanned >= SCAN_MAX_DIRS) {
-      logger.warn(
-        `[node] package.json scan of ${repoRoot} hit the ${SCAN_MAX_DIRS}-directory cap; workspace packages below it will not resolve`,
-      );
-      break;
-    }
-    const { dir, depth } = queue[queueHead++]!;
-    dirsScanned++;
-
-    // Sorted: same-depth name collisions resolve first-wins, and readdir order
-    // is filesystem-dependent.
-    const entries = await readDirSorted(dir);
-    if (entries === null) continue;
-
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const childDir = path.join(dir, entry.name);
-        if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
-        if (depth < SCAN_MAX_DEPTH) {
-          queue.push({ dir: childDir, depth: depth + 1 });
-        }
-        continue;
-      }
-      if (!entry.isFile() || entry.name !== 'package.json') continue;
-
-      const relDir = repoRelativeDir(repoRoot, dir);
-      // Found is not the same as admitted. A manifest outside the declared
-      // workspace belongs to something this repository does not build — a
-      // fixture, an example, a vendored copy — and its name is not addressable.
-      if (!admits(scope, relDir)) continue;
-
-      const pkg = await readManifest(path.join(dir, entry.name), repoRoot, dir);
-      // First declaration wins: BFS visits shallower directories first, so a
-      // top-level package outranks a nested one that reuses the name.
-      if (pkg !== null && !byName.has(pkg.name)) byName.set(pkg.name, pkg.package);
-    }
+  const packageModules = new Map<string, boolean>();
+  const unscanned = new Set<string>();
+  for await (const entry of workspaceManifests(repoRoot, unscanned)) {
+    if (!entry) continue;
+    const { dir, manifest } = entry;
+    const relDir = repoRelativeDir(repoRoot, dir);
+    packageModules.set(relDir, manifest.type === 'module');
+    // A manifest outside the declared workspace supplies its format but is not addressable.
+    if (!admits(scope, relDir)) continue;
+    const pkg = await readManifest(manifest, repoRoot, dir);
+    // BFS visits shallower directories first, so a top-level package outranks a nested duplicate.
+    if (pkg !== null && !byName.has(pkg.name)) byName.set(pkg.name, pkg.package);
   }
 
+  if (!packageModules.has('') && (await inheritsEsmPackage(repoRoot))) packageModules.set('', true);
+  if (unscanned.size > 0) {
+    const packages = { byName, packageModules };
+    formatsBeyondScan.set(packages, {
+      repoRoot: await fs.realpath(repoRoot),
+      roots: unscanned,
+      declarations: new Map(),
+      // A standalone caller supplies one file at a time and can retain this loader indefinitely.
+      cacheLimit: 4096,
+    });
+    return packages;
+  }
+  if ([...packageModules.values()].includes(true)) return { byName, packageModules };
   return byName.size === 0 ? null : { byName };
 }
 
 async function readManifest(
-  manifestPath: string,
+  parsed: Record<string, unknown>,
   repoRoot: string,
   dir: string,
 ): Promise<{ name: string; package: NodeWorkspacePackage } | null> {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(await fs.readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
   const name = typeof parsed.name === 'string' ? parsed.name : '';
   if (name === '') return null;
 

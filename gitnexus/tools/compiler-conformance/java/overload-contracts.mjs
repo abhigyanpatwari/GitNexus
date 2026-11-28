@@ -53,6 +53,11 @@ async function verifyJavaImportedOverloadsAndDeclaredDispatchBounds() {
       assert.ok(ids.includes('Method:Dispatch.java:ChildImpl.task#0'));
       assert.ok(!ids.includes('Method:Dispatch.java:OtherImpl.task#0'));
     }
+    // A replayed call sees implementations in the caller and its sibling files.
+    const replayed = targets(result, 'returnedChild', 'task');
+    assert.ok(replayed.includes('Method:ExternalChild.java:ExternalChild.task#0'));
+    assert.ok(replayed.includes('Method:Dispatch.java:ChildImpl.task#0'));
+    assert.ok(!replayed.includes('Method:Dispatch.java:OtherImpl.task#0'));
     // keeps a known anonymous receiver on its own implementation branch
     {
       const ids = targets(result, 'anonymousDispatch', 'task');

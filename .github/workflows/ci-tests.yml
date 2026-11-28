@@ -15,12 +15,19 @@ permissions:
   contents: read
 
 jobs:
-  java-compiler-conformance:
-    if: fromJSON(inputs.plan).run.java
-    name: Java compiler conformance
+  compiler-conformance:
+    if: fromJSON(inputs.plan).run.conformance
+    name: ${{ matrix.label }} compiler conformance
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { provider: java, label: Java }
+          - { provider: typescript, label: TypeScript }
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
+      PROVIDER: ${{ matrix.provider }}
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_REQUIRE_VECTOR: '1'
       GITNEXUS_REQUIRE_ZIG: '1'
@@ -29,39 +36,41 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        if: matrix.provider == 'java'
         with:
           distribution: temurin
           java-version: '21'
       - name: Enable source maps for conformance coverage
         working-directory: gitnexus
         run: |
-          jq '.compilerOptions.sourceMap = true' tsconfig.json > "$RUNNER_TEMP/java-tsconfig.json"
-          mv "$RUNNER_TEMP/java-tsconfig.json" tsconfig.json
+          jq '.compilerOptions.sourceMap = true' tsconfig.json > "$RUNNER_TEMP/conformance-tsconfig.json"
+          mv "$RUNNER_TEMP/conformance-tsconfig.json" tsconfig.json
       # npm ci runs prepare, including the production build and shared-module rewrites.
       - uses: ./.github/actions/setup-gitnexus
       - name: Ensure FTS + VECTOR extensions installed
         working-directory: gitnexus
         run: node --import tsx scripts/ensure-fts.ts
-      - name: Compare Java fixtures with javac and check GitNexus behavior
+      - name: Compare fixture declarations with GitNexus
         working-directory: gitnexus
         env:
-          NODE_V8_COVERAGE: ${{ runner.temp }}/java-v8
+          NODE_V8_COVERAGE: ${{ runner.temp }}/conformance-v8
           GITNEXUS_BENCH: '1'
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: npm run test:conformance:java
+        run: npm run "test:conformance:$PROVIDER"
       - name: Report conformance coverage against TypeScript sources
         working-directory: gitnexus
         run: |
-          node node_modules/c8/bin/c8.js report --merge-async --temp-directory="$RUNNER_TEMP/java-v8" \
-            --exclude-after-remap --include='src/**/*.ts' --reporter=lcovonly --reports-dir=coverage/java
-          awk '/^SF:/ { java = /^SF:src\/core\/ingestion\/languages\/java\/.+\.ts$/ }
-               java && /^DA:[0-9]+,[1-9][0-9]*$/ { hit = 1 }
-               END { exit !hit }' coverage/java/lcov.info
-      - name: Upload Java conformance LCOV
+          node node_modules/c8/bin/c8.js report --merge-async --temp-directory="$RUNNER_TEMP/conformance-v8" \
+            --exclude-after-remap --include='src/**/*.ts' --reporter=lcovonly --reports-dir=coverage/conformance
+          awk -v prefix="SF:src/core/ingestion/languages/$PROVIDER/" '
+               /^SF:/ { provider = index($0, prefix) == 1 }
+               provider && /^DA:[0-9]+,[1-9][0-9]*$/ { hit = 1 }
+               END { exit !hit }' coverage/conformance/lcov.info
+      - name: Upload compiler conformance LCOV
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: java-conformance-coverage
-          path: gitnexus/coverage/java/lcov.info
+          name: ${{ matrix.provider }}-conformance-coverage
+          path: gitnexus/coverage/conformance/lcov.info
 
   java-platform-conformance:
     if: fromJSON(inputs.plan).release
@@ -532,7 +541,7 @@ jobs:
     name: ubuntu / coverage merge
     outputs:
       package-counts: ${{ steps.counts.outputs.counts }}
-    needs: [tests, java-compiler-conformance, shard-plan]
+    needs: [tests, compiler-conformance, shard-plan]
     if: ${{ !cancelled() && (fromJSON(inputs.plan).coverage || fromJSON(inputs.plan).run.docker) }}
     runs-on: ubuntu-latest
     # The optional LCOV upload has its own two-minute timeout after the tests.
@@ -546,16 +555,16 @@ jobs:
       - name: Require selected CLI suites
         env:
           RUN_CLI: ${{ fromJSON(inputs.plan).run.cli }}
-          RUN_JAVA: ${{ fromJSON(inputs.plan).run.java }}
+          RUN_CONFORMANCE: ${{ fromJSON(inputs.plan).run.conformance }}
           TESTS: ${{ needs.tests.result }}
-          JAVA: ${{ needs.java-compiler-conformance.result }}
+          CONFORMANCE: ${{ needs.compiler-conformance.result }}
         run: |
           if [[ "$RUN_CLI" == true && "$TESTS" != success ]]; then
             echo "::error::CLI tests were selected and finished with $TESTS."
             exit 1
           fi
-          if [[ "$RUN_JAVA" == true && "$JAVA" != success ]]; then
-            echo "::error::Java conformance was selected and finished with $JAVA."
+          if [[ "$RUN_CONFORMANCE" == true && "$CONFORMANCE" != success ]]; then
+            echo "::error::Compiler conformance was selected and finished with $CONFORMANCE."
             exit 1
           fi
       - name: Download verified PR package reports
@@ -605,18 +614,29 @@ jobs:
         working-directory: gitnexus
       - name: Download Java conformance LCOV
         id: java-lcov-download
-        if: ${{ !cancelled() && fromJSON(inputs.plan).run.java && needs.java-compiler-conformance.result == 'success' }}
+        if: ${{ !cancelled() && fromJSON(inputs.plan).run.conformance && needs.compiler-conformance.result == 'success' }}
         uses: ./.github/actions/download-test-artifact
         with:
           name: java-conformance-coverage
           path: ${{ runner.temp }}/java-conformance-coverage
-      - name: Add Java conformance to the CLI SonarQube report
-        id: java-lcov
-        if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' }}
+      - name: Download TypeScript conformance LCOV
+        id: typescript-lcov-download
+        if: ${{ !cancelled() && fromJSON(inputs.plan).run.conformance && needs.compiler-conformance.result == 'success' }}
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: typescript-conformance-coverage
+          path: ${{ runner.temp }}/typescript-conformance-coverage
+      - name: Add compiler conformance to the CLI SonarQube report
+        id: conformance-lcov
+        if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' && steps.typescript-lcov-download.outcome == 'success' }}
         working-directory: gitnexus
         run: |
           test -s coverage/lcov.info
-          cat "$RUNNER_TEMP/java-conformance-coverage/lcov.info" >> coverage/lcov.info
+          for provider in java typescript; do
+            report="$RUNNER_TEMP/$provider-conformance-coverage/lcov.info"
+            test -s "$report"
+            cat "$report" >> coverage/lcov.info
+          done
       - name: Upload learned coverage timings
         if: fromJSON(inputs.plan).release
         uses: ./.github/actions/upload-test-artifact
@@ -689,7 +709,7 @@ jobs:
       - name: Upload SonarQube coverage
         if: >-
           !cancelled() && fromJSON(inputs.plan).coverage &&
-          (!fromJSON(inputs.plan).run.java || steps.java-lcov.outcome == 'success') && ((github.event_name == 'pull_request' &&
+          (!fromJSON(inputs.plan).run.conformance || steps.conformance-lcov.outcome == 'success') && ((github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
         continue-on-error: true

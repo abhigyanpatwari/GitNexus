@@ -181,6 +181,7 @@ describe('indexCommand', () => {
 
   it('rewrites foreign local gitnexus.json ownership on --force adopt', async () => {
     const foreignRepo = path.resolve('/other-repo');
+    const adoptedStoragePath = path.join(resolvedRepo, '.gitnexus');
     mockLoadMeta.mockResolvedValue({
       repoPath: foreignRepo,
       storagePath: `${foreignRepo}/.gitnexus`,
@@ -196,7 +197,7 @@ describe('indexCommand', () => {
       `${resolvedRepo}/.gitnexus`,
       expect.objectContaining({
         repoPath: resolvedRepo,
-        storagePath: `${resolvedRepo}/.gitnexus`,
+        storagePath: adoptedStoragePath,
         lastCommit: 'abc123',
       }),
     );
@@ -204,7 +205,7 @@ describe('indexCommand', () => {
       resolvedRepo,
       expect.objectContaining({
         repoPath: resolvedRepo,
-        storagePath: `${resolvedRepo}/.gitnexus`,
+        storagePath: adoptedStoragePath,
       }),
       { storagePath: `${resolvedRepo}/.gitnexus` },
     );
