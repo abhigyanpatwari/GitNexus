@@ -2100,6 +2100,7 @@ export function runScopeResolution(
         sharedPropertyIndex,
         nameFallbackDisabled,
         answeredAfterReceiverPass,
+        provider.excludeEnumMembersFromNameFallback === true,
       );
   withdrawAnsweredReceiverDrops(resolutionOutcomes, answeredAfterReceiverPass);
   probeEmit('properties-end', `outcomes=${resolutionOutcomes.length}`);

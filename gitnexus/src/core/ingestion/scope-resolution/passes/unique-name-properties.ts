@@ -117,6 +117,11 @@ interface PropertyCandidate {
    * competitor problem it was avoiding does not come back.
    */
   readonly fromReturnShape: boolean;
+  /**
+   * True when every `HAS_PROPERTY` owner of this node is an `Enum`. A provider
+   * that sets `excludeEnumMembersFromNameFallback` skips these (#4216).
+   */
+  readonly enumMember: boolean;
 }
 
 /**
@@ -201,6 +206,15 @@ export type PropertyNameIndex = ReadonlyMap<string, readonly PropertyCandidate[]
 
 export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex {
   const byName = new Map<string, PropertyCandidate[]>();
+  // Enum-owned members. An id another owner also claims stays out of this set:
+  // that owner's field is a real candidate.
+  const enumMembers = new Set<string>();
+  const otherMembers = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('HAS_PROPERTY')) {
+    const owners = graph.getNode(rel.sourceId)?.label === 'Enum' ? enumMembers : otherMembers;
+    owners.add(rel.targetId);
+  }
+  for (const id of otherMembers) enumMembers.delete(id);
   // A node's id fixes its name, so one id set stands in for a per-name scan.
   const indexed = new Set<string>();
   for (const node of graph.iterNodes()) {
@@ -215,6 +229,7 @@ export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex
       id: node.id,
       filePath,
       fromReturnShape: node.properties.fromReturnShape === true,
+      enumMember: enumMembers.has(node.id),
     };
     const existing = byName.get(name);
     if (existing === undefined) byName.set(name, [candidate]);
@@ -433,6 +448,8 @@ export function emitUniqueNamePropertyAccesses(
    * mode: a site that was only counted still has no edge.
    */
   answeredSink?: Set<string>,
+  /** `ScopeResolver.excludeEnumMembersFromNameFallback` of the reading language. */
+  excludeEnumMembers = false,
 ): UniqueNamePropertyStats {
   const byName = prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
   const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
@@ -468,8 +485,14 @@ export function emitUniqueNamePropertyAccesses(
       const siteKey = callableFlowSiteKey(parsed.filePath, site.atRange);
       if (skipSites.has(siteKey)) continue;
 
-      const allWithName = byName.get(site.name);
-      if (allWithName === undefined) continue;
+      const indexedWithName = byName.get(site.name);
+      if (indexedWithName === undefined) continue;
+      // Enum members are left out before the language filter, so a name carried
+      // only by enum members is skipped rather than reported as cross-language.
+      const allWithName = excludeEnumMembers
+        ? indexedWithName.filter((candidate) => !candidate.enumMember)
+        : indexedWithName;
+      if (allWithName.length === 0) continue;
       const candidates = candidatesForLanguage(allWithName, ownFilePaths);
       if (candidates === undefined) {
         // The name IS defined in this workspace, just not in a language this

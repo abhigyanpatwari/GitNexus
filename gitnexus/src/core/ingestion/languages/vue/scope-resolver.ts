@@ -122,6 +122,10 @@ const vueScopeResolver: ScopeResolver = {
   // layer (no formal class declaration), so enable the field-fallback
   // heuristic to catch them via declared field names.
   fieldFallbackOnMethodLookup: true,
+  // A `<script lang="ts">` enum member is reached through its enum
+  // (`Mode.Off`), never through an untyped value, so the name fallback above
+  // must not link `x.Off` to it (#4216).
+  excludeEnumMembersFromNameFallback: true,
 
   // Return-type propagation mirrors TypeScript.
   propagatesReturnTypesAcrossImports: true,

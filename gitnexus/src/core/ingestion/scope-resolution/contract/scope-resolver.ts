@@ -940,6 +940,16 @@ export interface ScopeResolver {
   readonly fieldFallbackOnMethodLookup?: boolean;
 
   /**
+   * Whether the unique-name property fallback skips enum members — `Property`
+   * nodes owned only by an `Enum`. Default `false`. A language whose enum
+   * members are reached only through the enum itself (`Mode.Off`, which the
+   * precise passes resolve) sets `true`: an untyped `x.Off` is then no
+   * evidence of the member, and as a candidate the member would also make a
+   * same-named object key elsewhere ambiguous and drop that key's edge (#4216).
+   */
+  readonly excludeEnumMembersFromNameFallback?: boolean;
+
+  /**
    * Element type of a container, reached either by a subscript (`repos[0]`) or
    * by a property-style collection view (`dict.Values`). Returns the element
    * type's simple name, or `undefined` when the container does not unwrap by
