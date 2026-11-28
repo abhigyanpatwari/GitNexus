@@ -44,7 +44,6 @@ const VIEW_ARGUMENT_INDEX: Readonly<Record<string, number>> = {
   includeUnless: 1,
 };
 const STRING_LITERAL_RE = /^(['"])([^'"]*)\1$/;
-const QUOTED_STRING_RE = /(['"])([^'"]+)\1/g;
 const OPENERS = '([{';
 const CLOSERS = ')]}';
 /** Anonymous component tags. `x-slot` and `x-dynamic-component` are Blade built-ins, not files. */
@@ -106,6 +105,46 @@ export const splitDirectiveArguments = (text: string, start: number): string[] |
   return null;
 };
 
+/**
+ * The value of one array element: `'k' => 'v'` → `'v'`, `'v'` → `'v'`. The
+ * key of an associative element is never a view, so only the part after a
+ * top-level `=>` is kept.
+ */
+const arrayElementValue = (element: string): string => {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < element.length - 1; i++) {
+    const ch = element[i];
+    if (quote !== null) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') quote = ch;
+    else if (OPENERS.includes(ch)) depth++;
+    else if (CLOSERS.includes(ch)) depth--;
+    else if (depth === 0 && ch === '=' && element[i + 1] === '>') {
+      return element.slice(i + 2).trim();
+    }
+  }
+  return element;
+};
+
+/**
+ * The string-literal values of an array literal (`[…]` or `array(…)`), for
+ * `@includeFirst`, whose candidate views are the array's values. Anything else
+ * (a variable, a function call) yields nothing.
+ */
+const arrayLiteralStrings = (arg: string): string[] => {
+  const open = arg.startsWith('[') ? 1 : /^array\s*\(/i.exec(arg)?.[0].length;
+  if (open === undefined) return [];
+  const elements = splitDirectiveArguments(arg, open) ?? [];
+  const strings: string[] = [];
+  for (const element of elements) {
+    const literal = STRING_LITERAL_RE.exec(arrayElementValue(element));
+    if (literal) strings.push(literal[2]);
+  }
+  return strings;
+};
+
 /** Every view name the template names. Exported for unit tests. */
 export const extractBladeViewReferences = (
   content: string,
@@ -119,7 +158,7 @@ export const extractBladeViewReferences = (
     const arg = args?.[VIEW_ARGUMENT_INDEX[match[1]]];
     if (arg === undefined) continue;
     if (match[1] === 'includeFirst') {
-      for (const item of arg.matchAll(QUOTED_STRING_RE)) views.push(item[2]);
+      views.push(...arrayLiteralStrings(arg));
     } else {
       const literal = STRING_LITERAL_RE.exec(arg);
       if (literal) views.push(literal[2]);
