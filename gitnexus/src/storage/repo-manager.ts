@@ -58,6 +58,7 @@ import {
   inspectResolvedStorage,
   inspectRegisteredStorage,
   inspectStoragePath,
+  isRepositoryLocalStoragePath,
   isTransientStorageInspection,
   LIST_STORAGE_REQUIREMENTS,
   requireDeletableStoragePath,
@@ -908,6 +909,8 @@ export interface RegisterRepoOptions {
    * summaries name `branches/<slug>` sub-indexes the new location does not hold.
    */
   dropBranches?: boolean;
+  /** `index` registers existing graphs, including the pinned slots on disk. */
+  recoverBranches?: boolean;
 }
 
 /**
@@ -962,6 +965,62 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
   // — would break on the third call.
   if (entry.name === path.basename(resolveRepoIdentityRoot(resolved))) return false;
   return true;
+};
+
+const recoverBranchSummaries = async (
+  storagePath: string,
+  repoPath: string,
+  flatBranch: string | undefined,
+): Promise<BranchSummary[]> => {
+  const root = path.join(storagePath, BRANCHES_DIR);
+  const dirs = await fs.readdir(root, { withFileTypes: true }).catch((err: unknown) => {
+    if (!isMissingFilesystemError(err)) {
+      logger.warn({ dir: root, err }, 'Could not list pinned branches; registering the flat index');
+    }
+    return [];
+  });
+  const summaries: BranchSummary[] = [];
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const slot = path.join(root, dir.name);
+    let receipt = await readReconcileMetadata(slot, INDEX_METADATA_FILE);
+    if (receipt.state === 'absent') {
+      receipt = await readReconcileMetadata(slot, LEGACY_METADATA_FILE);
+    }
+    if (receipt.state === 'invalid') {
+      logger.warn({ dir: slot, err: receipt.error }, 'Skipping unreadable pinned branch metadata');
+    }
+    if (receipt.state !== 'valid') continue;
+    const meta = receipt.meta;
+    if (
+      !meta ||
+      typeof meta.branch !== 'string' ||
+      !meta.branch ||
+      meta.branch === flatBranch ||
+      branchSlug(meta.branch) !== dir.name ||
+      typeof meta.repoPath !== 'string' ||
+      !registryPathEquals(canonicalizePath(meta.repoPath), repoPath) ||
+      (meta.storagePath === undefined
+        ? !isRepositoryLocalStoragePath(repoPath, storagePath)
+        : typeof meta.storagePath !== 'string' ||
+          !registryPathEquals(canonicalizePath(meta.storagePath), canonicalizePath(storagePath))) ||
+      typeof meta.indexedAt !== 'string' ||
+      typeof meta.lastCommit !== 'string'
+    ) {
+      continue;
+    }
+    try {
+      await fs.access(resolveGraphPath(slot, meta));
+    } catch (err) {
+      if (!isMissingFilesystemError(err)) {
+        logger.warn({ dir: slot, err }, 'Skipping unreadable pinned branch database');
+      }
+      continue;
+    }
+    const { branch, indexedAt, lastCommit, stats } = meta;
+    summaries.push({ branch, indexedAt, lastCommit, stats });
+  }
+  return summaries;
 };
 
 type RegisterRepoUnlockedResult = {
@@ -1028,13 +1087,7 @@ const registerRepoUnlocked = async (
         `Refusing to register ${resolved}: metadata belongs to ${meta.repoPath}, not this repository.`,
       );
     }
-    if (
-      meta.storagePath === undefined &&
-      !registryPathEquals(
-        canonicalizePath(storagePath),
-        canonicalizePath(defaultStoragePath(resolved)),
-      )
-    ) {
+    if (meta.storagePath === undefined && !isRepositoryLocalStoragePath(resolved, storagePath)) {
       throw new Error(
         `Refusing to register ${resolved}: external storage metadata must bind storagePath to the selected directory.`,
       );
@@ -1186,6 +1239,12 @@ const registerRepoUnlocked = async (
     merged = { ...entry };
     if (freshExisting?.branches && !opts?.dropBranches) merged.branches = freshExisting.branches;
     else delete merged.branches;
+    if (opts?.recoverBranches) {
+      const recovered = await recoverBranchSummaries(storagePath, canonicalInput, meta.branch);
+      const recorded = new Set(merged.branches?.map((b) => b.branch));
+      const missing = recovered.filter((b) => !recorded.has(b.branch));
+      if (missing.length) merged.branches = [...(merged.branches ?? []), ...missing];
+    }
     if (freshExisting?.shareOptOut) merged.shareOptOut = true;
   }
   if (freshIdx >= 0) {

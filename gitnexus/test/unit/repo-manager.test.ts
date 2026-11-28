@@ -1273,6 +1273,85 @@ describe('registerRepo branch nesting (#2106)', () => {
     await tmpRepo.cleanup();
   });
 
+  async function writePin(storagePath: string, branch: string, bound = true) {
+    const dir = path.join(storagePath, 'branches', branchSlug(branch));
+    await saveMeta(dir, {
+      ...metaFor(branch, 'bbb2222'),
+      repoPath: tmpRepo.dbPath,
+      ...(bound ? { storagePath } : {}),
+    });
+    await fs.writeFile(path.join(dir, 'lbug'), 'graph');
+    return dir;
+  }
+
+  async function recover(storagePath: string) {
+    const flat = { ...metaFor('main', 'aaa1111'), repoPath: tmpRepo.dbPath, storagePath };
+    await registerRepo(tmpRepo.dbPath, flat, { storagePath, recoverBranches: true });
+    const [entry] = await listRegisteredRepos();
+    expect(entry).toMatchObject({ branch: 'main', lastCommit: 'aaa1111' });
+    return entry.branches?.map((b) => b.branch).sort() ?? [];
+  }
+
+  it.each([true, false])(
+    'recovers unbound legacy pins only in local storage (local=%s)',
+    async (local) => {
+      const storage = path.join(tmpRepo.dbPath, local ? '.gitnexus' : 'external');
+      await writePin(storage, 'legacy', false);
+      await writePin(storage, 'bound');
+      expect(await recover(storage)).toEqual(local ? ['bound', 'legacy'] : ['bound']);
+    },
+  );
+
+  it('recovers a pinned branch stored in an owned graph generation', async () => {
+    const storage = path.join(tmpRepo.dbPath, '.gitnexus');
+    const branch = 'feature/generation';
+    const slot = path.join(storage, 'branches', branchSlug(branch));
+    const graphPath = `lbug.generation.${'a'.repeat(32)}`;
+    await saveMeta(slot, {
+      ...metaFor(branch, 'bbb2222'),
+      repoPath: tmpRepo.dbPath,
+      storagePath: storage,
+      graphPath,
+    });
+    await fs.writeFile(path.join(slot, graphPath), 'graph');
+
+    expect(await recover(storage)).toEqual([branch]);
+  });
+
+  it.each(['directory', 'metadata', 'database'] as const)(
+    'registers the flat index and warns when branch %s is unreadable',
+    async (failure) => {
+      const storage = path.join(tmpRepo.dbPath, '.gitnexus');
+      const dir = await writePin(storage, 'unreadable');
+      await writePin(storage, 'readable');
+      const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      const capture = _captureLogger();
+      try {
+        if (failure === 'directory') {
+          vi.spyOn(fs, 'readdir').mockRejectedValueOnce(denied);
+        } else if (failure === 'metadata') {
+          const readFile = fs.readFile.bind(fs);
+          vi.spyOn(fs, 'readFile').mockImplementation((file, opts) => {
+            if (file === path.join(dir, INDEX_METADATA_FILE)) return Promise.reject(denied);
+            return readFile(file, opts);
+          });
+        } else {
+          const access = fs.access.bind(fs);
+          vi.spyOn(fs, 'access').mockImplementation((file, mode) => {
+            if (file === path.join(dir, 'lbug')) return Promise.reject(denied);
+            return access(file, mode);
+          });
+        }
+        expect(await recover(storage)).toEqual(failure === 'directory' ? [] : ['readable']);
+        expect(capture.text()).toContain('permission denied');
+        expect(capture.text()).toContain(failure === 'directory' ? path.dirname(dir) : dir);
+      } finally {
+        vi.restoreAllMocks();
+        capture.restore();
+      }
+    },
+  );
+
   it('primary run records branch at top level and no branches[]', async () => {
     await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
     const [entry] = await listRegisteredRepos();

@@ -155,6 +155,19 @@ describe('multi-branch analyze (#2106)', () => {
       expect(entry?.branch).toBe('main');
       expect(entry?.branches?.map((b) => b.branch)).toEqual(['feature/x']);
 
+      // Register the existing graphs in a fresh home, without analyzing either branch again.
+      process.env.GITNEXUS_HOME = path.join(tmpHome.dbPath, 'recovered');
+      const { indexCommand } = await import('../../src/cli/index-repo.js');
+      await indexCommand([repo]);
+      const [recovered] = await listRegisteredRepos();
+      expect(recovered).toMatchObject({
+        branch: 'main',
+        lastCommit: mainCommit,
+        branches: [{ branch: 'feature/x', lastCommit: featureCommit, stats: branchMeta?.stats }],
+      });
+
+      process.env.GITNEXUS_HOME = tmpHome.dbPath;
+
       // A plain analyze on the pinned branch adopts the flat workspace slot
       // and removes the now-shadowed sub-index (#2354): the flat handle would
       // always win for this label, leaving the sub-index unreachable bloat.
