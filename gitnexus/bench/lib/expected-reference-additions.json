@@ -1,5 +1,6 @@
 {
   "839cccb18736b4980a94642ea5d4e98d86fd6a37:a0a8672d9ad8a8d3e013bf8ac15c8351f9603017": {
+    "checkoutFingerprint": "checkout-sha256:281b0ed0397bfefe1df712ae03e4436e6cab6064fdf01bd9e25b6b4d759cc713",
     "additions": {
       "count": 107,
       "sha256": "373b1c96e68b07cbe4df68339658adce37ca36934a896e727b3385010cf5ee97"
@@ -10,6 +11,7 @@
     }
   },
   "621e0e6459f5338d9d9a27ce93ec5c64d7212f73:6caa0996142604c30fd7d982ebe5c82f5a5a645c": {
+    "checkoutFingerprint": "checkout-sha256:6d07857149b505a420cbe955295d9ab53d0ba0b87c303394eab8afef97603514",
     "_note": "#4068: the awaited generic call `await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(…)` (parsing-processor.ts:398:25) loses its wrong read ACCESSES edge from dispatchChunkParseRound to WorkerPool.dispatchGroups; its CALLS edge is unchanged. No relationship is added.",
     "additions": {
       "count": 0,
@@ -18,6 +20,82 @@
     "removals": {
       "count": 1,
       "sha256": "81f24d6b78be1c471dcd4702cb4b7c83644f74d0d2ed61d0850b2a65c0cac6c6"
+    },
+    "typeOnlyImports": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e": {
+    "checkoutFingerprint": "checkout-sha256:f712b9fbd5fb0676c13f0e2b298aadbc08c47eb3cd8d2200901e551f3d9af28b",
+    "_note": "#4084: The compiler confirms 12,545 property declaration columns, 3,920 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The alias and generic-constraint comparison verified both ends of 379 USES edges, including all 334 reattributions from their enclosing file or function. The compiler also verifies the owners, ranges and target declarations of 32 references in callable type signatures. TypeScript locates three call edges at the operand of await on two explicit generic calls. TypeScript confirms the starts of 29 arrow functions. Restoring the two Zig extractor callbacks adds two property references and two indirect calls. The compiler confirms two enum declarations, 25 members, 73 member reads and nine type references.",
+    "declarationPositions": {
+      "baseline": {
+        "count": 27089,
+        "sha256": "452016828cd8c34435dbe65caf452765d69684c21a8c7f5417cce7d109a6deda"
+      },
+      "candidate": {
+        "count": 27116,
+        "sha256": "490abf304b83fe47793ee9a7fb846f8dad455ff9e57cded5e392310b34bdf45e"
+      }
+    },
+    "additions": {
+      "count": 4169,
+      "sha256": "ee10d6dc3d849bfcd8a7c88a7e970f11297526d24b75f2ca6c1b0e3f69f0d04b"
+    },
+    "removals": {
+      "count": 217,
+      "sha256": "7f7fec50ebe2d2f96fc3751200354cbf5fb8032cd5242ac805eb9547984aabbc"
+    },
+    "typeOnlyImports": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "checkout-sha256:8e8d7f1a9d6bd534bc129f95ccd29bd3a9e5adeb5c08dd6317162ac1ab48b796": {
+    "_note": "On the #4084 corpus at 9543a356, TypeScript confirms three relocated ExtractedDecoratorRoute uses and the new collectInheritedRoutes parameter relative to 9d0d65a4. Interface field bindings resolve 275 further property accesses and 114 calls at compiler-verified sites, owners and targets. The 59 dropped interface-dispatch reads pointed to erased MutableSemanticModel signatures. Each read retains its compiler-selected SemanticModel target. TypeScript resolves five further keyof operands to ParseWorkerResult and AnalyzerIdentityTraversalLimits twice each and QueryLanguageHooks once.",
+    "declarationPositions": {
+      "baseline": {
+        "count": 27096,
+        "sha256": "4e41cf84236cc57a39cb374c346e77e0a9f8e1237bf9c67d50d16dca0a2dedef"
+      },
+      "candidate": {
+        "count": 27123,
+        "sha256": "e834e299b85c790157888593d34a5b9c758c81dd9ba810e081efc6992c01a8a7"
+      }
+    },
+    "additions": {
+      "count": 4564,
+      "sha256": "bfbdee8b2f324c3f997115e7c4f2271bcef564da91b350b562a0bfbcd704e221"
+    },
+    "removals": {
+      "count": 276,
+      "sha256": "85b647a0ecf1950465b0a58b9bb330781af9c2adfecd838859b54fbb9ea500ab"
+    },
+    "typeOnlyImports": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "checkout-sha256:d9ea476c7354653afd217039aa254af55416bd21e30ceb8d80809813dad39e1a": {
+    "_note": "The #4084 checkout at dabf5e14 also contains detect-changes-scope.ts. TypeScript confirms seven return-property columns, the function return type DetectChangesSelection and the DetectChangesScope reference owned by that alias. All other declaration and reference changes match the 9543a356 receipt.",
+    "declarationPositions": {
+      "baseline": {
+        "count": 27108,
+        "sha256": "30ce2c7927bbd99c6c1764a2b753dc221dd32b462c5c377449c8735fb5f40abb"
+      },
+      "candidate": {
+        "count": 27135,
+        "sha256": "7be9eff2137de7704b592fa018f3e8ed75caddf1852ab625b14e72ac9a933535"
+      }
+    },
+    "additions": {
+      "count": 4566,
+      "sha256": "5cc3bf11297815fd4b132dafa4bd8b67477fde1e35126eb6ae9fc0241652f876"
+    },
+    "removals": {
+      "count": 277,
+      "sha256": "7d7ffcd02be6094ac0c18f5d60a23d5fb27acb08fc5f895f8e7352f9f9675151"
     },
     "typeOnlyImports": {
       "count": 0,
