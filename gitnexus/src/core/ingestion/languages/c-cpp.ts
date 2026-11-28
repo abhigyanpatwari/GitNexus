@@ -1,3 +1,8 @@
+import {
+  findCppFunctionDeclarator,
+  resolveCppDetachedOwnerName,
+  unwrapCppQualifiedNameNode,
+} from './cpp/detached-member-owner.js';
 import { cppRenameProvider } from './cpp/rename.js';
 import { cRenameProvider } from './c/rename.js';
 /**
@@ -198,37 +203,7 @@ const cCppExtractFunctionName = (
   let label: NodeLabel = 'Function';
 
   // C/C++: function_definition -> [pointer_declarator ->] function_declarator -> qualified_identifier/identifier
-  // Unwrap pointer_declarator / reference_declarator wrappers to reach function_declarator
-  let declarator = node.childForFieldName?.('declarator');
-  if (!declarator) {
-    for (let i = 0; i < node.childCount; i++) {
-      const c = node.child(i);
-      if (c?.type === 'function_declarator') {
-        declarator = c;
-        break;
-      }
-    }
-  }
-  while (
-    declarator &&
-    (declarator.type === 'pointer_declarator' || declarator.type === 'reference_declarator')
-  ) {
-    let nextDeclarator = declarator.childForFieldName?.('declarator');
-    if (!nextDeclarator) {
-      for (let i = 0; i < declarator.childCount; i++) {
-        const c = declarator.child(i);
-        if (
-          c?.type === 'function_declarator' ||
-          c?.type === 'pointer_declarator' ||
-          c?.type === 'reference_declarator'
-        ) {
-          nextDeclarator = c;
-          break;
-        }
-      }
-    }
-    declarator = nextDeclarator;
-  }
+  const declarator = findCppFunctionDeclarator(node);
   if (declarator) {
     let innerDeclarator = declarator.childForFieldName?.('declarator');
     if (!innerDeclarator) {
@@ -248,16 +223,7 @@ const cCppExtractFunctionName = (
     }
 
     if (innerDeclarator?.type === 'qualified_identifier') {
-      let nameNode = innerDeclarator.childForFieldName?.('name');
-      if (!nameNode) {
-        for (let i = 0; i < innerDeclarator.childCount; i++) {
-          const c = innerDeclarator.child(i);
-          if (c?.type === 'identifier' || c?.type === 'operator_name') {
-            nameNode = c;
-            break;
-          }
-        }
-      }
+      const nameNode = unwrapCppQualifiedNameNode(innerDeclarator);
       if (nameNode?.text) {
         funcName = nameNode.text;
         label = 'Method';
@@ -280,16 +246,7 @@ const cCppExtractFunctionName = (
         }
       }
       if (nestedId?.type === 'qualified_identifier') {
-        let nameNode = nestedId.childForFieldName?.('name');
-        if (!nameNode) {
-          for (let i = 0; i < nestedId.childCount; i++) {
-            const c = nestedId.child(i);
-            if (c?.type === 'identifier' || c?.type === 'operator_name') {
-              nameNode = c;
-              break;
-            }
-          }
-        }
+        const nameNode = unwrapCppQualifiedNameNode(nestedId);
         if (nameNode?.text) {
           funcName = nameNode.text;
           label = 'Method';
@@ -496,6 +453,7 @@ export const cppProvider = defineLanguage({
     ...cppMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  resolveDetachedOwnerName: resolveCppDetachedOwnerName,
   variableExtractor: createVariableExtractor(cppVariableConfig),
   classExtractor: cppClassExtractor,
   // ── Doxygen doc comment → description (issue #2270) ──

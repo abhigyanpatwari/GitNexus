@@ -11,11 +11,15 @@ import {
   JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 } from './ingestion/languages/java/analysis-features.js';
+import { CPP_MEMBER_SCOPE_IDENTITY_FEATURE } from './ingestion/languages/cpp/analysis-features.js';
 import { OBJECTIVE_C_PROVIDER_FEATURE } from './ingestion/languages/objective-c/analysis-features.js';
+import { RUBY_MEMBER_SCOPE_IDENTITY_FEATURE } from './ingestion/languages/ruby/analysis-features.js';
 
 /** Production registry of independently versioned analysis capabilities. */
 export const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  CPP_MEMBER_SCOPE_IDENTITY_FEATURE,
+  RUBY_MEMBER_SCOPE_IDENTITY_FEATURE,
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,

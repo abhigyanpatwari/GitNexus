@@ -37,6 +37,14 @@ export interface ClassExtractor {
    * Surfaced from `ClassExtractionConfig.qualifiedNodeId`.
    */
   readonly qualifiedNodeId: boolean;
+  /**
+   * When true, a member's graph id is prefixed with its owner's fully-qualified
+   * path (`N.Box.save`) instead of the immediate owner name (`Box.save`), so two
+   * members whose owners differ only by an enclosing namespace / module do not
+   * collapse onto one node (#2874). Surfaced from
+   * `ClassExtractionConfig.qualifiedMemberIds`.
+   */
+  readonly qualifiedMemberIds: boolean;
   isTypeDeclaration(node: SyntaxNode): boolean;
   extract(
     node: SyntaxNode,
@@ -75,6 +83,13 @@ export interface ClassExtractionConfig {
    * the scope chain.
    */
   qualifiedNodeId?: boolean;
+  /**
+   * Opt-in (#2874): prefix member ids (methods, properties) with the owner's
+   * fully-qualified path. Requires `qualifiedNodeId`, because the qualified
+   * owner name comes from the same extractor that keys the owner node. Default
+   * false, so every other language keeps its ids byte-for-byte.
+   */
+  qualifiedMemberIds?: boolean;
   scopeNameNodeTypes?: string[];
   /** `filePath` is supplied when known (definition-phase extraction) — a
    *  language whose file IS a type names it from the path. */

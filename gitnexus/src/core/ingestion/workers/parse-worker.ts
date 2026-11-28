@@ -73,6 +73,7 @@ import {
 } from '../utils/ast-helpers.js';
 import { climbAncestors } from '../utils/ancestor-climb.js';
 import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
+import { stripTemplateArguments } from '../utils/template-arguments.js';
 import type { MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
@@ -647,58 +648,83 @@ function findEnclosingClassNodeOrFileOwner(
  * Handles pointer/reference return types where function_declarator is nested inside
  * pointer_declarator or reference_declarator.
  */
-function findClassNodeByQualifiedName(node: SyntaxNode): SyntaxNode | null {
-  const declarator = node.childForFieldName('declarator');
-  if (!declarator) return null;
+function findClassNodeByQualifiedName(
+  node: SyntaxNode,
+  provider?: LanguageProvider,
+): SyntaxNode | null {
+  const detachedOwner = provider?.resolveDetachedOwnerName?.(node);
+  let className: string | undefined;
+  if (detachedOwner === undefined) {
+    const declarator = node.childForFieldName('declarator');
+    if (!declarator) return null;
 
-  // Find the function_declarator, recursively unwrapping pointer_declarator /
-  // reference_declarator chains (e.g. int** Foo::bar() has
-  // pointer_declarator → pointer_declarator → function_declarator).
-  let funcDecl: SyntaxNode | null = null;
-  if (declarator.type === 'function_declarator') {
-    funcDecl = declarator;
-  } else {
-    let current: SyntaxNode | null = declarator;
-    while (current && !funcDecl) {
-      for (let i = 0; i < current.namedChildCount; i++) {
-        const child = current.namedChild(i);
-        if (child?.type === 'function_declarator') {
-          funcDecl = child;
-          break;
+    // Find the function_declarator, recursively unwrapping pointer_declarator /
+    // reference_declarator chains (e.g. int** Foo::bar() has
+    // pointer_declarator → pointer_declarator → function_declarator).
+    let funcDecl: SyntaxNode | null = null;
+    if (declarator.type === 'function_declarator') {
+      funcDecl = declarator;
+    } else {
+      let current: SyntaxNode | null = declarator;
+      while (current && !funcDecl) {
+        for (let i = 0; i < current.namedChildCount; i++) {
+          const child = current.namedChild(i);
+          if (child?.type === 'function_declarator') {
+            funcDecl = child;
+            break;
+          }
+        }
+        if (!funcDecl) {
+          const next = current.namedChildren.find(
+            (c) => c.type === 'pointer_declarator' || c.type === 'reference_declarator',
+          );
+          current = next ?? null;
         }
       }
-      if (!funcDecl) {
-        const next = current.namedChildren.find(
-          (c) => c.type === 'pointer_declarator' || c.type === 'reference_declarator',
-        );
-        current = next ?? null;
-      }
     }
+    if (!funcDecl) return null;
+
+    // Check if the inner declarator is a qualified_identifier (Foo::bar)
+    const innerDecl = funcDecl.childForFieldName('declarator');
+    if (!innerDecl || innerDecl.type !== 'qualified_identifier') return null;
+
+    const scope = innerDecl.childForFieldName('scope');
+    if (!scope) return null;
+    className = scope.text;
   }
-  if (!funcDecl) return null;
-
-  // Check if the inner declarator is a qualified_identifier (Foo::bar)
-  const innerDecl = funcDecl.childForFieldName('declarator');
-  if (!innerDecl || innerDecl.type !== 'qualified_identifier') return null;
-
-  const scope = innerDecl.childForFieldName('scope');
-  if (!scope) return null;
-  const className = scope.text;
 
   // Search the file for a matching class/struct specifier, including inside
-  // namespace_definition blocks (the majority of production C++ uses namespaces).
+  // namespace/template/nested-type containers while skipping executable bodies.
   const root = node.tree.rootNode;
   const classTypes = new Set(['class_specifier', 'struct_specifier']);
+  const strippedDetachedOwner =
+    detachedOwner !== undefined ? stripTemplateArguments(detachedOwner) : undefined;
   const searchIn = (parent: SyntaxNode): SyntaxNode | null => {
     for (let i = 0; i < parent.namedChildCount; i++) {
       const child = parent.namedChild(i);
       if (!child) continue;
       if (classTypes.has(child.type)) {
         const nameNode = child.childForFieldName('name');
-        if (nameNode?.text === className) return child;
+        if (nameNode) {
+          if (detachedOwner !== undefined) {
+            const candidateQualified =
+              provider?.classExtractor?.extractQualifiedName(child, nameNode.text) ?? nameNode.text;
+            if (
+              candidateQualified === detachedOwner ||
+              candidateQualified === strippedDetachedOwner
+            ) {
+              return child;
+            }
+          } else if (nameNode.text === className) {
+            return child;
+          }
+        }
       }
-      // Recurse into namespace blocks
-      if (child.type === 'namespace_definition') {
+      if (
+        !FUNCTION_NODE_TYPES.has(child.type) &&
+        !LOCAL_SCOPE_BODY_NODE_TYPES.has(child.type) &&
+        child.namedChildCount > 0
+      ) {
         const found = searchIn(child);
         if (found) return found;
       }
@@ -994,11 +1020,19 @@ const callableOwnQualifiedName = (
   const prefix = enclosingCallablePrefix(fnNode, filePath, provider);
   const classInfo =
     prefix === undefined ? cachedFindEnclosingClassInfo(fnNode, filePath, provider) : null;
+  const detachedOwner =
+    prefix === undefined && classInfo === null
+      ? provider.resolveDetachedOwnerName?.(fnNode)
+      : undefined;
   const objectOwner =
-    prefix === undefined && classInfo === null && shouldObjectOwnerQualifyCallable(finalLabel)
+    prefix === undefined &&
+    classInfo === null &&
+    detachedOwner === undefined &&
+    shouldObjectOwnerQualifyCallable(finalLabel)
       ? findObjectLiteralBindingInfo(fnNode, filePath, { includeOwnerName: true })?.ownerName
       : undefined;
-  const owner = prefix ?? classInfo?.className ?? objectOwner;
+  const owner =
+    prefix ?? classInfo?.qualifiedClassName ?? classInfo?.className ?? detachedOwner ?? objectOwner;
   const needsArrayPosition =
     owner === undefined &&
     ownName !== null &&
@@ -1076,16 +1110,23 @@ const enclosingFunctionIdAt = (
       // to the METHOD, not directly to the class, and a Go receiver method can
       // never itself be nested inside another callable.
       const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
+      const detachedOwnerName =
+        nestedPrefix === undefined && classInfo === null
+          ? provider.resolveDetachedOwnerName?.(current)
+          : undefined;
       const objectOwnerName =
         nestedPrefix === undefined &&
         classInfo === null &&
+        detachedOwnerName === undefined &&
         shouldObjectOwnerQualifyCallable(finalLabel)
           ? findObjectLiteralBindingInfo(current, filePath, { includeOwnerName: true })?.ownerName
           : undefined;
       const ownerName =
         nestedPrefix ??
+        classInfo?.qualifiedClassName ??
         classInfo?.className ??
         standaloneMethodInfo?.receiverType ??
+        detachedOwnerName ??
         objectOwnerName;
       const needsArrayPosition =
         ownerName === undefined &&
@@ -1122,7 +1163,7 @@ const enclosingFunctionIdAt = (
           // id carries the `#<arity>` suffix only if that owner is found.
           const classNode =
             findEnclosingClassNodeOrFileOwner(current, provider, filePath) ??
-            findClassNodeByQualifiedName(current);
+            findClassNodeByQualifiedName(current, provider);
           if (classNode && encLang) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath,
@@ -1183,7 +1224,7 @@ const enclosingFunctionIdAt = (
         filePath,
         provider,
       );
-      const customOwner = nestedPrefix2 ?? classInfo?.className;
+      const customOwner = nestedPrefix2 ?? classInfo?.qualifiedClassName ?? classInfo?.className;
       const qualifiedName = customOwner
         ? `${customOwner}.${customResult.funcName}`
         : customResult.funcName;
@@ -1195,7 +1236,8 @@ const enclosingFunctionIdAt = (
       let graphIdSuffix2: string | undefined;
       if (finalLabel === 'Method' || finalLabel === 'Constructor') {
         const encLang2 = getLanguageFromFilename(filePath);
-        const classNode2 = findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
+        const classNode2 =
+          findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode, provider);
         if (classNode2 && encLang2) {
           const methodMap2 = getMethodInfo(classNode2, provider, {
             filePath,
@@ -1228,12 +1270,21 @@ const enclosingFunctionIdAt = (
   return undefined;
 };
 
+const getQualifiedOwnerNameForProvider = (
+  provider: LanguageProvider,
+): ((node: SyntaxNode, simpleName: string) => string | null) | undefined =>
+  provider.classExtractor?.qualifiedNodeId === true
+    ? (node: SyntaxNode, simpleName: string): string | null =>
+        provider.classExtractor!.extractQualifiedName(node, simpleName) ??
+        provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
+        null
+    : undefined;
+
 /** Cached wrapper for findEnclosingClassInfo — avoids repeated parent walks. */
 const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   provider: LanguageProvider,
-  getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
@@ -1242,10 +1293,11 @@ const cachedFindEnclosingClassInfo = (
     node,
     filePath,
     provider.resolveEnclosingOwner,
-    getQualifiedOwnerName,
+    getQualifiedOwnerNameForProvider(provider),
     provider.resolveFileTypeOwner,
     provider.resolveContainerTypeOwner,
     provider.resolveDetachedOwnerName,
+    provider.classExtractor?.qualifiedMemberIds,
   );
   classIdCache.set(node, result);
   return result;
@@ -2057,16 +2109,10 @@ const processFileGroupFiles = (
         // points at the *qualified* nested-class node (Outer.Inner) rather
         // than a now-nonexistent simple `Class:file:Inner` id. Gated on the
         // flag → byte-identical when off. Mirrors the main owner path.
-        const propGetQualifiedOwnerName =
-          provider.classExtractor?.qualifiedNodeId === true
-            ? (node: SyntaxNode, simpleName: string): string | null =>
-                provider.classExtractor!.extractQualifiedName(node, simpleName)
-            : undefined;
         const propEnclosingInfo = cachedFindEnclosingClassInfo(
           captureMap['call'],
           file.path,
           provider,
-          propGetQualifiedOwnerName,
         );
         const propEnclosingClassId =
           propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
@@ -2089,8 +2135,10 @@ const processFileGroupFiles = (
             captureMap['call'].startPosition.row + 1,
             captureMap['call'].startPosition.column,
           );
-          const propQualifiedName = propEnclosingInfo
-            ? `${propEnclosingInfo.className}.${item.propName}`
+          const propOwnerName =
+            propEnclosingInfo?.qualifiedClassName ?? propEnclosingInfo?.className;
+          const propQualifiedName = propOwnerName
+            ? `${propOwnerName}.${item.propName}`
             : item.propName;
           const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
           result.nodes.push({
@@ -2392,45 +2440,7 @@ const processFileGroupFiles = (
         nodeLabel === 'Constructor' ||
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
-      // #1978: thread the class-extractor's qualifier into the owner walk when the
-      // language opts into qualified node ids, so a nested member's owner resolves
-      // to the *qualified* class id (Outer.Inner). Gated on the flag → byte-identical
-      // when off. Mirrors parsing-processor.ts.
-      const getQualifiedOwnerName =
-        provider.classExtractor?.qualifiedNodeId === true
-          ? (node: SyntaxNode, simpleName: string): string | null =>
-              // #1991: LOCKSTEP — a Ruby `module` owner is not a typeDeclaration, so
-              // extractQualifiedName returns null; fall back to the scope walk so a
-              // method inside a nested module owns through the SAME qualified Trait
-              // id its node uses on the worker path too.
-              provider.classExtractor!.extractQualifiedName(node, simpleName) ??
-              provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
-              null
-          : undefined;
-      // A Property declared inside a function/lambda BODY is a function-LOCAL
-      // binding (e.g. Kotlin `val (a,b) = pair` or a `for ((k,v) in m)` loop
-      // destructuring emitted as `@definition.property` to dodge the local-symbol
-      // pruner), NOT a class member. Such locals must not get a HAS_PROPERTY owner
-      // edge from the enclosing class. Detect them by walking from the def node:
-      // if a function-like ancestor is reached BEFORE any class container, the
-      // property is enclosed by a function. Language-agnostic — genuine class
-      // fields sit directly in the class body with no intervening function, so
-      // they are unaffected (#1919 review CF3).
-      //
-      // EXCEPTION: a constructor PARAMETER property (TypeScript
-      // `constructor(public name: string)`) is also enclosed by a function, but
-      // it IS a class member — it is reached through the parameter list, not the
-      // executable body. So only strip the owner when the property is NOT inside
-      // a parameter list of that function (i.e. it's a body local).
       const propOwnerNode = nameNode || definitionNode;
-      // A Property is function-local (and must NOT get a class HAS_PROPERTY owner)
-      // when its nearest enclosing executable body — reached before any class
-      // container — is a function/accessor/initializer body, AND it is not a
-      // constructor parameter-property (rescued by the param-list carve-out).
-      // Uses LOCAL_SCOPE_BODY_NODE_TYPES (not FUNCTION_NODE_TYPES): the latter
-      // mis-includes Dart bare signatures (over-stripping accessors) and omits
-      // Kotlin/Swift init+accessor bodies (under-stripping their locals) — see
-      // the #1919 review of this guard.
       const isFunctionLocalProperty =
         nodeLabel === 'Property' &&
         propOwnerNode !== undefined &&
@@ -2446,12 +2456,7 @@ const processFileGroupFiles = (
         ) === null;
       const enclosingClassInfo =
         needsOwner && !isFunctionLocalProperty
-          ? cachedFindEnclosingClassInfo(
-              nameNode || definitionNode,
-              file.path,
-              provider,
-              getQualifiedOwnerName,
-            )
+          ? cachedFindEnclosingClassInfo(nameNode || definitionNode, file.path, provider)
           : null;
       const enclosingClassId =
         enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
@@ -2588,7 +2593,7 @@ const processFileGroupFiles = (
               : nestedCallablePrefix !== undefined && definitionNode
                 ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
                 : enclosingClassInfo
-                  ? `${enclosingClassInfo.className}.${nodeName}`
+                  ? `${enclosingClassInfo.qualifiedClassName ?? enclosingClassInfo.className}.${nodeName}`
                   : // A member whose owner is named by the assignment rather than
                     // by an enclosing container (`Foo.prototype.bar = …`) qualifies
                     // by that owner, so two constructors in one file that both
@@ -2670,7 +2675,7 @@ const processFileGroupFiles = (
         if (provider.methodExtractor && definitionNode) {
           const classNode =
             findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path) ??
-            findClassNodeByQualifiedName(definitionNode);
+            findClassNodeByQualifiedName(definitionNode, provider);
           if (classNode) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath: file.path,
