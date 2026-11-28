@@ -137,6 +137,27 @@ describe('explicit FTS opt-out', () => {
     }
   });
 
+  it('rejects FTS repair with --drop-embeddings for non-CLI callers', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-fts-policy-'));
+    vi.stubEnv('GITNEXUS_HOME', home);
+    // An ambient GITNEXUS_SKIP_FTS=1 would hit the skip-FTS guard first.
+    vi.stubEnv('GITNEXUS_SKIP_FTS', undefined);
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await expect(
+        runFullAnalysis(
+          path.join(home, 'repo'),
+          { repairFts: true, dropEmbeddings: true },
+          { onProgress() {} },
+        ),
+      ).rejects.toThrow('--repair-fts cannot be used with --drop-embeddings');
+      // Rejected before the lock or any storage is touched.
+      expect(await fs.readdir(home)).toEqual([]);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('keeps semantic results when keyword search is explicitly disabled', async () => {
     const executeQuery = vi.fn();
     const semantic = vi.fn().mockResolvedValue([

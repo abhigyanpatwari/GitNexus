@@ -1538,6 +1538,20 @@ const analyzeCommandImpl = async (
     );
   }
 
+  // Reject invalid flag combinations before the embedding runtime setup below,
+  // which can download and install packages.
+  if (
+    options.repairFts &&
+    (options.force || options.parseCache === false || options.dropEmbeddings)
+  ) {
+    cliError(
+      '  Cannot combine `--repair-fts` with a full rebuild. ' +
+        'Use `--repair-fts` alone for fast FTS-only repair.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   // Local embeddings: refuse Intel Mac / unloadable prefix before any registry
   // download, then auto-heal a missing stack. Analyze uses a short install
   // timeout so a blackholed proxy cannot stall the index run.
@@ -1586,15 +1600,6 @@ const analyzeCommandImpl = async (
         return;
       }
     }
-  }
-
-  if (options.repairFts && (options.force || options.parseCache === false)) {
-    cliError(
-      '  Cannot combine `--repair-fts` with a full rebuild. ' +
-        'Use `--repair-fts` alone for fast FTS-only repair.\n',
-    );
-    process.exitCode = 1;
-    return;
   }
 
   // `--index-only` is the stronger contract — it suppresses every form of file

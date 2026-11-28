@@ -8,6 +8,7 @@ const {
   refreshBaseRefLineMock,
   refreshStatsLineMock,
   cliErrorMock,
+  installEmbeddingRuntimeMock,
 } = vi.hoisted(() => {
   const runFullAnalysisMock = vi.fn();
   const generateAIContextFilesMock = vi.fn<
@@ -24,6 +25,7 @@ const {
     }),
   );
   const cliErrorMock = vi.fn();
+  const installEmbeddingRuntimeMock = vi.fn(async () => {});
   return {
     runFullAnalysisMock,
     generateAIContextFilesMock,
@@ -31,8 +33,20 @@ const {
     refreshBaseRefLineMock,
     refreshStatsLineMock,
     cliErrorMock,
+    installEmbeddingRuntimeMock,
   };
 });
+
+// Only --embeddings runs reach these; they let a test see whether the CLI
+// would have downloaded the runtime.
+vi.mock('../../src/core/embeddings/runtime-support.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-support.js')>()),
+  assessLocalEmbeddingRuntime: () => ({ status: 'needs-install' }),
+}));
+vi.mock('../../src/core/embeddings/runtime-install.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-install.js')>()),
+  installEmbeddingRuntime: installEmbeddingRuntimeMock,
+}));
 
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
@@ -212,6 +226,31 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     await analyzeCommand(undefined, { repairFts: true, parseCache: false });
 
     expect(process.exitCode).toBe(1);
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  // --drop-embeddings forces a rebuild, so the FTS-only path would report a
+  // drop-embeddings rebuild that never ran (PR #4170 review).
+  it('rejects combining --repair-fts with --drop-embeddings', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true, dropEmbeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(cliErrorMock).toHaveBeenCalledWith(
+      expect.stringMatching(/cannot combine `--repair-fts` with a full rebuild/i),
+    );
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects --repair-fts with a full rebuild before installing the embedding runtime', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    installEmbeddingRuntimeMock.mockClear();
+
+    await analyzeCommand(undefined, { repairFts: true, dropEmbeddings: true, embeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
