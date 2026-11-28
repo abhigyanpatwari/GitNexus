@@ -130,3 +130,76 @@ export function shadowed(api) { api.publish(); }
     ).toBe(true);
   });
 });
+
+describe('package ESM without static exports', () => {
+  const wrapper = 'var module; module.exports = function candidate() {};';
+  const result = useFixture('wrapper-format-without-esm-exports', {
+    'package.json': '{"type":"module"}',
+    'common/package.json': '{"type":"commonjs"}',
+    'plain.js': 'module.exports = function candidate() {};',
+    'guarded.js':
+      'if (typeof module !== "undefined") { module.exports = function candidate() {}; }',
+    'var-wrapper.js': wrapper,
+    'explicit.mjs': wrapper,
+    'shadow.js': 'var module = {exports:{}}; module.exports = function localOnly() {};',
+    'forced.cjs': wrapper,
+    'tsconfig.json': '{"compilerOptions":{"module":"NodeNext","moduleResolution":"NodeNext"}}',
+    'mixed.ts':
+      'var module = {}; module.exports = function privateTs() {}; export default function genuineTs() {} export function namedTs() {}',
+    'typed.mts': `
+      import chosenTs, { namedTs } from './mixed.js';
+      import * as mixed from './mixed.js';
+      export function typedUse(){ chosenTs(); namedTs(); mixed.privateTs(); }
+    `,
+    'common/wrapper.js': wrapper,
+    'native.js':
+      'var module = {}; module.exports = function privateFn() {}; export function open() {} export default function real() {}',
+    'entry.mjs': `
+      import plain from './plain.js';
+      import * as guard from './guarded.js';
+      import assigned from './var-wrapper.js';
+      import * as wrap from './var-wrapper.js';
+      import explicit from './explicit.mjs';
+      import * as shadow from './shadow.js';
+      import forced from './forced.cjs';
+      import common from './common/wrapper.js';
+      import chosen, {open} from './native.js';
+      import * as native from './native.js';
+      export function probePlain(){ plain(); }
+      export function probeGuarded(){ guard.default(); }
+      export function probeDirect(){ assigned(); }
+      export function probeNamespace(){ wrap.default(); }
+      export function probeName(){ wrap.candidate(); }
+      export function probeExplicit(){ explicit(); }
+      export function probeShadow(){ shadow.default(); }
+      export function probeForced(){ forced(); }
+      export function probeCommon(){ common(); }
+      export function probeNative(){ chosen(); open(); native.privateFn(); }
+    `,
+  });
+  it('keeps the ESM publications of a NodeNext TypeScript file with a local module variable', () => {
+    const targets = getRelationships(result(), 'CALLS')
+      .filter(({ rel }) => rel.sourceId === 'Function:typed.mts:typedUse')
+      .map(({ rel }) => rel.targetId)
+      .sort();
+    expect(targets).toEqual(['Function:mixed.ts:genuineTs', 'Function:mixed.ts:namedTs']);
+  });
+  it.each([
+    ['probePlain', []],
+    ['probeGuarded', []],
+    ['probeDirect', []],
+    ['probeNamespace', []],
+    ['probeName', []],
+    ['probeExplicit', []],
+    ['probeShadow', []],
+    ['probeForced', ['Function:forced.cjs:candidate']],
+    ['probeCommon', ['Function:common/wrapper.js:candidate']],
+    ['probeNative', ['Function:native.js:open', 'Function:native.js:real']],
+  ] as const)('publishes exactly the format-specific call targets for %s', (source, expected) => {
+    const targets = getRelationships(result(), 'CALLS')
+      .filter(({ rel }) => rel.sourceId === `Function:entry.mjs:${source}`)
+      .map(({ rel }) => rel.targetId)
+      .sort();
+    expect(targets).toEqual(expected);
+  });
+});

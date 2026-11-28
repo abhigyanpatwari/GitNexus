@@ -383,12 +383,7 @@ export const dispatchChunkParseRound = async (
     const items: ParseWorkerInput[] = [];
     for (const file of group.items) {
       const lang = getLanguageForFileContent(file.path, file.content);
-      if (lang)
-        items.push({
-          path: file.path,
-          content: file.content,
-          ...(file.cacheKey === undefined ? {} : { cacheKey: file.cacheKey }),
-        });
+      if (lang) items.push(file);
     }
     return { items, chunkHash: group.chunkHash };
   });
