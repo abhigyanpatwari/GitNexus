@@ -375,6 +375,9 @@ describe('CLI end-to-end', () => {
   // an earlier sibling test's analyze cannot push this one onto the
   // alreadyUpToDate fast path, which would skip the very wiring this
   // test is here to protect.
+  //
+  // The same run guards #1194: with piped stdio (Docker without -t, CI),
+  // analyze used to print no progress at all until it finished.
   it('analyze persists meta.json AND a matching registry entry (#1169)', () => {
     const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-home-'));
     const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-repo-');
@@ -400,6 +403,13 @@ describe('CLI end-to-end', () => {
           `stderr: ${result.stderr}`,
         ].join('\n'),
       ).toBe(0);
+
+      // #1194: no terminal here, so progress arrives as plain lines, with no
+      // bar characters and no cursor controls in what is a log.
+      expect(result.stderr).toMatch(/^\s*0% \| Initializing\.\.\./m);
+      expect(result.stderr).toMatch(/^\s*100% \| Done/m);
+      expect(result.stderr).not.toMatch(/[█░]/);
+      expect(`${result.stdout}${result.stderr}`).not.toContain('\x1b');
 
       // Both metadata filenames must exist after a successful analyze:
       // gitnexus.json is the primary (what assertAnalysisFinalized checks —

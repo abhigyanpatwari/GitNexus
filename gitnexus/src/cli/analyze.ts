@@ -204,6 +204,15 @@ const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
 const RESPAWN_OUTPUT_TAIL_CHARS = 1024 * 1024;
 const RESPAWN_PROGRESS_ENV = 'GITNEXUS_RESPAWN_PROGRESS_TTY';
+/** How often analyze prints a progress line when stderr is not a terminal. */
+const PLAIN_PROGRESS_INTERVAL_MS = 10_000;
+
+/**
+ * A progress label is one line of text, yet it can carry a file name, and a
+ * file name can carry escapes or line breaks.
+ */
+const toProgressLabel = (label: string): string =>
+  label.replace(/[\r\n]+/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
 
 interface CliProgressTerminal {
   cursorSave(): void;
@@ -1666,13 +1675,27 @@ const analyzeCommandImpl = async (
     clearOnComplete: false,
     stopOnComplete: false,
   };
-  if (process.env[RESPAWN_PROGRESS_ENV] === '1' && process.stderr.isTTY !== true) {
+  const bridgesParentTty =
+    process.env[RESPAWN_PROGRESS_ENV] === '1' && process.stderr.isTTY !== true;
+  const redrawsInPlace = bridgesParentTty || process.stderr.isTTY === true;
+  if (bridgesParentTty) {
     // Heap respawn pipes stderr so the parent can classify native/OOM crashes.
     // The parent was a real TTY when it opted into this env var, so forward
     // ANSI cursor controls through the pipe instead of cli-progress' non-TTY
     // newline mode. That keeps one-line redraw UX while retaining stderr tail
     // capture for diagnostics.
     barOptions.terminal = createAnsiPipeTerminal(process.stderr);
+  }
+  if (!redrawsInPlace) {
+    // When neither stdout nor stderr is a terminal (Docker without -t, CI, both
+    // streams redirected), cli-progress prints nothing, so a long run looks
+    // hung. Print a plain line on a schedule instead; the phase's elapsed time
+    // shows it is alive. Without a line to clear, clearOnComplete only keeps
+    // stop() from ending the log on a blank line.
+    barOptions.format = '  {percentage}% | {phase}';
+    barOptions.noTTYOutput = true;
+    barOptions.notTTYSchedule = PLAIN_PROGRESS_INTERVAL_MS;
+    barOptions.clearOnComplete = true;
   }
   const bar = new cliProgress.SingleBar(barOptions, cliProgress.Presets.shades_grey);
 
@@ -1713,7 +1736,7 @@ const analyzeCommandImpl = async (
 
   // Route console output through bar.log() to prevent progress bar corruption.
   // This is a deliberate UI pattern (not a logging concern): analyze runs a
-  // long-lived progress bar on stdout; any concurrent console.* write would
+  // long-lived progress bar on stderr; any concurrent console.* write would
   // overwrite the bar mid-render. We capture originals, swap to barLog for
   // the lifetime of the run, and restore on completion/error/SIGINT.
   const origLog = console.log.bind(console);
@@ -1723,7 +1746,8 @@ const analyzeCommandImpl = async (
   const origError = console.error.bind(console);
   let barCurrentValue = 0;
   const barLog = (...args: unknown[]) => {
-    process.stdout.write('\x1b[2K\r');
+    // Clearing the bar's line only means something where the bar is redrawn.
+    if (redrawsInPlace) process.stdout.write('\x1b[2K\r');
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
     bar.update(barCurrentValue);
   };
@@ -1738,7 +1762,8 @@ const analyzeCommandImpl = async (
   let lastPhaseLabel = 'Initializing...';
   let phaseStart = Date.now();
 
-  const updateBar = (value: number, phaseLabel: string) => {
+  const updateBar = (value: number, rawLabel: string) => {
+    const phaseLabel = toProgressLabel(rawLabel);
     barCurrentValue = value;
     if (phaseLabel !== lastPhaseLabel) {
       lastPhaseLabel = phaseLabel;
