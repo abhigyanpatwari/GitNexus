@@ -301,6 +301,16 @@ describe('heritageTypeArgumentsKey', () => {
 });
 
 describe('typeApplicationArguments', () => {
+  it('retains the arguments between lifetimes separated by a line comment', () => {
+    expect(typeApplicationArguments("Base<'a, T, // comment\n'b, U, 'c>")).toEqual([
+      "'a",
+      'T',
+      "'b",
+      'U',
+      "'c",
+    ]);
+  });
+
   it('keeps tuple and nested tuple commas inside one type argument', () => {
     expect(typeApplicationArguments('Base<(int, string)>')).toEqual(['(int, string)']);
     expect(typeApplicationArguments('Base<(int, (string, bool)), byte>')).toEqual([
