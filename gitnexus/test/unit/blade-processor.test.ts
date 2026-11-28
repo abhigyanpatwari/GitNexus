@@ -43,6 +43,15 @@ describe('extractBladeViewReferences', () => {
     expect(views).toEqual(['partials.item', 'partials.plain', 'partials.card']);
   });
 
+  it('reads only the values of an @includeFirst array, never its keys', () => {
+    const { views } = extractBladeViewReferences(`
+@includeFirst(['label' => 'partials.nav', 'fallback' => "partials.menu"])
+@includeFirst(array('custom.header', 'partials.header'), ['title' => 'Home'])
+@includeFirst($candidates)
+`);
+    expect(views).toEqual(['partials.nav', 'partials.menu', 'custom.header', 'partials.header']);
+  });
+
   it('ignores directives and component tags inside @verbatim blocks', () => {
     const result = extractBladeViewReferences(`
 @verbatim
