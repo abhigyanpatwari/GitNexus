@@ -25,6 +25,11 @@ export type ResolutionSuppressionReason =
    *  than as exact, since a dropped site's callee is by definition unknown
    *  and cannot be attributed to any target. */
   | 'receiver-unresolved'
+  /** A free call whose name is blocked because its bindings compete and the
+   *  provider declined to pick one (`NameClaim.competing`). The missing edge is
+   *  intended; recording the drop lets `impact()`/`context()` report the lost
+   *  caller as a lower bound. See `summarizeCompetingBindingDrops`. */
+  | 'competing-binding-barrier'
   /** DART-11 — the receiver is a bare name whose NEAREST binder declares it
    *  without a type, so the type walk stopped there instead of borrowing an
    *  enclosing scope's type for the same spelling. `declineDetail` says why

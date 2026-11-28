@@ -22,7 +22,7 @@ const references = Array.from({ length: 30 }, (_, i) => ({
 const diagnostics = {
   epistemic: 'lower-bound',
   boundaries: ['Dynamic dispatch may omit callers.'],
-  causes: { receiverTyping: 2, dispatchBoundary: 1 },
+  causes: { receiverTyping: 2, dispatchBoundary: 1, competingBindings: 0 },
   staleness: { status: 'behind', commitsBehind: 1, hint: 'Run gitnexus analyze.' },
 };
 const cases: Array<{ name: string; tool: string; args: Record<string, unknown>; result: unknown }> =

@@ -58,6 +58,7 @@ import {
   logUnresolvedReceiverFiles,
   summarizeUnresolvedReceivers,
 } from './ingestion/scope-resolution/unresolved-receivers.js';
+import { summarizeCompetingBindingDrops } from './ingestion/scope-resolution/competing-binding-drops.js';
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import { summarizeUnresolvedOverloads } from './ingestion/scope-resolution/unresolved-overloads.js';
@@ -6172,6 +6173,7 @@ async function runFullAnalysisInner(
       schemaFingerprint:
         options.graphPublication || hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      competingBindingDrops: summarizeCompetingBindingDrops(resolutionOutcomes),
       // Resolution runs again on warm parse-cache hits. Replace the receipt,
       // including complete-empty, so corrected/deleted source clears old gaps.
       unresolvedOverloads: summarizeUnresolvedOverloads(

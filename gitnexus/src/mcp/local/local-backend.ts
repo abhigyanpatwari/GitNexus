@@ -193,6 +193,10 @@ import {
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
+  lookupCompetingBindingDropCount,
+  type CompetingBindingDropSummary,
+} from '../../core/ingestion/scope-resolution/competing-binding-drops.js';
+import {
   probeOverloadBoundaries,
   type OverloadBoundary,
 } from '../../core/ingestion/scope-resolution/unresolved-overloads.js';
@@ -865,6 +869,13 @@ export interface EpistemicCauses {
    */
   readonly receiverTyping: number;
   /**
+   * Call SITES dropped at index time because the invoked name's bindings
+   * compete (e.g. an import with a `try/except ImportError` fallback) and the
+   * provider declined to pick one. Unit: call sites, taken from the index's
+   * `competingBindingDrops` summary — the same number the prose note quotes.
+   */
+  readonly competingBindings: number;
+  /**
    * Unique call sites whose overload or implementation targets were unresolved.
    * Counted once across all queried candidates. A partial/unverified receipt
    * can report zero with a boundary note; zero alone does not prove completeness.
@@ -975,6 +986,7 @@ function mergeOverloadBoundary(
     causes: {
       scopeExtractionFiles: 0,
       receiverTyping: 0,
+      competingBindings: 0,
       dispatchBoundary: 0,
       externalBoundary: 0,
       undecidedSatisfaction: 0,
@@ -988,6 +1000,7 @@ function mergeOverloadBoundary(
 function epistemicFrom(dropped: {
   notes: readonly string[];
   sites: number;
+  competing: number;
   external: number;
   undecided: number;
   dispatch: number;
@@ -1008,6 +1021,7 @@ function epistemicFrom(dropped: {
           causes: {
             scopeExtractionFiles: dropped.scopeExtraction,
             receiverTyping: 0,
+            competingBindings: 0,
             dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
             undecidedSatisfaction: 0,
@@ -1025,6 +1039,7 @@ function epistemicFrom(dropped: {
         causes: {
           scopeExtractionFiles: dropped.scopeExtraction,
           receiverTyping: dropped.sites,
+          competingBindings: dropped.competing,
           dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
@@ -1096,6 +1111,44 @@ function unresolvedReceiverBoundaries(
     ],
     sites,
     external,
+  };
+}
+
+/**
+ * Boundary notes for free calls dropped at a competing-binding barrier, when
+ * the queried symbol's name is among them. A sibling of
+ * `unresolvedReceiverBoundaries` rather than a branch of it: the receiver was
+ * never the problem here, so that note's wording would misstate the cause.
+ * Truncation is handled the same way.
+ */
+function competingBindingBoundaries(
+  summary: CompetingBindingDropSummary | undefined,
+  symName: string,
+): { notes: string[]; competing: number } {
+  if (symName.length === 0) return { notes: [], competing: 0 };
+  const sites = lookupCompetingBindingDropCount(summary, symName);
+  if (sites === undefined) {
+    const omittedNames = summary?.omittedNames ?? 0;
+    return {
+      notes:
+        Number.isSafeInteger(omittedNames) && omittedNames > 0
+          ? [
+              `The competing-binding drop summary was truncated, so the dropped-call count ` +
+                `for \`${symName}\` cannot be determined. Actual impact may be higher.`,
+            ]
+          : [],
+      competing: 0,
+    };
+  }
+  return {
+    notes: [
+      `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
+        sites === 1 ? 'was' : 'were'
+      } dropped because the name has competing bindings (e.g. a try/except ` +
+        `ImportError fallback), so no single target could be chosen. Those ` +
+        `callers are absent from this result — actual impact may be higher.`,
+    ],
+    competing: sites,
   };
 }
 
@@ -8630,6 +8683,13 @@ export class LocalBackend {
       meta = undefined;
     }
     const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
+    // Free calls a competing-binding barrier dropped. Upstream only, like the
+    // value-reference probe below: a lost CALLER of this name says nothing
+    // about what this symbol itself reaches.
+    const competingDrops =
+      direction === 'downstream'
+        ? { notes: [] as string[], competing: 0 }
+        : competingBindingBoundaries(meta?.competingBindingDrops, symName);
     // Declined property references affect incoming completeness in BOTH tools.
     // The stable id covers older DBs whose label probe returns an empty string;
     // a same-named callable must not inherit a property's warning.
@@ -8711,12 +8771,14 @@ export class LocalBackend {
       ...receiverDrops,
       notes: [
         ...receiverDrops.notes,
+        ...competingDrops.notes,
         ...scopeExtractionDrops.notes,
         ...undecidedDrops.notes,
         ...valueRefDrops.notes,
         ...(crossLanguageAnchor.unresolved ? [crossLanguageAnchor.unresolved] : []),
         ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
       ],
+      competing: competingDrops.competing,
       undecided: undecidedDrops.undecided,
       // Endpoint/probe evidence proves incompleteness but does not expose a
       // count of omitted symbols. Keep the magnitude at zero rather than
@@ -8830,6 +8892,7 @@ export class LocalBackend {
           causes: {
             scopeExtractionFiles: droppedBoundaries.scopeExtraction,
             receiverTyping: droppedBoundaries.sites,
+            competingBindings: droppedBoundaries.competing,
             dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
             externalBoundary: droppedBoundaries.external,
             undecidedSatisfaction: droppedBoundaries.undecided,
