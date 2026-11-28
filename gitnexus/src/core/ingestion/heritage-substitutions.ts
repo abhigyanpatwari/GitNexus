@@ -34,6 +34,7 @@ interface NullableOwner {
   declaration: SymbolDefinition;
   specialize?: ScopeResolver['specializeNullableHeritageFormal'];
   qualifiedPattern?: ScopeResolver['qualifiedHeritageTypePattern'];
+  operands?: ScopeResolver['heritageTypeOperands'];
   normalize?: ScopeResolver['normalizeNullableHeritageSignature'];
   needsNormalization?: ScopeResolver['needsHeritageTypeNormalization'];
 }
@@ -62,6 +63,7 @@ function specializeType(
   local?: ReadonlySet<string>,
   nullableOwner?: NullableOwner,
   qualifiedPattern?: ScopeResolver['qualifiedHeritageTypePattern'],
+  operands?: ScopeResolver['heritageTypeOperands'],
 ): string | null {
   if (type.length > maxExpandedTypeLength) return null;
   if (!bindings?.size || local?.has(type)) return type;
@@ -78,12 +80,18 @@ function specializeType(
   const direct = resolveOperand(type);
   if (direct !== undefined)
     return direct !== null && direct.length <= maxExpandedTypeLength ? direct : null;
-  const pattern = compositeType.test(type) ? namedType : qualifiedPattern?.(type, bindings, local);
-  if (!pattern) return type;
+  let sites = operands?.(type, bindings, local);
+  if (sites === undefined) {
+    const pattern = compositeType.test(type)
+      ? namedType
+      : qualifiedPattern?.(type, bindings, local);
+    if (!pattern) return type;
+    sites = type.matchAll(pattern);
+  }
   let length = type.length;
   let end = 0;
   const parts: string[] = [];
-  for (const match of type.matchAll(pattern)) {
+  for (const match of sites) {
     const name = match[0];
     const offset = match.index;
     const actual = resolveOperand(name);
@@ -120,10 +128,21 @@ export class HeritageSubstitutions {
   private readonly nullableEdges = new Set<string>();
   private readonly nullableOwners = new Map<string, NullableOwner>();
   private readonly declaredMethodTypes = new Map<string, string[] | null>();
+  private scopedOverrides?: Map<string, { parameters?: string[] | null; result?: string[] | null }>;
   private readonly methodParameters = new Map<string, ReadonlySet<string>>();
 
   get hasBindings(): boolean {
     return this.edges.size > 0;
+  }
+
+  get hasOverrideTypes(): boolean {
+    return (
+      this.hasBindings || Boolean(this.scopedOverrides?.size) || this.methodParameters.size > 0
+    );
+  }
+
+  methodTypeParameters(id: string): ReadonlySet<string> | undefined {
+    return this.methodParameters.get(id);
   }
 
   get hasNullableBindings(): boolean {
@@ -164,6 +183,7 @@ export class HeritageSubstitutions {
             undefined,
             undefined,
             provider?.qualifiedHeritageTypePattern,
+            provider?.heritageTypeOperands,
           ),
         );
     }
@@ -196,6 +216,7 @@ export class HeritageSubstitutions {
       normalize: provider.normalizeNullableHeritageSignature,
       needsNormalization: provider.needsHeritageTypeNormalization,
       qualifiedPattern: provider.qualifiedHeritageTypePattern,
+      operands: provider.heritageTypeOperands,
     });
   }
 
@@ -204,9 +225,16 @@ export class HeritageSubstitutions {
     def: SymbolDefinition,
     useDeclaredTypes = false,
     scopedTypes?: string[] | null,
+    scopedOverride = false,
+    result?: string | null,
   ) {
-    if (scopedTypes !== undefined) this.declaredMethodTypes.set(id, scopedTypes);
-    else if (useDeclaredTypes && def.declaredParameterTypes) {
+    if (scopedOverride) {
+      (this.scopedOverrides ??= new Map()).set(id, {
+        parameters: scopedTypes,
+        result: typeof result === 'string' ? [result] : result,
+      });
+    } else if (scopedTypes !== undefined) this.declaredMethodTypes.set(id, scopedTypes);
+    if (scopedTypes === undefined && useDeclaredTypes && def.declaredParameterTypes) {
       this.declaredMethodTypes.set(id, def.declaredParameterTypes);
     }
     if (def.typeParameters?.length) {
@@ -237,7 +265,14 @@ export class HeritageSubstitutions {
                 formal,
                 actual === null
                   ? null
-                  : specializeType(actual, outer, undefined, context, metadata?.qualifiedPattern),
+                  : specializeType(
+                      actual,
+                      outer,
+                      undefined,
+                      context,
+                      metadata?.qualifiedPattern,
+                      metadata?.operands,
+                    ),
               );
             }
             const addedPath = path !== undefined && !nullablePaths?.has(base);
@@ -260,14 +295,25 @@ export class HeritageSubstitutions {
     };
     const { bindingsByOwner, nullablePaths } = compose(false);
     let normalized: ReturnType<typeof compose> | undefined;
-    return (owner: string, method: string, types: string[], contract = owner): string[] | null => {
+    return (
+      owner: string,
+      method: string,
+      types: string[],
+      contract = owner,
+      useDeclaredParameters = true,
+    ): string[] | null => {
       // A nullable base on another branch supplies no evidence about this method.
       const path = nullablePaths?.get(contract) ?? nullablePaths?.get(owner);
       const bindings =
         path && this.normalizedEdges.size
           ? (normalized ??= compose(true)).bindingsByOwner.get(owner)
           : bindingsByOwner.get(owner);
-      const declared = path ? this.declaredMethodTypes.get(method) : undefined;
+      const scoped = this.scopedOverrides?.get(method);
+      const ownTypes = useDeclaredParameters ? scoped?.parameters : scoped?.result;
+      const declared =
+        ownTypes === undefined && path && useDeclaredParameters
+          ? this.declaredMethodTypes.get(method)
+          : ownTypes;
       if (declared === null) return null;
       const exact = declared ?? types;
       const metadata = this.nullableOwners.get(owner);
@@ -282,7 +328,14 @@ export class HeritageSubstitutions {
       const local = this.methodParameters.get(method);
       const specialized: string[] = [];
       for (const type of exact) {
-        const result = specializeType(type, bindings, local, context, metadata?.qualifiedPattern);
+        const result = specializeType(
+          type,
+          bindings,
+          local,
+          context,
+          metadata?.qualifiedPattern,
+          metadata?.operands,
+        );
         if (result === null) return null;
         // Direct generic methods can contain a completed type even when the
         // base arguments themselves need no declaration-scoped normalization.

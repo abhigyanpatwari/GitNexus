@@ -2047,6 +2047,15 @@ export interface ScopeResolver {
   /** This composite requires the provider’s canonical spelling for heritage comparison. */
   readonly needsHeritageTypeNormalization?: (type: string) => boolean;
 
+  /** A composite method signature needs the names bound in its own declaration. */
+  readonly needsScopedOverrideType?: (type: string) => boolean;
+  /** Provider-recognized type operand sites when a composite also declares identifiers. */
+  readonly heritageTypeOperands?: (
+    type: string,
+    bindings: ReadonlyMap<string, string | null>,
+    shadowed?: ReadonlySet<string>,
+  ) => Iterable<RegExpExecArray> | undefined;
+
   /** Specialize an outer nullable formal according to its declaration's constraints. */
   readonly specializeNullableHeritageFormal?: (
     owner: SymbolDefinition,

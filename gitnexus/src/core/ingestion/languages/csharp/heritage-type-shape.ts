@@ -1,3 +1,4 @@
+import { canonicalName } from './identifiers.js';
 import { typeApplicationArguments } from '../../utils/template-arguments.js';
 
 export interface NominalName {
@@ -44,18 +45,33 @@ function arraySuffix(type: string): { element: string; ranks: string[] } | undef
   return { element: type.slice(0, end), ranks };
 }
 
+export const csharpParameterMode = /^(?:ref|out|in|this)\s+/u;
+
+interface TupleElements {
+  visit(label: string | undefined, offset: number, length: number): void;
+  omitLabels?: boolean;
+}
+
+// Read an identifier only in a tuple-element name position. The preceding slice
+// must independently parse as a complete type (including nested tuples/arrays).
+// Anchor the start at a token boundary so an unnamed long identifier is scanned
+// once. A verbatim identifier may immediately follow a type (int@name).
+const trailingLabel =
+  /((?:(?<=[\p{ID_Continue}\s>\])?])@|(?<=[\s>\])?]))(?:[_\p{ID_Start}]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})(?:[_\p{ID_Continue}]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*)$/u;
 /** CLR comparison spelling for named, constructed, array and tuple types. */
 export function renderCsharpHeritageType(
   type: string,
   resolveName: (name: string) => NominalName | undefined = (name) => ({ name }),
   preserveRankBoundaries = false,
+  tupleElements?: TupleElements,
 ): string | undefined {
-  const render = (spelling: string, depth: number): string | undefined => {
+  const render = (spelling: string, depth: number, offset: number): string | undefined => {
     if (depth > 64) return undefined;
     const text = spelling.trim();
+    if (tupleElements) offset += spelling.indexOf(text);
     const array = (text.endsWith(']') || text.endsWith('?')) && arraySuffix(text);
     if (array) {
-      const element = render(array.element, depth + 1);
+      const element = render(array.element, depth + 1, offset);
       // During substitution every rank is its own (reference-annotated) production.
       // Appending a formal's outer rank then wraps an array-valued actual without
       // reversing their order. The final comparison omits these annotations.
@@ -81,14 +97,35 @@ export function renderCsharpHeritageType(
       )
         return undefined;
       const rendered: string[] = [];
+      let position = tupleElements ? (tuple ? 1 : text.indexOf('<') + 1) : 0;
       for (const arg of args) {
-        const value = render(arg, depth + 1);
+        let start = 0;
+        if (tupleElements) {
+          start = text.indexOf(arg, position);
+          if (start < 0) return undefined;
+          position = start + arg.length;
+        }
+        let operand = arg;
+        let label: RegExpExecArray | null = null;
+        if (tuple) {
+          const tail = trailingLabel.exec(arg);
+          if (tail) {
+            label = tail;
+            operand = arg.slice(0, tail.index);
+          }
+          tupleElements?.visit(
+            label ? canonicalName(label[1]) : undefined,
+            offset + start + (label?.index ?? 0),
+            label?.[1].length ?? 0,
+          );
+        }
+        const value = render(operand, depth + 1, offset + start);
         if (!value) return undefined;
-        rendered.push(value);
+        rendered.push(label && !tupleElements?.omitLabels ? value + ' ' + label[1] : value);
       }
       result += (tuple ? '(' : '<') + rendered.join(',') + (tuple ? ')' : '>');
     }
     return (tuple ? tuple[2] : nominal?.[3] && !name?.reference) ? result + '?' : result;
   };
-  return render(type, 0);
+  return render(type, 0, 0);
 }

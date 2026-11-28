@@ -16,6 +16,8 @@ import {
 } from '../../scope-resolution/scope/walkers.js';
 import {
   csharpQualifiedHeritageTypePattern,
+  csharpTupleTypeOperands,
+  csharpTupleNeedsScope,
   populateCsharpNamespacePrefixes,
 } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -109,7 +111,9 @@ const csharpScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => csharpArityCompatibility(def, callsite),
 
   qualifiedHeritageTypePattern: csharpQualifiedHeritageTypePattern,
-  needsHeritageTypeNormalization: (type) => type.includes('['),
+  heritageTypeOperands: csharpTupleTypeOperands,
+  needsScopedOverrideType: csharpTupleNeedsScope,
+  needsHeritageTypeNormalization: (type) => type.includes('[') || type.includes('('),
   specializeNullableHeritageFormal: specializeCsharpNullableFormal,
   normalizeNullableHeritageSignature: normalizeCsharpNullableSignature,
 

@@ -10,8 +10,9 @@
  * constructor resolver can break a same-tail collision (`new B.Foo()` with both
  * `A.Foo` and `B.Foo`) by matching the explicit qualifier against the sidecar.
  */
-import { renderCsharpHeritageType } from './heritage-type-shape.js';
+import { csharpParameterMode, renderCsharpHeritageType } from './heritage-type-shape.js';
 import { isCsharpReservedTypeKeyword } from './identifiers.js';
+import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 
@@ -102,4 +103,42 @@ export function csharpQualifiedHeritageTypePattern(
   return type.includes('::') && stableType(type, bindings, shadowed)
     ? nullableQualifiedNames
     : undefined;
+}
+
+/** Labels share C# identifier syntax, but only type operands can name a formal. */
+export const csharpTupleTypeOperands: NonNullable<ScopeResolver['heritageTypeOperands']> = (
+  type,
+  bindings,
+  shadowed,
+) => {
+  if (!type.includes('(')) return undefined;
+  const mode = csharpParameterMode.exec(type)?.[0] ?? '';
+  const operand = type.slice(mode.length);
+  const labels: { start: number; end: number }[] = [];
+  const shape = renderCsharpHeritageType(operand, undefined, false, {
+    visit(label, offset, length) {
+      if (label !== undefined)
+        labels.push({ start: mode.length + offset, end: mode.length + offset + length });
+    },
+  });
+  if (!labels.length) return undefined;
+  if (!shape) return [];
+  if (operand.includes('::') && !stableType(operand, bindings, shadowed)) return [];
+  labels.sort((a, b) => a.start - b.start);
+  let at = 0;
+  return [...type.matchAll(nullableQualifiedNames)].filter((match) => {
+    while (at < labels.length && labels[at].end <= match.index) at++;
+    return match.index >= mode.length && (at === labels.length || match.index < labels[at].start);
+  });
+};
+
+export function csharpTupleNeedsScope(type: string): boolean {
+  if (!type.includes('(')) return false;
+  const mode = csharpParameterMode.exec(type)?.[0] ?? '';
+  let localName = false;
+  const shape = renderCsharpHeritageType(type.slice(mode.length), (name) => {
+    if (!isStableCsharpTypeName(name)) localName = true;
+    return { name };
+  });
+  return shape !== undefined && localName;
 }

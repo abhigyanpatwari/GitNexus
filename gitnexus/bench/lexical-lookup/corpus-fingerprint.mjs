@@ -8,6 +8,7 @@ export function checkoutFingerprint(repo) {
     cwd: repo,
     maxBuffer: 64 * 1024 * 1024,
   });
+  if (!Buffer.isBuffer(entries)) throw new TypeError('git ls-files must return raw bytes');
   const hash = createHash('sha256');
   for (let start = 0; start < entries.length; ) {
     const end = entries.indexOf(0, start);

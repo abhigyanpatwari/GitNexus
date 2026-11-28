@@ -22,7 +22,7 @@
 import type { HeritageSubstitutions } from './heritage-substitutions.js';
 import { KnowledgeGraph } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, type GraphNode } from 'gitnexus-shared';
 import { getProvider } from './languages/index.js';
 import { c3Linearize, depthFirstAncestors, gatherAncestors } from './model/resolve.js';
 
@@ -389,11 +389,13 @@ export function computeMRO(
     // instead of re-walking the hierarchy (and re-reading every ancestor method node)
     // once per own method.
     const specialize = substitutions?.forClass(classId, parentMap);
+    const overrideSignature = provider.overrideSignature;
     type AncestorMethod = {
       methodId: string;
       paramTypes: string[];
       paramCount?: number;
       isStatic?: boolean;
+      overrideSignature?: GraphNode['properties'];
     };
     type AncestorLevel = {
       ownerId: string;
@@ -425,6 +427,8 @@ export function computeMRO(
             paramTypes,
             paramCount: mn.properties.parameterCount as number | undefined,
           };
+          if (overrideSignature?.applies(paramTypes, mn.properties.returnType))
+            entry.overrideSignature = mn.properties;
           const bucket = methodsByName.get(mn.properties.name);
           if (bucket) bucket.push(entry);
           else methodsByName.set(mn.properties.name, [entry]);
@@ -458,15 +462,51 @@ export function computeMRO(
         const ownParamTypes = specialize
           ? specialize(classId, methodId, declared, ownerId)
           : declared;
-        const matches = sameName.filter(
-          (m) =>
-            compatibleMethodReceivers(
+        const ownSignature =
+          ownParamTypes &&
+          overrideSignature?.applies(ownParamTypes, methodNode.properties.returnType);
+        let blocked = false;
+        const matches = sameName.filter((m) => {
+          if (
+            !compatibleMethodReceivers(
               provider.separateStaticAndInstanceMethods,
               methodNode.properties.isStatic,
               m.isStatic,
-            ) &&
-            parameterTypesMatch(ownParamTypes, m.paramTypes, ownParamCount, m.paramCount).match,
-        );
+            )
+          )
+            return false;
+          if (
+            overrideSignature &&
+            (ownSignature || m.overrideSignature) &&
+            ownParamTypes !== null
+          ) {
+            const ownReturn = methodNode.properties.returnType;
+            const baseMethod = m.overrideSignature ?? graph.getNode(m.methodId)?.properties;
+            if (!baseMethod) return false;
+            const baseReturn = baseMethod.returnType;
+            const verdict = overrideSignature.compare({
+              overriding: ownParamTypes,
+              inherited: m.paramTypes,
+              ownMethod: methodNode.properties,
+              baseMethod,
+              ownFormals: substitutions?.methodTypeParameters(methodId),
+              baseFormals: substitutions?.methodTypeParameters(m.methodId),
+              specializeReturns: () => [
+                specialize && ownReturn
+                  ? specialize(classId, methodId, [ownReturn], ownerId, false)?.[0]
+                  : ownReturn,
+                specialize && baseReturn
+                  ? specialize(ownerId, m.methodId, [baseReturn], ownerId, false)?.[0]
+                  : baseReturn,
+              ],
+            });
+            if (verdict === 'blocked') blocked = true;
+            if (verdict !== undefined) return verdict === 'match';
+          }
+          return parameterTypesMatch(ownParamTypes, m.paramTypes, ownParamCount, m.paramCount)
+            .match;
+        });
+        if (matches.length === 0 && blocked) break;
         if (matches.length === 0) continue; // name present but no signature match — look deeper
         // Emit only when the match is unambiguous (exactly one candidate); >1 means the
         // override target cannot be pinned, so emit nothing. Either way stop — a closer

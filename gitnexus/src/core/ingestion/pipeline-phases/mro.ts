@@ -47,7 +47,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
     );
     const mroResult = computeMRO(
       ctx.graph,
-      heritageSubstitutions?.hasBindings ? heritageSubstitutions : undefined,
+      heritageSubstitutions?.hasOverrideTypes ? heritageSubstitutions : undefined,
     );
 
     if (isDev && mroResult.entries.length > 0) {

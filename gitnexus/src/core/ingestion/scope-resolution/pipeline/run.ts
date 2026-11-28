@@ -498,6 +498,7 @@ function preEmitInheritanceEdges(
   recordSourceBinding?: SourceBindingRecorder,
   substitutions?: HeritageSubstitutions,
   scopedEdges?: ScopedHeritageEdge[],
+  scopedOverrideOwners?: Set<string>,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -567,6 +568,10 @@ function preEmitInheritanceEdges(
       site.heritageKind ??
       (targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS');
     emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
+    if (scopedOverrideOwners && edgeType === 'EXTENDS') {
+      scopedOverrideOwners.add(callerClass.nodeId);
+      scopedOverrideOwners.add(targetDef.nodeId);
+    }
     // The instantiation this heritage clause wrote (`: IValidator<string>`),
     // keyed by the same graph-id pair the edge itself carries. Only generic
     // bases produce an entry; the sink owns the first-writer-wins rule.
@@ -1262,6 +1267,10 @@ export function runScopeResolution(
     provider.normalizeNullableHeritageSignature && input.heritageSubstitutions
       ? ([] as ScopedHeritageEdge[])
       : undefined;
+  // A declaration can affect class override lookup only at an endpoint of a
+  // resolved EXTENDS edge. Capture both owners while their DefIds are in hand.
+  const scopedOverrideOwners =
+    input.heritageSubstitutions && provider.needsScopedOverrideType ? new Set<string>() : undefined;
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
     : preEmitInheritanceEdges(
@@ -1274,6 +1283,7 @@ export function runScopeResolution(
         recordSourceBinding,
         input.heritageSubstitutions,
         scopedEdges,
+        scopedOverrideOwners,
       );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
@@ -1374,7 +1384,9 @@ export function runScopeResolution(
     });
   }
 
-  if (input.heritageSubstitutions?.hasBindings) {
+  const hasHeritageBindings = input.heritageSubstitutions?.hasBindings;
+  const scopedOverrideType = scopedOverrideOwners?.size && provider.needsScopedOverrideType;
+  if (input.heritageSubstitutions && (hasHeritageBindings || scopedOverrideType)) {
     const nullableBindings =
       input.heritageSubstitutions.hasNullableBindings &&
       provider.specializeNullableHeritageFormal !== undefined;
@@ -1413,32 +1425,63 @@ export function runScopeResolution(
       const useDeclaredTypes = nullableBindings && def.declaredParameterTypes !== undefined;
       const declared = def.declaredParameterTypes ?? def.parameterTypes;
       let scopedTypes: string[] | null | undefined;
-      if (
-        normalize &&
-        declared &&
-        def.declarationRange &&
-        def.ownerId &&
-        participates(def.ownerId)
-      ) {
+      let scopedResult: string | null | undefined;
+      const overrideOwner = def.ownerId !== undefined && scopedOverrideOwners?.has(def.ownerId);
+      const scopeOverride =
+        scopedOverrideType &&
+        overrideOwner &&
+        (declared?.some(scopedOverrideType) ||
+          (def.returnType && scopedOverrideType(def.returnType)));
+      const normalizeHere = scopeOverride
+        ? provider.normalizeNullableHeritageSignature
+        : normalize && def.ownerId && participates(def.ownerId)
+          ? normalize
+          : undefined;
+      if (normalizeHere && def.declarationRange) {
         const scope = makeScopeId({
           filePath: def.filePath,
           range: def.declarationRange,
           kind: 'Function',
         });
         if (finalized.scopeTree.has(scope)) {
-          for (const [i, type] of declared.entries()) {
-            const normalized = normalize(type, { scope, indexes });
-            if (normalized === null) {
-              scopedTypes = null;
-              break;
+          if (declared)
+            for (const [i, type] of declared.entries()) {
+              const normalized = normalizeHere(type, { scope, indexes });
+              if (normalized === null) {
+                scopedTypes = null;
+                break;
+              }
+              if (normalized !== type) (scopedTypes ??= [...declared])[i] = normalized;
             }
-            if (normalized !== type) (scopedTypes ??= [...declared])[i] = normalized;
+          if (scopeOverride && def.returnType) {
+            const normalized = normalizeHere(def.returnType, { scope, indexes });
+            if (normalized !== def.returnType) scopedResult = normalized;
           }
         }
       }
-      if (!def.typeParameters?.length && !useDeclaredTypes && scopedTypes === undefined) continue;
+      const retainFormals =
+        def.typeParameters?.length &&
+        (hasHeritageBindings ||
+          (overrideOwner &&
+            provider.languageProvider.overrideSignature?.applies(declared ?? [], def.returnType)));
+      if (
+        !retainFormals &&
+        !useDeclaredTypes &&
+        scopedTypes === undefined &&
+        scopedResult === undefined
+      )
+        continue;
       const id = resolveDefGraphId(def.filePath, def, nodeLookup);
-      if (id) input.heritageSubstitutions.registerMethod(id, def, useDeclaredTypes, scopedTypes);
+      if (id) {
+        input.heritageSubstitutions.registerMethod(
+          id,
+          def,
+          useDeclaredTypes,
+          scopedTypes,
+          Boolean(scopeOverride && (scopedTypes !== undefined || scopedResult !== undefined)),
+          scopedResult,
+        );
+      }
     }
   }
 

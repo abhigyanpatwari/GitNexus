@@ -79,7 +79,8 @@ function blockHandlerIds(result: PipelineResult): Map<string, string> {
 
 const parseIdentity = await runtimeParseIdentity();
 
-describe('JavaScript and TypeScript SDK tool registrations', () => {
+// The Node test runner owns completion and reports failures for every registered test.
+void describe('JavaScript and TypeScript SDK tool registrations', () => {
   let result: PipelineResult;
   const unresolved = [
     'inline_callback',
@@ -99,7 +100,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
   );
 
   for (const extension of ['ts', 'js'])
-    it(`does not emit tools for a destructured method replacement in ${extension}`, async () => {
+    void it(`does not emit tools for a destructured method replacement in ${extension}`, async () => {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-tool-write-'));
       try {
         fs.writeFileSync(
@@ -122,7 +123,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     });
 
   for (const extension of ['ts', 'js'])
-    it(
+    void it(
       `preserves namespace registrations through cold/warm ${extension} parsing`,
       { timeout: 120_000 },
       async () => {
@@ -199,7 +200,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
       },
     );
 
-  it('discovers ordinary server files alongside deduplicated object manifests', () => {
+  void it('discovers ordinary server files alongside deduplicated object manifests', () => {
     assert.deepEqual(
       getNodesByLabel(result, 'Tool'),
       [
@@ -235,7 +236,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     assert.equal(tools.get('inline_callback')?.description, '');
   });
 
-  it('uses actual emitted callable nodes for supported local handlers', () => {
+  void it('uses actual emitted callable nodes for supported local handlers', () => {
     const edges = getRelationships(result, 'HANDLES_TOOL');
     for (const [tool, handler] of [
       ['search-files', 'searchFiles'],
@@ -253,7 +254,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     assert.deepEqual(findDanglingEdges(result, ['HANDLES_TOOL', 'ENTRY_POINT_OF']), []);
   });
 
-  it('links each same-file named handler only to its own execution flow', () => {
+  void it('links each same-file named handler only to its own execution flow', () => {
     const edges = getRelationships(result, 'ENTRY_POINT_OF').filter(
       (edge) => edge.sourceLabel === 'Tool',
     );
@@ -272,7 +273,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     }
   });
 
-  it('keeps unresolved callbacks at file attribution without unrelated same-file flows', () => {
+  void it('keeps unresolved callbacks at file attribution without unrelated same-file flows', () => {
     const handles = getRelationships(result, 'HANDLES_TOOL');
     const flows = getRelationships(result, 'ENTRY_POINT_OF');
     assert.equal(
@@ -294,7 +295,7 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     }
   });
 
-  it(
+  void it(
     'preserves tool metadata, handler identities, and flow attribution on warm replay',
     { timeout: 120_000 },
     async () => {

@@ -9,12 +9,13 @@ import { bindsTypeParameter, lookupNameClaim } from '../../scope-resolution/scop
 
 import { isStableCsharpTypeName } from './qualified-type-names.js';
 import {
+  csharpParameterMode,
   csharpScalarType,
   renderCsharpHeritageType,
   type NominalName,
 } from './heritage-type-shape.js';
 
-export const csharpParameterMode = /^(?:ref|out|in|this)\s+/u;
+export { csharpParameterMode } from './heritage-type-shape.js';
 
 interface NullableConstraints {
   valueParameters?: string[];
@@ -136,7 +137,7 @@ export const normalizeCsharpNullableSignature: NonNullable<
     const mode = csharpParameterMode.exec(builtin)?.[0] ?? '';
     const operand = builtin.slice(mode.length);
     const composite =
-      operand.includes('[') &&
+      (operand.includes('[') || operand.includes('(')) &&
       renderCsharpHeritageType(operand, (name) =>
         isStableCsharpTypeName(name) ? { name } : undefined,
       );

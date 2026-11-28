@@ -616,6 +616,20 @@ interface LanguageProviderConfig {
   readonly mroStrategy?: MroStrategy;
   /** Static and instance methods have separate override and implementation contracts. */
   readonly separateStaticAndInstanceMethods?: boolean;
+  /** Compare language-specific override annotations after ordinary type substitution.
+   * A nearer CLR/ABI-identical slot can prohibit fallback to a deeper ancestor. */
+  readonly overrideSignature?: {
+    applies(types: readonly string[], returnType: string | undefined): boolean;
+    compare(context: {
+      overriding: readonly string[];
+      inherited: readonly string[];
+      ownMethod: GraphNode['properties'];
+      baseMethod: GraphNode['properties'];
+      ownFormals?: ReadonlySet<string>;
+      baseFormals?: ReadonlySet<string>;
+      specializeReturns: () => readonly [string | undefined, string | undefined];
+    }): 'match' | 'different' | 'blocked' | undefined;
+  };
 
   // ── Language-specific extraction hooks ────────────────────────────
   /** Call extractor for extracting call site information (calledName, callForm,
