@@ -15,6 +15,7 @@
  * `@type-binding.type`.
  */
 
+import { publishedNamespaceMember } from '../../scope-resolution/scope/published-namespace-member.js';
 import type {
   CaptureMatch,
   ParsedImport,
@@ -311,9 +312,15 @@ export function tsQualifiedTypeLookupSpelling(
     position: typeRef.lookupPosition,
     purpose: typeRef.lookupPurpose ?? 'type',
   });
-  return claim.scope && claim.imports.some((edge) => edge.kind === 'namespace')
-    ? { spelling, scope: claim.scope.id }
-    : null;
+  if (claim.scope && claim.imports.some((edge) => edge.kind === 'namespace'))
+    return { spelling, scope: claim.scope.id };
+  const local = publishedNamespaceMember(
+    claim.bindings,
+    spelling.split('.').slice(1),
+    scopes,
+    typeRef.lookupPurpose ?? 'type',
+  );
+  return local ? { spelling: local.local, scope: local.scope } : null;
 }
 
 /** Types that carry no discriminating information for chain resolution.
@@ -371,7 +378,7 @@ function stripGeneric(text: string): string {
 /** `User[]` / `(User)[]` → `User`. Chained `User[][]` unwraps one
  *  level at a time per resolve pass. */
 function stripArraySuffix(text: string): string {
-  if (text.endsWith('[]')) {
+  if (text.length > 2 && text.endsWith('[]')) {
     const inner = text.slice(0, -2).trim();
     // Unwrap a single pair of parentheses introduced for precedence
     // disambiguation: `(User | Admin)[]` — we leave the union intact

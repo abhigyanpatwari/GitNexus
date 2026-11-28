@@ -1,0 +1,1 @@
+{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","moduleDetection":"legacy","types":[],"strict":true},"files":["globals.ts","main.ts"]}
