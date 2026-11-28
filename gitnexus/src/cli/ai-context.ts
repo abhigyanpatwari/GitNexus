@@ -130,13 +130,18 @@ export function markdownSafeBranch(branch: string): string {
   return branch.replace(/`/g, '');
 }
 
-function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
+function regressionReviewGuidance(
+  defaultBranch: string,
+  runner?: string,
+  mcpRepo?: string,
+): string {
   const safeBranch = markdownSafeBranch(defaultBranch);
   const target = JSON.stringify(safeBranch);
   const cliFallback = runner
     ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
     : '';
-  return `For regression review, fetch target branch ${target} from its remote; compute its merge base with the reviewed HEAD and pass that SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
+  const repoArg = mcpRepo === undefined ? '' : `, repo: ${mcpRepo}`;
+  return `For regression review, fetch target branch ${target} from its remote; compute its merge base with the reviewed HEAD and pass that SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"${repoArg}})\`${cliFallback}.`;
 }
 
 /** Options for {@link generateGitNexusContent} (collapsed from positional
@@ -225,6 +230,7 @@ ${tableBody}`
   // stay under the CLAUDE.md block token budget (#856); the cli skill carries the
   // full bootstrap + npm-11 fallback (`node.target is null` npx install crash).
   const runner = `node ${runnerPath}`;
+  const mcpRepo = JSON.stringify(projectName).replace(/`/g, '\\u0060');
   // Bootstrap names every install-free one-shot rather than the one this machine
   // resolves to: the block is committed, so a host-specific command would make
   // two contributors on different package managers rewrite it at each other on
@@ -252,26 +258,26 @@ ${tableBody}`
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}.
 
 > Index stale? Run \`${runner} analyze --index-only\`. ${bootstrapNote}
-> On query/context/impact/cypher object results, read staleness.status and branch/lastCommit. Re-analyze only for behind or diverged — current is clone HEAD, not main.
+> For repo-scoped MCP calls, pass \`repo: ${mcpRepo}\`. Check staleness.status and branch/lastCommit when present. Re-index only if behind or diverged.
 
 ## Always Do
 
-- **MUST run impact before code/config/test edits.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis. Docs-only exempt.${
+- **MUST run impact before code/config/test edits.** Use \`impact({target: "symbolName", direction: "upstream", repo: ${mcpRepo}})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis. Docs-only exempt.${
     hasPdg
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all"})\` or \`${runner} detect-changes --scope all --repo .\`. \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner)}
+- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all", repo: ${mcpRepo}})\` or \`${runner} detect-changes --scope all --repo .\`. \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner, mcpRepo)}
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
-- **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
-- **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
+- **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** Zero callers can mean unresolved calls (plain-object property access, dynamic dispatch, cross-language calls), not an unused symbol. \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Verify with text search before editing or deleting.
+- **MUST use \`query({search_query: "concept", repo: ${mcpRepo}})\` for concepts/flows, \`context({name: "symbolName", repo: ${mcpRepo}})\` for a named symbol, or \`impact\` for blast radius, for callers, dependencies, imports, or flows.** Text search only for empty/\`UNKNOWN\`/literals.${
     hasSpringActuator
       ? '\n- Spring Actuator runtime evidence is enabled. A Route is authoritative only when `runtimeConfirmed === true`; `runtimeSource` is provenance and may also describe conflicts. Snapshot values are never persisted.'
       : ''
   }
-- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
+- For security review, \`explain({target: "fileOrSymbol", repo: ${mcpRepo}})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
     hasPdg
-      ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol"})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
+      ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol", repo: ${mcpRepo}})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable, repo: ${mcpRepo}})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
       : ''
   }
 
@@ -934,12 +940,16 @@ export async function refreshBaseRefLine(
     const legacyRunner = block.match(
       /or `([^`\n]+?) detect-changes --scope compare --base-ref\b/,
     )?.[1];
-    const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner);
+    // Preserve the repository selector when refreshing the review target.
+    const mcpRepo = block.match(
+      /pass that SHA to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>", repo: ("(?:[^"\\`]|\\.)*")\}\)`/,
+    )?.[1];
+    const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner, mcpRepo);
     let newBlock = block;
     if (!block.includes(mergeBaseGuidance) && block.includes('base_ref: "<merge-base SHA>"')) {
       newBlock = block.replace(
-        /(?:(?:For (?:regression review of )?)?target branch "(?:[^"\\]|\\.)*": `git fetch origin -- [^`\n]+`; pass `git merge-base [^`\n]+ HEAD`'s SHA|Regression base: (?:PR GitHub `baseRefOid`\/`headRefOid`|exact PR base\/head commits from host metadata); target branch "(?:[^"\\]|\\.)*" via tracking remote\. Fetch both; pass merge-base SHA|For regression review, fetch target branch "(?:[^"\\]|\\.)*" from its remote; compute its merge base with the reviewed HEAD and pass that SHA) to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "<merge-base SHA>" --repo \.\`)?\./,
-        mergeBaseGuidance,
+        /(?:(?:For (?:regression review of )?)?target branch "(?:[^"\\]|\\.)*": `git fetch origin -- [^`\n]+`; pass `git merge-base [^`\n]+ HEAD`'s SHA|Regression base: (?:PR GitHub `baseRefOid`\/`headRefOid`|exact PR base\/head commits from host metadata); target branch "(?:[^"\\]|\\.)*" via tracking remote\. Fetch both; pass merge-base SHA|For regression review, fetch target branch "(?:[^"\\]|\\.)*" from its remote; compute its merge base with the reviewed HEAD and pass that SHA) to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>"(?:, repo: "(?:[^"\\`]|\\.)*")?\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "<merge-base SHA>" --repo \.\`)?\./,
+        () => mergeBaseGuidance,
       );
     }
     if (newBlock === block) {

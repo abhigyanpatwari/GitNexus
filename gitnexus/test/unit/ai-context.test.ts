@@ -186,7 +186,9 @@ describe('generateAIContextFiles', () => {
 
       for (const file of ['AGENTS.md', 'CLAUDE.md']) {
         const content = await fs.readFile(path.join(dir, file), 'utf-8');
-        expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
+        expect(content).toContain(
+          'impact({target: "symbolName", direction: "upstream", repo: "TransportFallback"})',
+        );
 
         // Issue #3976: pre-edit impact guidance must be scoped to code changes.
         expect(content).toContain('MUST run impact before code/config/test edits.');
@@ -201,13 +203,13 @@ describe('generateAIContextFiles', () => {
         expect(content).toContain(
           'node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .',
         );
-        expect(content).toContain('detect_changes({scope: "all"})');
+        expect(content).toContain('detect_changes({scope: "all", repo: "TransportFallback"})');
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
         expect(content).toContain('target branch "develop"');
         expect(content).toContain('target branch "develop" from its remote');
         expect(content).toContain('compute its merge base with the reviewed HEAD');
         expect(content).toContain(
-          'detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})',
+          'detect_changes({scope: "compare", base_ref: "<merge-base SHA>", repo: "TransportFallback"})',
         );
         expect(content).toContain('--scope compare --base-ref "<merge-base SHA>" --repo .');
         expect(content).toContain('Never substitute grep for graph analysis');
@@ -216,6 +218,40 @@ describe('generateAIContextFiles', () => {
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('routes generated MCP examples to the configured registry name (#1542)', async () => {
+    const repoName = 'workspace "$& `dev`"';
+    const repo = JSON.stringify(repoName).replace(/`/g, '\\u0060');
+    await generateAIContextFiles(tmpDir, storagePath, repoName, {}, undefined, {
+      hasPdg: true,
+      skipSkills: true,
+    });
+
+    const expected = [
+      `impact({target: "symbolName", direction: "upstream", repo: ${repo}})`,
+      `detect_changes({scope: "all", repo: ${repo}})`,
+      `detect_changes({scope: "compare", base_ref: "<merge-base SHA>", repo: ${repo}})`,
+      `query({search_query: "concept", repo: ${repo}})`,
+      `context({name: "symbolName", repo: ${repo}})`,
+      `explain({target: "fileOrSymbol", repo: ${repo}})`,
+      `pdg_query({mode: "controls", target: "fileOrSymbol", repo: ${repo}})`,
+      `pdg_query({mode: "flows", target, variable, repo: ${repo}})`,
+    ];
+    expect(JSON.parse(repo)).toBe(repoName);
+
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf8');
+      for (const call of expected) expect(content).toContain('`' + call + '`');
+    }
+
+    expect((await refreshBaseRefLine(tmpDir, 'develop')).files).toHaveLength(2);
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf8');
+      expect(content).toContain('target branch "develop" from its remote');
+      for (const call of expected) expect(content).toContain(call);
+    }
+    expect((await refreshBaseRefLine(tmpDir, 'develop')).files).toEqual([]);
   });
 
   it.each([true, false])('exempts docs-only edits when hasPdg=%s (#3976)', (hasPdg) => {
@@ -340,9 +376,7 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
     expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze --index-only`');
-    expect(content).toContain(
-      'On query/context/impact/cypher object results, read staleness.status and branch/lastCommit',
-    );
+    expect(content).toContain('Check staleness.status and branch/lastCommit when present.');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -1763,13 +1797,13 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // generated instructions must use the exact callable names or agents call a
     // tool that does not exist.
     expect(content).not.toMatch(/gitnexus_(impact|query|context|detect_changes|rename|cypher)/);
-    expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
-    expect(content).toContain('detect_changes({scope: "all"})');
+    expect(content).toContain('impact({target: "symbolName", direction: "upstream", repo: "P"})');
+    expect(content).toContain('detect_changes({scope: "all", repo: "P"})');
     // #2175: the generated guidance must advertise the renamed param, never the
     // legacy "query" key (Claude Code drops a tool arg named exactly "query").
-    expect(content).toContain('query({search_query: "concept"})');
+    expect(content).toContain('query({search_query: "concept", repo: "P"})');
     expect(content).not.toContain('query({query:');
-    expect(content).toContain('context({name: "symbolName"})');
+    expect(content).toContain('context({name: "symbolName", repo: "P"})');
   });
 
   it('JSON-escapes a markdown/quote-bearing branch so it cannot break the code span (#243)', () => {
