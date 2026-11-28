@@ -41,6 +41,17 @@ Route::view('/welcome', 'welcome');
     ).toEqual(['a.one', 'a.two']);
   });
 
+  it('matches names case-insensitively, as PHP does', () => {
+    expect(
+      extract(`<?php
+VIEW('a.one');
+view::MAKE('a.two');
+ROUTE::View('/x', 'a.three');
+Response()->VIEW('a.four');
+`).map((c) => c.viewName),
+    ).toEqual(['a.one', 'a.two', 'a.three', 'a.four']);
+  });
+
   it('skips names built at runtime and package views', () => {
     expect(
       extract(`<?php

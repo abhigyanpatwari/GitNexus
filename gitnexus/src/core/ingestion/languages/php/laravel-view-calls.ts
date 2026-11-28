@@ -33,10 +33,13 @@ export interface LaravelViewCall {
 /** Letters, digits, `_`, `-`, `.` and `/` only: rejects `namespace::name` and anything dynamic. */
 const STATIC_VIEW_NAME_RE = /^[\w\-./]+$/;
 
-/** `\Illuminate\Support\Facades\View` → `View`; `\view` → `view`. */
+/**
+ * `\Illuminate\Support\Facades\View` → `view`; `\VIEW` → `view`. Lowercased
+ * because PHP function, class and method names are case-insensitive.
+ */
 const lastSegment = (text: string): string => {
   const index = text.lastIndexOf('\\');
-  return index === -1 ? text : text.slice(index + 1);
+  return (index === -1 ? text : text.slice(index + 1)).toLowerCase();
 };
 
 /** The positional arguments of a call, or null when any argument is named or unpacked. */
@@ -76,17 +79,17 @@ const classify = (node: SyntaxNode): { kind: LaravelViewCallKind; argIndex: numb
     }
     case 'scoped_call_expression': {
       const scope = node.childForFieldName('scope');
-      const name = node.childForFieldName('name')?.text;
+      const name = node.childForFieldName('name')?.text.toLowerCase();
       if (!scope) return null;
       const owner = lastSegment(scope.text);
-      if (owner === 'View' && name === 'make') return { kind: 'facade', argIndex: 0 };
-      if (owner === 'Route' && name === 'view') return { kind: 'route', argIndex: 1 };
+      if (owner === 'view' && name === 'make') return { kind: 'facade', argIndex: 0 };
+      if (owner === 'route' && name === 'view') return { kind: 'route', argIndex: 1 };
       return null;
     }
     case 'member_call_expression': {
       // Only `response()->view(...)`: `->view()` on an arbitrary object is not
       // known to render a Blade template, so it is not guessed at.
-      if (node.childForFieldName('name')?.text !== 'view') return null;
+      if (node.childForFieldName('name')?.text.toLowerCase() !== 'view') return null;
       const object = node.childForFieldName('object');
       if (object?.type !== 'function_call_expression') return null;
       const fn = object.childForFieldName('function');
