@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/captures.js';
 import { interpretKotlinTypeBinding } from '../../src/core/ingestion/languages/kotlin/interpret.js';
+import { kotlinNominalType } from '../../src/core/ingestion/languages/kotlin/nullable-heritage.js';
 
 function captureTexts(source: string): Array<Record<string, string>> {
   return emitKotlinScopeCaptures(source, 'fixture.kt').map((match) =>
@@ -200,4 +201,21 @@ describe('Kotlin package-qualified call bindings (#3498 follow-up)', () => {
   ])('binds nothing when the head is %s', (_label, source) => {
     expect(bindingsOfX(source)).toEqual([]);
   });
+});
+
+describe('Kotlin nominal projections', () => {
+  it('preserves keyword boundaries, soft names and escaped names', () => {
+    expect(kotlinNominalType('Map < *, Slot < in  `out String` > > ?')).toBe(
+      'Map<*,Slot<in `out String`>>?',
+    );
+    expect(kotlinNominalType('Slot<out>')).toBe('Slot<out>');
+    expect(kotlinNominalType('Slot<out.Payload>')).toBe('Slot<out.Payload>');
+    expect(kotlinNominalType('Slot<out Payload>')).toBe('Slot<out Payload>');
+    expect(kotlinNominalType('Slot<outPayload>')).toBe('Slot<outPayload>');
+  });
+
+  it.each(['*', 'Slot<in>', 'Slot<in *>', 'Slot<*?>', 'Slot<*,>', 'Slot<out in X>'])(
+    'declines malformed projection %s',
+    (type) => expect(kotlinNominalType(type)).toBeNull(),
+  );
 });

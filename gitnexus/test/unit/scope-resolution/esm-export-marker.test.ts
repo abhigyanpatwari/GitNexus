@@ -7,8 +7,12 @@
 import { describe, it, expect } from 'vitest';
 import { emitTsScopeCaptures } from '../../../src/core/ingestion/languages/typescript/captures.js';
 import { emitJsScopeCaptures } from '../../../src/core/ingestion/languages/javascript/captures.js';
+import { typescriptModuleExports } from '../../../src/core/ingestion/languages/typescript/module-exports.js';
 import { extract } from '../../../src/core/ingestion/scope-extractor.js';
-import { typescriptProvider } from '../../../src/core/ingestion/languages/typescript.js';
+import {
+  javascriptProvider,
+  typescriptProvider,
+} from '../../../src/core/ingestion/languages/typescript.js';
 
 type Emit = typeof emitTsScopeCaptures;
 
@@ -394,6 +398,225 @@ describe('@declaration.is-default-export (#3956)', () => {
     expect(xs.map((d) => d.isDefaultExport === true).sort()).toEqual([false, true, true]);
     const other = parsed.localDefs.find((d) => d.qualifiedName === 'other')!;
     expect('isDefaultExport' in other).toBe(false);
+  });
+});
+
+describe('CommonJS callable default exports', () => {
+  it.each([
+    ['x.cjs', emitJsScopeCaptures, javascriptProvider],
+    ['x.cts', emitTsScopeCaptures, typescriptProvider],
+  ] as const)(
+    'recognizes a bare wrapper export without other declarations in %s',
+    (file, emit, provider) => {
+      const source = 'module.exports = function candidate() {};';
+      const { localDefs } = extract(emit(source, file), file, provider);
+      expect(localDefs.find((def) => def.qualifiedName === 'candidate')).toMatchObject({
+        isExported: true,
+        isDefaultExport: true,
+      });
+    },
+  );
+
+  it.each([
+    ['x.js', 'const module = {};', false],
+    ['x.js', String.raw`const m\u006fdule = {};`, false],
+    ['x.cjs', 'var module = {};', false],
+    ['x.cjs', 'var module;', true],
+    ['x.cjs', 'var module = module;', true],
+    ['x.cjs', 'function module() {}', false],
+    ['x.cjs', '{ const module = {}; module.exports = function inner() {}; }', true],
+    [
+      'x.cjs',
+      'class C { static { var module = {}; module.exports = function inner() {}; } }',
+      true,
+    ],
+    [
+      'x.cjs',
+      'function nested(module) { module.exports = function inner() {}; } nested({});',
+      true,
+    ],
+  ] as const)('uses the wrapper binding in %s after %s', (file, prefix, exported) => {
+    const source = `${prefix}\nmodule.exports = function candidate() {};`;
+    const { localDefs } = extract(emitJsScopeCaptures(source, file), file, javascriptProvider);
+    const candidate = localDefs.find((def) => def.qualifiedName === 'candidate');
+    expect(candidate?.isExported).toBe(exported);
+    expect(candidate?.isDefaultExport === true).toBe(exported);
+    expect(localDefs.filter((def) => def.isDefaultExport).map((def) => def.qualifiedName)).toEqual(
+      exported ? ['candidate'] : [],
+    );
+  });
+
+  describe.each([
+    ['x.cjs', emitJsScopeCaptures, javascriptProvider],
+    ['x.cts', emitTsScopeCaptures, typescriptProvider],
+  ] as const)('wrapper writes in %s', (file, emit, provider) => {
+    it.each([
+      ['{ module = {}; }', undefined],
+      ['module = (module);', 'candidate'],
+      ['const unused = (module = {}); const saved = module; module = saved;', undefined],
+      ['module &&= {}; const saved = module; module = saved;', undefined],
+      ['(() => { module = {}; })(); const saved = module; module = saved;', undefined],
+      ['(function () { module = {}; })(); const saved = module; module = saved;', undefined],
+      ['function run() { module = {}; } run(); const saved = module; module = saved;', undefined],
+      ['function later() { module = {}; } const saved = module; module = saved;', 'candidate'],
+      ['module ||= {}; const saved = module; module = saved;', 'candidate'],
+      ['module &&= (module);', 'candidate'],
+      ['const saved = module; module = undefined; module ||= saved;', 'candidate'],
+      ['const saved = module; module = null; module ??= saved;', 'candidate'],
+      [
+        'const saved = module; (function () { module = {}; })(module = null); module ??= saved;',
+        undefined,
+      ],
+      [
+        'const saved = module; (function () { module = null; })(module = {}); module ??= saved;',
+        'candidate',
+      ],
+      [
+        'const saved = module; (() => { (() => { module = null; })(module = {}); })(module = {}); module ??= saved;',
+        'candidate',
+      ],
+      [
+        'const saved = module; (() => { module = {}; })((() => { module = null; })(module = {})); module ??= saved;',
+        undefined,
+      ],
+      [
+        '(function () { const saved = module; module = {}; module = saved; })(module = {});',
+        undefined,
+      ],
+      [
+        'const original = module; module = {}; (function () { const saved = module; module = {}; module = saved; })(module = original);',
+        'candidate',
+      ],
+      ['const saved = module; var module = undefined; module ||= saved;', 'candidate'],
+      ['const saved = module; module = false; module ||= saved;', 'candidate'],
+      ['const saved = module; module = 0; module ??= saved;', undefined],
+      ['const saved = module; module = ""; module &&= saved;', undefined],
+      ['const saved = module; module = {}; module &&= saved;', 'candidate'],
+      ['const saved = module; module = true; module ||= saved;', undefined],
+      ['const saved = module; module = other; module ||= saved;', undefined],
+      [
+        'const saved = module; (function(undefined) { module = undefined; })({}); module ||= saved;',
+        undefined,
+      ],
+      [
+        'const saved = module; module = {}; if (false) { var module = null; } module ??= saved;',
+        undefined,
+      ],
+      [
+        'const saved = module; module = null; module || (module = {}); module ??= saved;',
+        undefined,
+      ],
+      ['function fallback() { module ||= {}; } fallback();', 'candidate'],
+      ['var module = module || {};', 'candidate'],
+      ['const saved = module; if (flag) module = null; module ??= saved;', 'candidate'],
+      [
+        'const saved = module; const undefined = {}; module = undefined; module ||= saved;',
+        undefined,
+      ],
+      ['const saved = module; module = {}; let fn; fn?.(module = saved);', undefined],
+      ['{ module = module || {}; }', 'candidate'],
+      ['const saved = module; { module = saved; }', 'candidate'],
+      ['const saved = module; { module = {}; module = saved; }', 'candidate'],
+      ['const saved = module; var module = {}; { module = saved; }', 'candidate'],
+      ['{ const saved = module; module = {}; module = saved; }', 'candidate'],
+      ['const saved = module; { const saved = {}; module = saved; }', undefined],
+      ['{ module = {}; } const saved = module; { module = saved; }', undefined],
+      ['const saved = module; { module = {}; module = saved; module = {}; }', undefined],
+      ['let saved = module; saved = {}; { module = saved; }', undefined],
+      ['var module = (/*same*/ (module));', 'candidate'],
+      ['{ let module; { module = {}; } }', 'candidate'],
+      ['function later() { module = {}; }', 'candidate'],
+      ['if (false) { module = {}; }', 'candidate'],
+      ['if (true) { module = {}; } const saved = module; { module = saved; }', undefined],
+      ['const saved = module; { module = {}; module = saved; } if (true) module = {};', undefined],
+      ['const saved = module; if (flag) module = saved;', 'candidate'],
+      ['const saved = module; module = {}; if (flag) module = saved;', undefined],
+      ['module.exports = function prior() {}; { { module = {}; } }', 'prior'],
+    ])('publishes the correct default after %s', (prefix, expected) => {
+      const source = `${prefix} module.exports = function candidate() {};`;
+      const exports = typescriptModuleExports(extract(emit(source, file), file, provider));
+      expect(exports.get('default')?.qualifiedName).toBe(expected);
+    });
+  });
+
+  it.each([
+    ['function late() { module = {}; }', 'late();', true],
+    ['', 'late(); function late() { module = {}; }', true],
+    ['const late = () => { module = {}; };', 'late();', true],
+    ['late(); function late() { module = {}; }', '', false],
+    ['run(); function late() { module = {}; }', 'function run() { late(); }', false],
+    ['const callback = late; callback(); function late() { module = {}; }', '', false],
+  ] as const)(
+    'preserves exports established before a deferred write in %s %s',
+    (before, after, expected) => {
+      const source = `${before} module.exports = function visible() {}; ${after} module.exports = function hidden() {};`;
+      for (const [emit, file] of [
+        [emitJsScopeCaptures, 'late.cjs'],
+        [emitTsScopeCaptures, 'late.cts'],
+      ] as const) {
+        const marked = emit(source, file)
+          .filter((capture) => capture['@declaration.is-default-export']?.text === 'true')
+          .map((capture) => capture['@declaration.name'].text);
+        expect(marked).toEqual(expected ? ['visible'] : []);
+      }
+    },
+  );
+
+  it.each([
+    ['', '(async () => { await Promise.resolve(); module = {}; })();', 'candidate'],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); function edit(a) { a[0]++; delete a["old"]; ({entry: a[1]} = {}); }',
+      'candidate',
+    ],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); const m = module; function edit() { [m["exports"]] = []; }',
+      undefined,
+    ],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); function edit(m, key) { delete m[key]; }',
+      undefined,
+    ],
+    ['', '(async () => { module = {}; await 0; })();', 'candidate'],
+    ['(async () => { module = {}; await 0; })();', '', undefined],
+    ['start();', 'function start() { (async () => { module = {}; })(); }', undefined],
+    [
+      '',
+      '(async () => { await 0; module = {}; })(); { module.exports = function other() {}; }',
+      undefined,
+    ],
+    [
+      '',
+      '(async (module) => { await 0; module = {}; module.exports = function other() {}; })({});',
+      'candidate',
+    ],
+    [
+      'module.exports = function earlier() {}; (async () => { if (globalThis.flag) await 0; module = {}; })();',
+      '',
+      undefined,
+    ],
+  ])('bounds an async IIFE wrapper write by its call in %s %s', (before, after, expected) => {
+    const source = `${before} module.exports = function candidate() {}; ${after}`;
+    for (const [emit, file, provider] of [
+      [emitJsScopeCaptures, 'x.cjs', javascriptProvider],
+      [emitTsScopeCaptures, 'x.cts', typescriptProvider],
+    ] as const) {
+      const exports = typescriptModuleExports(extract(emit(source, file), file, provider));
+      expect(exports.get('default')?.qualifiedName).toBe(expected);
+    }
+  });
+
+  it.each(['var module = {};', 'module = {};'])('applies %s at its write position', (write) => {
+    const file = 'x.cjs';
+    const source = `module.exports = function visible() {};\n${write}\nmodule.exports = function privateFn() {};`;
+    const { localDefs } = extract(emitJsScopeCaptures(source, file), file, javascriptProvider);
+    const visible = localDefs.find((def) => def.qualifiedName === 'visible');
+    expect(visible).toMatchObject({ isExported: true, isDefaultExport: true });
+    const privateFn = localDefs.find((def) => def.qualifiedName === 'privateFn');
+    expect(privateFn?.isExported).toBe(false);
+    expect(privateFn?.isDefaultExport).toBeUndefined();
   });
 });
 

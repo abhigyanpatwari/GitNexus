@@ -56,61 +56,40 @@ const TRAILING_IDENTIFIER = /([A-Za-z_$][A-Za-z0-9_$]*)\s*$/;
  * risk reading `int[]` as a parameter list.
  */
 export function parseTypeParameterList(text: string): TypeParameter[] | undefined {
-  const inner = innerListText(text);
-  if (inner === undefined) return undefined;
-
+  text = withoutTypeComments(text);
+  const open = text.indexOf('<');
+  if (open === -1) return undefined;
   const out: TypeParameter[] = [];
-  for (const entry of splitTopLevel(inner)) {
-    const parameter = parseEntry(entry);
-    if (parameter !== undefined) out.push(parameter);
-  }
-  return out.length > 0 ? out : undefined;
-}
-
-/** The text between the outermost `<` and its matching `>`, or `undefined` when
- *  there is no balanced pair or it is empty. */
-function innerListText(text: string): string | undefined {
-  const start = text.indexOf('<');
-  if (start === -1) return undefined;
-  let depth = 0;
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === '<') depth += 1;
-    else if (ch === '>') {
-      depth -= 1;
-      if (depth === 0) {
-        const inner = text.slice(start + 1, i);
-        return inner.trim().length === 0 ? undefined : inner;
-      }
-      if (depth < 0) return undefined;
-    }
+  let start = open + 1;
+  for (const end of parameterDelimiters(text, start)) {
+    const parameter = parseEntry(text.slice(start, end));
+    if (parameter) out.push(parameter);
+    if (text[end] === '>') return out.length ? out : undefined;
+    start = end + 1;
   }
   return undefined;
 }
 
-/**
- * Split on commas that no bracket encloses.
- *
- * All four bracket families are tracked together because a bound can carry any
- * of them and each hides commas that are NOT entry separators: `T extends
- * Map<K, V>` (angle), `T extends Fn<(a, b) => void>` (paren), `N: [usize; 2]`
- * (square), `T : suspend (Int, Int) -> Unit` (paren again).
- */
-function splitTopLevel(inner: string): string[] {
-  const parts: string[] = [];
+/** Top-level commas and the closing angle of the parameter list. */
+function* parameterDelimiters(text: string, start: number): Generator<number> {
+  const finalCloser = text.lastIndexOf('>');
   let depth = 0;
-  let start = 0;
-  for (let i = 0; i < inner.length; i += 1) {
-    const ch = inner[i];
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
-    else if (ch === ',' && depth === 0) {
-      parts.push(inner.slice(start, i));
-      start = i + 1;
+  let inDefault = false;
+  for (const i of ungroupedOffsets(text, start)) {
+    const ch = text[i];
+    if (ch === '<') depth++;
+    else if (ch === '>' && depth > 0) depth--;
+    else if (depth === 0) {
+      // A comparison inside a default has its own closing angle later.
+      // In a bound like Box<U>=Default, the nested angle closes above.
+      if (ch === '=') inDefault = true;
+      const closesList = ch === '>' && !(inDefault && text[i + 1] === '=' && i < finalCloser);
+      if (ch === ',' || closesList) {
+        yield i;
+        inDefault = false;
+      }
     }
   }
-  parts.push(inner.slice(start));
-  return parts;
 }
 
 /**
@@ -148,18 +127,19 @@ function parseEntry(entry: string): TypeParameter | undefined {
   // declares no type at all.
   if (namePart[matched.index - 1] === "'") return undefined;
 
-  return bound === undefined || bound.length === 0 ? { name } : { name, bound };
+  const defaultType = head.length < entry.length ? entry.slice(head.length + 1).trim() : undefined;
+  return { name, ...(bound && { bound }), ...(defaultType && { defaultType }) };
 }
 
-/** `entry` up to a top-level `=`, which introduces a DEFAULT rather than a
- *  bound. `=>` and `>=`/`<=` are not defaults; only a bare `=` at depth 0 is. */
+/** Return the prefix before the default's top-level `=`. A generic bound
+ *  can close immediately before that delimiter, as in `T extends Box<U>=V`. */
 function beforeTopLevelDefault(entry: string): string {
   let depth = 0;
-  for (let i = 0; i < entry.length; i += 1) {
+  for (const i of ungroupedOffsets(entry)) {
     const ch = entry[i];
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
-    else if (ch === '=' && depth === 0 && entry[i + 1] !== '=' && entry[i + 1] !== '>') {
+    if (ch === '<') depth += 1;
+    else if (ch === '>') depth -= 1;
+    else if (ch === '=' && depth === 0 && entry[i - 1] !== '=' && entry[i + 1] !== '=') {
       return entry.slice(0, i);
     }
   }
@@ -182,10 +162,10 @@ function beforeTopLevelDefault(entry: string): string {
  */
 function findBoundIntroducer(head: string): { index: number; length: number } | undefined {
   let depth = 0;
-  for (let i = 0; i < head.length; i += 1) {
+  for (const i of ungroupedOffsets(head)) {
     const ch = head[i];
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === '<') depth += 1;
+    else if (ch === '>') depth -= 1;
     else if (depth !== 0) continue;
     else if (ch === ':') return { index: i, length: 1 };
     else if (
@@ -203,6 +183,156 @@ function isWholeWord(text: string, index: number, length: number): boolean {
   const before = index === 0 ? '' : text[index - 1]!;
   const after = text[index + length] ?? '';
   return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+/** Operators in a grouped expression, e.g. `(N >= 1)`, cannot close the outer parameter list. */
+function* ungroupedOffsets(text: string, start = 0): Generator<number> {
+  let depth = 0;
+  for (const i of syntaxOffsets(text, start)) {
+    const ch = text[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (depth === 0) yield i;
+  }
+}
+
+// A number starts at a token boundary, so the 8 in the character literal u8','
+// cannot consume its opening quote. Separators stay in the numeric spelling.
+const numericMantissas = [
+  /\b0x[\da-f.](?:'?[\da-f]|\.)*/iy,
+  /\b0b[01](?:'?[01])*/iy,
+  /\b\d(?:'?\d|\.)*/y,
+];
+const numericExponent = /[ep][+-]?\d(?:'?\d)*/iy;
+
+function numericLiteralEnd(text: string, start: number): number {
+  for (const mantissa of numericMantissas) {
+    mantissa.lastIndex = start;
+    if (!mantissa.test(text)) continue;
+    numericExponent.lastIndex = mantissa.lastIndex;
+    return numericExponent.test(text) ? numericExponent.lastIndex : mantissa.lastIndex;
+  }
+  return start + 1;
+}
+
+function quotedEnd(text: string, start: number, lastCommentEnd: number): number | undefined {
+  let end = start + 1;
+  while (end < text.length && text[end] !== text[start]) {
+    end += text[end] === '\\' ? 2 : 1;
+  }
+  if (end < text.length && !isLifetimePair(text, start, end, lastCommentEnd)) return end + 1;
+}
+
+function angleOperatorEnd(text: string, i: number): number | undefined {
+  const ch = text[i];
+  // Both <= and <=> are single operators. Their angles do not delimit a list.
+  if (ch === '<' && text[i + 1] === '=') return text[i + 2] === '>' ? i + 3 : i + 2;
+  if ((ch === '=' || ch === '-') && text[i + 1] === '>') return i + 2;
+}
+
+/** Comments and quoted strings are opaque even when they contain each other's delimiters. */
+function* opaqueSpans(text: string, start: number) {
+  let lastCommentEnd = start;
+  const hasApostrophe = text.includes("'");
+  let cursor = start;
+  while (cursor < text.length) {
+    const i = cursor++;
+    const ch = text[i];
+    if (hasApostrophe && ch >= '0' && ch <= '9') {
+      cursor = numericLiteralEnd(text, i);
+      continue;
+    }
+    const commentEnd = ch === '/' ? endOfComment(text, i) : undefined;
+    if (commentEnd !== undefined) {
+      cursor = commentEnd;
+      lastCommentEnd = commentEnd;
+      yield { start: i, end: cursor, comment: true };
+      continue;
+    }
+    const end =
+      ch === '"' || ch === "'" || ch === '`'
+        ? quotedEnd(text, i, lastCommentEnd)
+        : angleOperatorEnd(text, i);
+    if (end !== undefined) {
+      cursor = end;
+      yield { start: i, end, comment: false };
+    }
+  }
+}
+
+function endOfComment(text: string, start: number): number | undefined {
+  if (text[start + 1] === '*') {
+    const close = text.indexOf('*/', start + 2);
+    return close === -1 ? text.length : close + 2;
+  }
+  if (text[start + 1] !== '/') return undefined;
+  let end = start + 2;
+  while (end < text.length && !'\n\r\u2028\u2029'.includes(text[end])) end++;
+  return end;
+}
+
+/** Structural offsets in the original source spelling. */
+export function* syntaxOffsets(text: string, start = 0): Generator<number> {
+  let i = start;
+  for (const span of opaqueSpans(text, start)) {
+    for (; i < span.start; i++) yield i;
+    i = span.end;
+  }
+  for (; i < text.length; i++) yield i;
+}
+
+/** Preserve token boundaries in semantic type spellings when discarding comments. */
+export function withoutTypeComments(text: string): string {
+  if (!text.includes('/*') && !text.includes('//')) return text;
+  let result = '';
+  let start = 0;
+  for (const span of opaqueSpans(text, 0)) {
+    if (!span.comment) continue;
+    result += text.slice(start, span.start) + ' ';
+    start = span.end;
+  }
+  return start ? result + text.slice(start) : text;
+}
+
+function initialLifetimeEnd(
+  text: string,
+  start: number,
+  lastCommentEnd: number,
+): number | undefined {
+  if (text[start] !== "'") return;
+  let before = start - 1;
+  while (before >= 0 && /\s/u.test(text[before])) before--;
+  if (before >= lastCommentEnd && !'<,:&+'.includes(text[before])) return;
+  return lifetimeNameEnd(text, start);
+}
+
+function lifetimeNameEnd(text: string, start: number): number | undefined {
+  const name = /'[_\p{XID_Start}][_\p{XID_Continue}]*/uy;
+  name.lastIndex = start;
+  return name.test(text) ? name.lastIndex : undefined;
+}
+
+/** In <'a, T, 'b> each apostrophe starts a name. Neither quotes the comma. */
+function isLifetimePair(text: string, start: number, end: number, lastCommentEnd: number): boolean {
+  const firstEnd = initialLifetimeEnd(text, start, lastCommentEnd);
+  if (firstEnd === undefined || firstEnd === end) return false; // e.g. 'x'_suffix
+
+  // If the apparent closing quote is another lifetime or lies in a comment
+  // after a separator, the outer scanner must see the intervening tokens.
+  let separator = false;
+  let cursor = firstEnd;
+  while (cursor < end) {
+    const i = cursor++;
+    if (/\s/u.test(text[i])) continue;
+    const after = text[i] === '/' ? endOfComment(text, i) : undefined;
+    if (after !== undefined) {
+      if (after > end) return separator && after < text.length;
+      cursor = after;
+    } else {
+      separator = '<,:&+='.includes(text[i]);
+    }
+  }
+  return separator && lifetimeNameEnd(text, end) !== undefined;
 }
 
 function isIdentifierChar(ch: string): boolean {

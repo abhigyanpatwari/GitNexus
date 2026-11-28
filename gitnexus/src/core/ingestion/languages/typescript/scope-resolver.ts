@@ -12,12 +12,28 @@
  * ./query.ts (TYPESCRIPT_SCOPE_QUERY constant).
  */
 
+import { indexPublishedNamespaceRoots } from '../../scope-resolution/scope/published-namespace-member.js';
 import type { NodeLabel, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import {
+  bindGlobalDeclarations,
+  projectNameFallback,
+  rememberDeclarationProjects,
+} from './global-declarations.js';
 import { generateId } from '../../../../lib/utils.js';
-import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
+import { buildMro } from '../../scope-resolution/passes/mro.js';
+import { depthFirstAncestors } from '../../model/resolve.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import {
+  indexTsCallArguments,
+  resolveTsMemberArguments,
+  tsCallResultAssignmentApplies,
+  tsReceiverCallSite,
+} from './call-arguments.js';
+import { resolveTsFunctionOverload } from './function-overloads.js';
+import { representativeUnionOwner } from './union-receiver.js';
+import { populateTsRangeBindings } from './range-bindings.js';
 import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { tsQualifiedTypeLookupSpelling } from './interpret.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
@@ -25,11 +41,16 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { typescriptProvider } from '../typescript.js';
 import {
   ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
+  bindModuleFormatExports,
   typescriptModuleExports,
 } from './module-exports.js';
 import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
-import { loadNodeWorkspacePackages, type NodeWorkspacePackages } from './workspace-packages.js';
+import {
+  loadNodeWorkspacePackages,
+  type NodeWorkspacePackages,
+  type WorkspacePackageOptions,
+} from './workspace-packages.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { typescriptArityCompatibility, typescriptMergeBindings, resolveTsTarget } from './index.js';
 import {
@@ -79,22 +100,48 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
   };
 }
 
-async function loadResolutionConfig(repoPath: string, fresh = false) {
+async function loadResolutionConfig(repoPath: string, options?: WorkspacePackageOptions) {
   return {
     tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, options),
     nuxtAutoImports: await loadNuxtAutoImports(repoPath),
   };
 }
 
 const typescriptScopeResolver: ScopeResolver = {
-  populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
+  // Scope hooks, including Nuxt auto-imports, consume the extracted facts.
+  postExtractSourceTextPolicy: 'uncached-files',
+  resolveUnqualifiedCall: resolveTsFunctionOverload,
+  populateWorkspaceReferences(files, context) {
+    canonicalizeEcmaWorkspaceBindings(files);
+    const config = context.resolutionConfig as TypescriptResolutionConfig | undefined;
+    bindModuleFormatExports(
+      files,
+      config?.tsconfigs ?? null,
+      config?.nodeWorkspacePackages ?? null,
+    );
+    rememberDeclarationProjects(files, config);
+  },
+  populateImportNamespaces(files, indexes) {
+    bindGlobalDeclarations(files, indexes);
+    indexPublishedNamespaceRoots(files, indexes);
+    indexTsCallArguments(files, indexes);
+  },
+  isGlobalNameFallbackPlausible: projectNameFallback,
+  selectReceiverTypeOwner: representativeUnionOwner,
+  interfaceMembersAreTypeOnly: true,
+  resolveReceiverMember: resolveTsMemberArguments,
+  receiverMemberLookupCoversAllCalls: true,
+  receiverCallSite: tsReceiverCallSite,
+  callResultAssignmentApplies: tsCallResultAssignmentApplies,
+  populateRangeBindings: populateTsRangeBindings,
   // One hook, both routes. TypeScript exposes collection views as METHOD calls
   // (`.values()`), which the call-expression branch already handles, so the
   // accessor route yields nothing here — but it is now the same hook rather
   // than a second one left undefined.
   elementTypeOf: indexOnlyElementType,
   qualifiedTypeLookupSpelling: tsQualifiedTypeLookupSpelling,
+  qualifiedTypeMemberKind: (owner) => (owner.type === 'Enum' ? 'Property' : undefined),
 
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
@@ -114,7 +161,9 @@ const typescriptScopeResolver: ScopeResolver = {
   // `nuxtAutoImports` is null for non-Nuxt projects (no .nuxt/imports.d.ts),
   // so this adds zero overhead to ordinary TypeScript repos.
   loadResolutionConfig,
-  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
+  captureResolutionConfig: (repoPath, scanFiles) => loadResolutionConfig(repoPath, { scanFiles }),
+  refreshResolutionConfig: (repoPath, filePaths) =>
+    loadResolutionConfig(repoPath, { fresh: true, filePaths }),
 
   // TypeScript declaration merging + LEGB: local > import > wildcard,
   // separated by declaration space (value / type / namespace). The
@@ -127,7 +176,7 @@ const typescriptScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => typescriptArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+    buildMro(graph, parsedFiles, nodeLookup, depthFirstAncestors),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

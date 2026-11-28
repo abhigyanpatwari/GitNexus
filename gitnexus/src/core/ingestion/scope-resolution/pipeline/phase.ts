@@ -53,7 +53,9 @@ import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { reconcileScopeExtractionFailures } from '../scope-extraction-failures.js';
 
 import { logger } from '../../../logger.js';
+import { HeritageSubstitutions } from '../../heritage-substitutions.js';
 export interface ScopeResolutionOutput {
+  readonly heritageSubstitutions?: HeritageSubstitutions;
   /** True when at least one language ran. */
   readonly ran: boolean;
   /** Files seen across all languages. `0` when `ran === false`. */
@@ -238,6 +240,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalRefs = 0;
     let anyRan = false;
     const resolutionOutcomes: ResolutionOutcome[] = [];
+    const heritageSubstitutions = new HeritageSubstitutions();
     const undecidedSatisfaction: UndecidedSatisfaction[] = [];
     // M4 (#2084 U1): per-function taint summaries accumulated across every
     // language pass; the cross-function fixpoint phase reads this output.
@@ -519,6 +522,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             recordResolutionOutcome: (outcome) => {
               resolutionOutcomes.push(outcome);
             },
+            onResolved: ctx.options?.onScopeResolved,
+            heritageSubstitutions,
             onWarn: (msg) => {
               if (isSemanticModelValidatorEnabled()) {
                 logger.warn(`[scope-resolution:${lang}] ${msg}`);
@@ -697,6 +702,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
     return {
       ran: true,
+      heritageSubstitutions,
       filesProcessed: totalFiles,
       importsEmitted: totalImports,
       referenceEdgesEmitted: totalRefs,

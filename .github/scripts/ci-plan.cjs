@@ -1,7 +1,7 @@
 const { execFileSync } = require('node:child_process');
 const { gitExecutable } = require('./git-executable.cjs');
 
-// A lane can reuse its listed jobs. CLI and Java also share one LCOV report.
+// A lane can reuse its listed jobs. CLI and compiler conformance also share one LCOV report.
 const coverage = 'tests / ubuntu / coverage merge';
 const checks = {
   quality: ['quality / format', 'quality / lint'],
@@ -13,7 +13,11 @@ const checks = {
   abi: ['ubuntu-latest', 'windows-latest', 'macos-latest'].map(
     (os) => `tests / tree-sitter ABI (${os})`,
   ),
-  java: ['tests / Java compiler conformance', coverage],
+  conformance: [
+    'tests / Java compiler conformance',
+    'tests / TypeScript compiler conformance',
+    coverage,
+  ],
   workflows: ['quality / Workflow concurrency convention'],
 };
 const lanes = Object.keys(checks);
@@ -23,11 +27,11 @@ function cliLanes(file) {
   const install = /^package(?:-lock)?\.json$/.test(file);
   if (
     install ||
-    /^(src\/|tools\/compiler-conformance\/java\/|test\/.*\bjava(?:\b|[A-Z])|scripts\/|vendor\/)/.test(
+    /^(src\/|tools\/compiler-conformance\/|test\/.*\b(?:compiler-conformance|java|typescript)(?:\b|[A-Z])|scripts\/|vendor\/)/.test(
       file,
     )
   )
-    selected.push('java');
+    selected.push('conformance');
   if (
     install ||
     /^(vendor\/|scripts\/|src\/core\/tree-sitter|.*(?:parser-loader|grpc-extractor))/.test(file)
@@ -64,7 +68,8 @@ function lanesForPath(path) {
     }
     return selected;
   }
-  if (path.startsWith('gitnexus-shared/')) return ['quality', 'cli', 'web', 'browser', 'java'];
+  if (path.startsWith('gitnexus-shared/'))
+    return ['quality', 'cli', 'web', 'browser', 'conformance'];
   if (path.startsWith('eval/')) return ['quality', 'eval'];
   if (path === 'Dockerfile.cli') return ['quality', 'docker', 'cli'];
   if (/^(docker-server(?:\.test)?\.mjs|Dockerfile\..+|docker-compose\.yaml)$/.test(path)) {
@@ -159,7 +164,8 @@ async function reusableLanes(github, repo, runId, changed) {
   if (!passed.has('CI Gate')) return reused;
   for (const lane of changed) {
     if (!checks[lane].every((name) => passed.has(name))) continue;
-    if (['cli', 'web', 'java'].includes(lane) && !available.has('coverage-reports')) continue;
+    if (['cli', 'web', 'conformance'].includes(lane) && !available.has('coverage-reports'))
+      continue;
     if (
       lane === 'eval' &&
       !['execution-pytest-locked', 'execution-preflight'].every((a) => available.has(a))
@@ -167,10 +173,10 @@ async function reusableLanes(github, repo, runId, changed) {
       continue;
     reused.add(lane);
   }
-  // Java LCOV travels inside the CLI report. If that report must be
+  // Compiler LCOV travels inside the CLI report. If that report must be
   // regenerated, so must the conformance coverage appended to it.
-  if (!reused.has('cli')) reused.delete('java');
-  if (changed.has('java') && !reused.has('java')) reused.delete('cli');
+  if (!reused.has('cli')) reused.delete('conformance');
+  if (changed.has('conformance') && !reused.has('conformance')) reused.delete('cli');
   return reused;
 }
 

@@ -24,6 +24,7 @@ import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
+import type { runScopeResolution } from './scope-resolution/pipeline/run.js';
 import {
   runPipeline,
   getPhaseOutput,
@@ -59,6 +60,8 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Receive each source site's binding after the scope-resolution phase emits graph edges. */
+  onScopeResolved?: Parameters<typeof runScopeResolution>[0]['onResolved'];
   /** Cooperative cancellation checked between parser dispatch and graph phases. */
   signal?: AbortSignal;
   /**
@@ -464,12 +467,14 @@ export const runPipelineFromRepo = async (
     totalFiles,
     usedWorkerPool,
     reparsedFileCount,
+    fileParseContexts,
     parseCacheHitFileCount,
     unavailableScopeLanguageFiles,
   } = getPhaseOutput<{
     totalFiles: number;
     usedWorkerPool: boolean;
     reparsedFileCount: number;
+    fileParseContexts: ReadonlyMap<string, string>;
     parseCacheHitFileCount: number;
     unavailableScopeLanguageFiles: number;
   }>(results, 'parse');
@@ -531,6 +536,7 @@ export const runPipelineFromRepo = async (
     undecidedSatisfaction,
     usedWorkerPool,
     reparsedFileCount,
+    fileParseContexts,
     parseCacheHitFileCount,
     scopeExtractionFailures,
     unavailableScopeLanguageFiles,
