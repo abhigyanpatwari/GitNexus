@@ -111,6 +111,14 @@ A zero-finding result does not establish safety. Re-run
 
 When a repo contains an `.agents/` directory, the standard and generated skills are also mirrored to `.agents/skills/` (e.g. `.agents/skills/gitnexus-cli/`, `.agents/skills/gitnexus-area-<name>/`) so agents that read repo-local `.agents/skills/` (like Codex) stay in sync.
 
+## Server instructions
+
+The `initialize` response includes `instructions`: the Always Do / Never Do tool-usage policy. It tells the model to run `impact` before an edit, run `detect_changes` before a commit, treat `risk: UNKNOWN` as unresolved, and prefer `query`, `context`, and `impact` over text search. Hosts that honor server instructions, including Claude Code and Cursor, surface that field to the model for the session.
+
+`gitnexus analyze` writes the same policy into the managed block in `AGENTS.md` and `CLAUDE.md`. Both copies are rendered from `gitnexus/src/mcp/tool-usage-policy.ts`, so a wording change reaches the server and the next analyze together. The server uses the default project-local runner (`node .gitnexus/run.cjs`) and asks clients to determine the selected repository's target branch. Per-index `--pdg` and Spring Actuator lines stay in the file block when that index was built with them. Symbol counts, resource links, and the skills table stay in the file block.
+
+The field is always sent. With `GITNEXUS_MCP_READ_ONLY=1`, the server describes `rename` as preview-only.
+
 ## MCP read-only mode
 
 Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. `rename` stays available as a preview-only tool: its `dry_run` must be omitted or `true`, and any other value is rejected before backend dispatch. Raw `cypher`, group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.

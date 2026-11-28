@@ -9,6 +9,8 @@
  *
  * Tools: list_repos, query, cypher, context, read_file, grep, impact, detect_changes, rename (preview by default; dry_run:false applies)
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
+ *
+ * initialize returns tool-usage instructions from tool-usage-policy.ts.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -33,6 +35,7 @@ import {
 import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend, McpToolCallContext } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import { mcpServerInstructions } from './tool-usage-policy.js';
 import {
   assertMcpReadOnlyResource,
   assertMcpReadOnlyToolCall,
@@ -225,6 +228,7 @@ export function createMCPServer(
         resources: {},
         prompts: {},
       },
+      instructions: mcpServerInstructions(readOnly),
     },
   );
 
