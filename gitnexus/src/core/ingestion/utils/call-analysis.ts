@@ -423,13 +423,17 @@ const RANGE_SUBSCRIPT_ARGUMENT_TYPES = new Set([
   'open_start_range_expression', // Swift `repos[..<2]`
 ]);
 
-/** Does a bracketed subscript call select a range, `repos[0..<2]`? */
+/** Does a bracketed subscript select a range or exceed the argument wrapper limit? */
 function isRangeSubscriptCall(node: SyntaxNode): boolean {
   const argumentList = node.lastNamedChild?.firstNamedChild;
   return (
     argumentList?.namedChildren.some((argument) => {
       const value = argument.childForFieldName('value') ?? argument;
-      return RANGE_SUBSCRIPT_ARGUMENT_TYPES.has(unwrapTransparentReceiver(value).type);
+      const unwrapped = unwrapTransparentReceiver(value);
+      return (
+        RANGE_SUBSCRIPT_ARGUMENT_TYPES.has(unwrapped.type) ||
+        (unwrapped !== value && isTransparentReceiverWrapper(unwrapped))
+      );
     }) ?? false
   );
 }

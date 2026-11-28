@@ -350,6 +350,7 @@ func partialIndexElement(grid: [[User]]) {
 func rangeIndexElement(repos: [User]) {
     repos[0..<2].first?.save()
     repos[(0..<2)].first?.save()
+    repos[((((0..<2))))].first?.save()
 }
 `,
     },
@@ -443,7 +444,7 @@ func rangeIndexElement(repos: [User]) {
         source: 'rangeIndexElement',
         member: 'save',
         targets: [],
-        drops: ['main.swift:42', 'main.swift:43'],
+        drops: ['main.swift:42', 'main.swift:43', 'main.swift:44'],
       },
     ],
   },
