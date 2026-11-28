@@ -255,6 +255,210 @@ describe('run-analyze module', () => {
     }
   }, 120_000);
 
+  it('discards an embedding checkpoint stamped under a different Move compiler (#2661)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-move-checkpoint-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-move-checkpoint-home-');
+    const tmpBin = await createTempDir('gitnexus-run-analyze-move-checkpoint-bin-');
+    const saved = {
+      home: process.env.GITNEXUS_HOME,
+      url: process.env.GITNEXUS_EMBEDDING_URL,
+      model: process.env.GITNEXUS_EMBEDDING_MODEL,
+      dims: process.env.GITNEXUS_EMBEDDING_DIMS,
+      extension: process.env.GITNEXUS_LBUG_EXTENSION_INSTALL,
+      moveFlow: process.env.MOVE_FLOW,
+    };
+    try {
+      process.env.GITNEXUS_HOME = tmpHome.dbPath;
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_DIMS = '384';
+      process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'never';
+      // Fake move-flow: answers --version, and serves a minimal MCP server
+      // whose queries return empty results (the package is skipped with a
+      // warning, like any unbuildable package) — enough to resolve a compiler
+      // identity without a real toolchain.
+      const fakeMoveFlow = path.join(tmpBin.dbPath, 'move-flow');
+      await fs.writeFile(
+        fakeMoveFlow,
+        [
+          '#!/usr/bin/env node',
+          "const readline = require('node:readline');",
+          "if (process.argv[2] === '--version') { console.log('move-flow 2.0.0'); process.exit(0); }",
+          'const rl = readline.createInterface({ input: process.stdin });',
+          "rl.on('line', (line) => {",
+          '  let msg;',
+          '  try { msg = JSON.parse(line); } catch { return; }',
+          '  if (msg.id === undefined) return;',
+          '  let result = {};',
+          "  if (msg.method === 'initialize') result = { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'fake-move-flow', version: '2.0.0' } };",
+          "  else if (msg.method === 'tools/list') result = { tools: [",
+          "    { name: 'move_package_query', inputSchema: { type: 'object', properties: { query: { enum: ['call_graph', 'facts'] } } } },",
+          "    { name: 'move_package_status', inputSchema: { type: 'object', properties: {} } },",
+          '  ] };',
+          "  else if (msg.method === 'tools/call') {",
+          "    const text = msg.params?.name === 'move_package_status' ? 'no errors or warnings' : '{}';",
+          '    result = { content: [{ type: "text", text }], isError: false };',
+          '  }',
+          "  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n');",
+          '});',
+          "process.stdin.on('end', () => process.exit(0));",
+          '',
+        ].join('\n'),
+      );
+      await fs.chmod(fakeMoveFlow, 0o755);
+      process.env.MOVE_FLOW = fakeMoveFlow;
+
+      const vector = Array.from({ length: 384 }, (_, i) => i / 384);
+      const fetchMock = vi.fn().mockImplementation(async (_input, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { input?: unknown[] };
+        const count = Array.isArray(body.input) ? body.input.length : 1;
+        return {
+          ok: true,
+          json: async () => ({
+            data: Array.from({ length: count }, () => ({ embedding: vector })),
+          }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await fs.mkdir(path.join(tmpRepo.dbPath, 'sources'), { recursive: true });
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'Move.toml'),
+        '[package]\nname = "checkpoint_move"\nversion = "1.0.0"\n\n[addresses]\ncheckpoint = "0x42"\n',
+      );
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'sources', 'main.move'),
+        'module checkpoint::main { public entry fun start(_account: &signer) {} }\n',
+      );
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'index.ts'),
+        'export function checkpointResume() { return "ready"; }\n',
+      );
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git add .', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const { resolveEmbeddingIdentity } =
+        await import('../../src/core/embeddings/embedding-identity.js');
+      const analyze = (options: Record<string, unknown>, onLog?: (message: string) => void) =>
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { skipAgentsMd: true, skipSkills: true, ...options },
+          { onProgress: () => {}, onLog },
+        );
+
+      await analyze({ embeddings: true });
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const completed = await loadMeta(storagePath);
+      expect(completed).not.toBeNull();
+      if (!completed) throw new Error('expected completed metadata');
+      // The fake compiler's identity is stamped on the meta.
+      const compilerIdentity = completed.moveCompilerIdentity;
+      expect(compilerIdentity?.version).toBe('2.0.0');
+      expect(compilerIdentity?.source).toBe('explicit');
+      expect(typeof compilerIdentity?.fingerprint).toBe('string');
+      if (!compilerIdentity) throw new Error('expected compiler identity');
+      const embeddingIdentity = resolveEmbeddingIdentity();
+      const [pendingNodeId] = await readEmbeddingNodeIds(tmpRepo.dbPath);
+      if (!pendingNodeId) throw new Error('expected a persisted embedding node');
+      const stampCheckpoint = (identity: unknown) =>
+        saveMeta(storagePath, {
+          ...completed,
+          embeddingCheckpoint: {
+            at: new Date().toISOString(),
+            nodesProcessed: 0,
+            totalNodes: 1,
+            chunksProcessed: 0,
+            model: 'test-model',
+            dimensions: 384,
+            provider: embeddingIdentity.provider,
+            pendingNodeIds: [pendingNodeId],
+            ...(identity ? { moveCompilerIdentity: identity } : {}),
+          },
+        } as RepoMeta);
+
+      // 1. Matching compiler identity resumes: the pending node is regenerated.
+      await stampCheckpoint(compilerIdentity);
+      fetchMock.mockClear();
+      const resumeLogs: string[] = [];
+      await analyze({}, (message) => resumeLogs.push(message));
+      expect(fetchMock).toHaveBeenCalled();
+      expect(resumeLogs.some((message) => message.includes('embedding checkpoint'))).toBe(true);
+      expect((await loadMeta(storagePath))?.embeddingCheckpoint).toBeUndefined();
+
+      // 2. Changed fingerprint discards: the pending node is skipped by hash
+      // (no fetch) and the run logs the discard.
+      const afterResume = await loadMeta(storagePath);
+      if (!afterResume) throw new Error('expected metadata after resume');
+      await saveMeta(storagePath, {
+        ...afterResume,
+        embeddingCheckpoint: {
+          at: new Date().toISOString(),
+          nodesProcessed: 0,
+          totalNodes: 1,
+          chunksProcessed: 0,
+          model: 'test-model',
+          dimensions: 384,
+          provider: embeddingIdentity.provider,
+          pendingNodeIds: [pendingNodeId],
+          moveCompilerIdentity: { ...compilerIdentity, fingerprint: 'sha-changed' },
+        },
+      } as RepoMeta);
+      fetchMock.mockClear();
+      const discardLogs: string[] = [];
+      await analyze({ embeddings: true }, (message) => discardLogs.push(message));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        discardLogs.some((message) => message.includes('Discarding the embedding checkpoint')),
+      ).toBe(true);
+      expect((await loadMeta(storagePath))?.embeddingCheckpoint).toBeUndefined();
+
+      // 3. A legacy checkpoint with no stamp at all is discarded the same way.
+      const afterDiscard = await loadMeta(storagePath);
+      if (!afterDiscard) throw new Error('expected metadata after discard');
+      await saveMeta(storagePath, {
+        ...afterDiscard,
+        embeddingCheckpoint: {
+          at: new Date().toISOString(),
+          nodesProcessed: 0,
+          totalNodes: 1,
+          chunksProcessed: 0,
+          model: 'test-model',
+          dimensions: 384,
+          provider: embeddingIdentity.provider,
+          pendingNodeIds: [pendingNodeId],
+        },
+      } as RepoMeta);
+      fetchMock.mockClear();
+      const legacyLogs: string[] = [];
+      await analyze({ embeddings: true }, (message) => legacyLogs.push(message));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        legacyLogs.some((message) => message.includes('Discarding the embedding checkpoint')),
+      ).toBe(true);
+      expect((await loadMeta(storagePath))?.embeddingCheckpoint).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+      const restore = (key: string, value: string | undefined) => {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      };
+      restore('GITNEXUS_HOME', saved.home);
+      restore('GITNEXUS_EMBEDDING_URL', saved.url);
+      restore('GITNEXUS_EMBEDDING_MODEL', saved.model);
+      restore('GITNEXUS_EMBEDDING_DIMS', saved.dims);
+      restore('GITNEXUS_LBUG_EXTENSION_INSTALL', saved.extension);
+      restore('MOVE_FLOW', saved.moveFlow);
+      await tmpRepo.cleanup();
+      await tmpHome.cleanup();
+      await tmpBin.cleanup();
+    }
+  }, 180_000);
+
   it('plain analyze on another branch adopts the flat workspace slot (#2354)', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-workspace-');
     const tmpHome = await createTempDir('gitnexus-run-analyze-workspace-home-');

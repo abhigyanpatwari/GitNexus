@@ -34,6 +34,7 @@ import {
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
 import { isValidQueryParams } from '../core/lbug/query-params.js';
+import { sameMoveCompilerIdentity } from '../core/move/constants.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -1807,7 +1808,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               if (!embeddingMeta) {
                 throw new Error('Repository metadata is missing; run gitnexus analyze first');
               }
-              const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
+              let priorCheckpoint = embeddingMeta.embeddingCheckpoint;
               if (priorCheckpoint && priorCheckpoint.provider !== embeddingIdentity.provider) {
                 throw new Error(
                   'Cannot resume embedding checkpoint: the embedding provider configuration differs.',
@@ -1824,6 +1825,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     `${embeddingIdentity.model} at ${embeddingIdentity.dimensions}.`,
                 );
               }
+              // #2661: refuse embedding progress written under a different
+              // Move compiler. The analyzed meta is the source of truth for
+              // the compiler that produced the persisted graph; a checkpoint
+              // stamped without it (or under another one) is discarded and
+              // the embed run regenerates from scratch instead of resuming.
+              if (
+                priorCheckpoint &&
+                embeddingMeta.moveCompilerIdentity &&
+                !sameMoveCompilerIdentity(
+                  priorCheckpoint.moveCompilerIdentity,
+                  embeddingMeta.moveCompilerIdentity,
+                )
+              ) {
+                console.log(
+                  '[embed] Discarding the embedding checkpoint: the Move compiler ' +
+                    'changed since it was written; regenerating embeddings from scratch.',
+                );
+                priorCheckpoint = undefined;
+              }
               const forceReembedNodeIds = new Set(priorCheckpoint?.pendingNodeIds ?? []);
               const saveEmbeddingCheckpoint = async (
                 checkpoint: {
@@ -1839,6 +1859,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     at: new Date().toISOString(),
                     ...checkpoint,
                     ...embeddingIdentity,
+                    // #2661: carry the compiler identity from the analyzed
+                    // meta so a later CLI resume can refuse progress from a
+                    // different compiler.
+                    moveCompilerIdentity: embeddingMeta.moveCompilerIdentity,
                     pendingNodeIds,
                   },
                 };

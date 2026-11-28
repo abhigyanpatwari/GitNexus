@@ -19,6 +19,7 @@ import {
   isMoveCompilerInputPath,
   moveCompilerRequiresFullRebuild,
   persistedMoveGraphRequiresCompiler,
+  sameMoveCompilerIdentity,
   shouldProvisionMoveFlowBeforeFastPath,
 } from './move/constants.js';
 import { summarizeMoveConsistency } from './move/consistency.js';
@@ -1394,6 +1395,36 @@ async function runFullAnalysisInner(
 
   applyMoveCompilerRebuildPolicy();
 
+  // #2661: an embedding checkpoint stamped under a different Move compiler
+  // must not resume. The checkpoint only recorded provider/model/dimensions,
+  // so a compiler change underneath it was invisible: the reuse gate above
+  // forces a full graph rebuild, and the embedding resume must follow it
+  // instead of reusing progress from the old compiler's graph. Discard the
+  // checkpoint (a full re-embed follows) rather than throwing: the run is
+  // already rebuilding, so no --drop-embeddings round-trip is needed. A
+  // checkpoint with no stamp at all (written before this fix, or by the
+  // embed endpoint before it stamped) is treated the same way on a Move
+  // repo, mirroring the reuse gate's missing-identity policy. Skipped when
+  // the compiler is unavailable: the run preserves the previous Move facts,
+  // so the checkpoint still describes the persisted graph.
+  if (
+    resumeEmbeddingCheckpoint &&
+    hasMovePackages &&
+    moveFlow?.identity &&
+    !sameMoveCompilerIdentity(
+      existingMeta?.embeddingCheckpoint?.moveCompilerIdentity,
+      moveFlow.identity,
+    )
+  ) {
+    log(
+      'Discarding the embedding checkpoint: it was written under a different ' +
+        'Move compiler (or before compiler stamping); embeddings will be ' +
+        'regenerated from scratch.',
+    );
+    resumeEmbeddingCheckpoint = false;
+    pendingEmbeddingNodeIds = new Set();
+  }
+
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
   //   --embeddings              -> load cache, restore, then generate any new ones
@@ -2520,6 +2551,12 @@ async function runFullAnalysisInner(
             model: embeddingIdentity.model,
             dimensions: embeddingIdentity.dimensions,
             provider: embeddingIdentity.provider,
+            // #2661: stamp the compiler that produced the graph being
+            // embedded, so a resume can refuse progress from a different
+            // compiler. Falls back to the persisted identity when the
+            // compiler is transiently unavailable on an incremental run
+            // (the final meta write preserves it in that case too).
+            moveCompilerIdentity: moveFlow?.identity ?? existingMeta?.moveCompilerIdentity,
             pendingNodeIds,
           },
           pdg: resolvePdgConfig(options),

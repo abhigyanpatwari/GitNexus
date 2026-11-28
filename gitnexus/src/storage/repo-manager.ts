@@ -294,6 +294,14 @@ export interface RepoMeta {
      * the current content hash.
      */
     pendingNodeIds?: string[];
+    /**
+     * Compiler identity that produced the graph this checkpoint's embedding
+     * progress belongs to (#2661). Absent on checkpoints written before the
+     * stamp existed and on repos without Move packages. A resume on a Move
+     * repo treats a missing or mismatched identity as a changed compiler and
+     * discards the checkpoint instead of resuming from it.
+     */
+    moveCompilerIdentity?: MoveCompilerIdentity;
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the
