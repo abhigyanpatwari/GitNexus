@@ -460,7 +460,8 @@ Mixed diffs count Markdown sections separately. incompatible_calls lists call si
       properties: {
         scope: {
           type: 'string',
-          description: 'What to analyze: "unstaged" (default), "staged", "all", or "compare"',
+          description:
+            'What to analyze: "unstaged" (default), "staged", "all" (tracked changes vs HEAD; untracked indexed sources are reported as omitted when that diff is empty), or "compare"',
           enum: [...DETECT_CHANGES_SCOPES],
           default: 'unstaged',
         },
