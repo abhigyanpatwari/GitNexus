@@ -1500,6 +1500,19 @@ jobs:
           path: gitnexus/go-route-facts.json
           retention-days: 5
 
+      - name: Go ownership and deferred callable-flow scaling (#4027)
+        if: ${{ !cancelled() }}
+        working-directory: gitnexus
+        run: node --experimental-test-module-mocks bench/go-resolution-scaling/measure.cjs --check --output go-resolution-scaling.json
+
+      - name: Upload Go resolution measurements
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: go-resolution-scaling
+          path: gitnexus/go-resolution-scaling.json
+          retention-days: 5
+
       - name: Cross-language scope-capture fingerprint + scaling guards
         # Runs even after an earlier guard fails (#2895). Every step here was
         # fail-fast, so the FIRST failing --check aborted the job and every guard
