@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pruneBranchesCommand, type PruneBranchesResult } from '../../src/cli/registry-prune.js';
 import { branchSlug } from '../../src/storage/branch-index.js';
 import * as gitModule from '../../src/storage/git.js';
+import { acquireIndexLock } from '../../src/storage/index-lock.js';
 import {
   listRegisteredRepos,
   registerRepo,
@@ -315,5 +316,113 @@ describe('registry prune-branches (#3332)', () => {
     await expect(fs.access(dirs['feat/cli-gone'])).rejects.toThrow();
     const [entry] = await listRegisteredRepos();
     expect(entry.branches).toBeUndefined();
+  });
+
+  it('fails closed when registry.json is corrupt instead of treating it as empty', async () => {
+    const { repo, dirs } = await seedBranches({
+      deleted: ['feat/gone'],
+      live: [],
+    });
+    await fs.writeFile(path.join(home.dbPath, 'registry.json'), '{not-valid-json', 'utf8');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await pruneBranchesCommand({ repo, json: true });
+
+    expect(result.incomplete).toBe(true);
+    expect(result.pruned).toEqual([]);
+    expect(result.error).toBeTruthy();
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual(result);
+    await expect(fs.access(dirs['feat/gone'])).resolves.toBeUndefined();
+  });
+
+  it('fails closed when storage metadata repoPath does not match the checkout', async () => {
+    const { repo, storagePath, dirs } = await seedBranches({
+      deleted: ['feat/gone'],
+      live: [],
+    });
+    await saveMeta(storagePath, {
+      repoPath: path.join(home.dbPath, 'some-other-repo'),
+      lastCommit: 'aaa',
+      indexedAt: '2026-10-01T00:00:00.000Z',
+      branch: 'main',
+      stats: { files: 1, nodes: 1 },
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await pruneBranchesCommand({ repo, json: true });
+
+    expect(result.incomplete).toBe(true);
+    expect(result.pruned).toEqual([]);
+    expect(result.error).toContain('does not match checkout');
+    expect(process.exitCode).toBe(1);
+    await expect(fs.access(dirs['feat/gone'])).resolves.toBeUndefined();
+  });
+
+  it('skips a slot whose index lock is held by an active analyzer', async () => {
+    const { repo, dirs } = await seedBranches({
+      deleted: ['feat/busy'],
+      live: [],
+    });
+    const lock = await acquireIndexLock(dirs['feat/busy'], { timeoutMs: 100 });
+    expect(lock.lockFree).not.toBe(true);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await pruneBranchesCommand({ repo, json: true });
+
+      expect(result.pruned).toEqual([]);
+      expect(result.skippedBusy).toEqual(['feat/busy']);
+      expect(process.exitCode).toBe(1);
+      await expect(fs.access(dirs['feat/busy'])).resolves.toBeUndefined();
+      const [entry] = await listRegisteredRepos();
+      expect(entry.branches?.map((b) => b.branch)).toEqual(['feat/busy']);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it('resolves and prunes a disposable linked worktree independently of its main checkout', async () => {
+    const { repo: mainRepo, dirs: mainDirs } = await seedBranches({
+      deleted: ['feat/main-gone'],
+      live: [],
+    });
+    const wtHandle = await createTempDir('gitnexus-reg-prune-wt-');
+    try {
+      const wtDir = path.join(wtHandle.dbPath, 'wt');
+      execFileSync('git', ['worktree', 'add', wtDir, '-b', 'wt-base'], {
+        cwd: mainRepo,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      const wtStorage = path.join(wtDir, '.gitnexus');
+      const wtMeta = (branch: string): RepoMeta => ({
+        repoPath: wtDir,
+        lastCommit: 'bbb',
+        indexedAt: '2026-10-01T00:00:00.000Z',
+        branch,
+        stats: { files: 1, nodes: 1 },
+      });
+      await saveMeta(wtStorage, wtMeta('wt-base'));
+      await registerRepo(wtDir, wtMeta('wt-base'));
+      await registerRepo(wtDir, wtMeta('feat/wt-gone'), { branch: 'feat/wt-gone' });
+      const wtSlotDir = path.join(wtStorage, 'branches', branchSlug('feat/wt-gone'));
+      await saveMeta(wtSlotDir, wtMeta('feat/wt-gone'));
+
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const result = await pruneBranchesCommand({ repo: wtDir, json: true });
+
+      expect(result.pruned).toEqual(['feat/wt-gone']);
+      expect(process.exitCode).toBeUndefined();
+      await expect(fs.access(wtSlotDir)).rejects.toThrow();
+      // Main checkout's stale slot must remain untouched.
+      await expect(fs.access(mainDirs['feat/main-gone'])).resolves.toBeUndefined();
+    } finally {
+      execFileSync('git', ['worktree', 'prune'], {
+        cwd: mainRepo,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      await wtHandle.cleanup();
+    }
   });
 });

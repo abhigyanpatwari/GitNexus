@@ -416,7 +416,10 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
 /**
  * Find the git repository root from any path inside the repo
  */
-export const getGitRoot = (fromPath: string): string | null => {
+export const getGitRoot = (
+  fromPath: string,
+  options?: { scrubLocalEnv?: boolean },
+): string | null => {
   const resolved = path.resolve(fromPath);
   // Avoid git rev-parse --show-toplevel trimming trailing spaces from the
   // repository root on Windows; callers that need identity keys canonicalize
@@ -430,6 +433,7 @@ export const getGitRoot = (fromPath: string): string | null => {
         // Suppress stderr -- see getCurrentCommit comment and #1172.
         stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,
+        ...(options?.scrubLocalEnv ? { env: scrubbedGitEnv() } : {}),
       }),
     );
     // On Windows, git returns /d/Projects/Foo — path.resolve normalizes to D:\Projects\Foo

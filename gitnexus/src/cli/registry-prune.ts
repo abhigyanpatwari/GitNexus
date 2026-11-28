@@ -8,12 +8,17 @@
 
 import path from 'node:path';
 import { logger } from '../core/logger.js';
-import { listLocalHeads } from '../storage/git.js';
+import { getGitRoot, listLocalHeads } from '../storage/git.js';
+import { acquireIndexLock } from '../storage/index-lock.js';
 import {
+  canonicalizePath,
   findRegistryEntryByRepoPath,
-  findRepo,
-  listRegisteredRepos,
+  loadRepo,
+  readRegistryStrictIfPresent,
+  registryPathEquals,
+  type RegistryEntry,
 } from '../storage/repo-manager.js';
+import { loadMeta } from '../storage/repo-meta.js';
 import {
   isDeleteCandidate,
   listStaleBranchSlots,
@@ -39,11 +44,24 @@ export interface PruneBranchesResult {
   dryRun: boolean;
   pruned: string[];
   skippedLive: string[];
+  skippedBusy?: string[];
   failed: PruneBranchesFailure[];
   probeFailed: string[];
   incomplete?: boolean;
   error?: string;
 }
+
+const isSlotBusy = async (slotDir: string): Promise<boolean> => {
+  let lock: Awaited<ReturnType<typeof acquireIndexLock>> | undefined;
+  try {
+    lock = await acquireIndexLock(slotDir, { timeoutMs: 1, sweep: false });
+    return lock.lockFree;
+  } catch {
+    return true;
+  } finally {
+    lock?.release();
+  }
+};
 
 function emitResult(result: PruneBranchesResult, asJson: boolean): void {
   if (asJson) {
@@ -51,18 +69,30 @@ function emitResult(result: PruneBranchesResult, asJson: boolean): void {
     return;
   }
 
+  const busyCount = result.skippedBusy?.length ?? 0;
+
+  if (
+    !result.registered &&
+    !result.error &&
+    result.pruned.length === 0 &&
+    result.skippedLive.length === 0 &&
+    busyCount === 0 &&
+    result.failed.length === 0 &&
+    result.probeFailed.length === 0
+  ) {
+    console.log(`No GitNexus index found for ${result.repoPath}; nothing to prune.`);
+    return;
+  }
+
   if (
     !result.error &&
     result.pruned.length === 0 &&
     result.skippedLive.length === 0 &&
+    busyCount === 0 &&
     result.failed.length === 0 &&
     result.probeFailed.length === 0
   ) {
-    console.log(
-      result.registered
-        ? 'No stale branch indexes found.'
-        : `No GitNexus index found for ${result.repoPath}; nothing to prune.`,
-    );
+    console.log('No stale branch indexes found.');
     return;
   }
 
@@ -93,6 +123,11 @@ function emitResult(result: PruneBranchesResult, asJson: boolean): void {
       `Skipped ${result.skippedLive.length} live branch(es): ${result.skippedLive.join(', ')}`,
     );
   }
+  if (result.skippedBusy && result.skippedBusy.length > 0) {
+    console.log(
+      `Skipped ${result.skippedBusy.length} busy branch slot(s): ${result.skippedBusy.join(', ')}`,
+    );
+  }
   if (result.probeFailed.length > 0) {
     console.log(
       `Could not inspect ${result.probeFailed.length} branch slot(s): ${result.probeFailed.join(', ')}`,
@@ -113,40 +148,15 @@ export const pruneBranchesCommand = async (
   const dryRun = Boolean(options?.dryRun);
   const asJson = Boolean(options?.json);
 
-  const repo = await findRepo(targetDir);
-  if (!repo) {
+  // Fail closed when registry.json exists but is corrupt or unreadable so it
+  // is never treated as an empty successful prune.
+  let strictEntries: RegistryEntry[] | undefined;
+  try {
+    strictEntries = await readRegistryStrictIfPresent();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     const result: PruneBranchesResult = {
       repoPath: targetDir,
-      registered: false,
-      dryRun,
-      pruned: [],
-      skippedLive: [],
-      failed: [],
-      probeFailed: [],
-    };
-    emitResult(result, asJson);
-    return result;
-  }
-
-  let entries: Awaited<ReturnType<typeof listRegisteredRepos>>;
-  let storagePath: string;
-  try {
-    [entries, storagePath] = await Promise.all([
-      listRegisteredRepos(),
-      requireDeletableStoragePath({
-        path: repo.repoPath,
-        storagePath: repo.storagePath,
-      }),
-    ]);
-  } catch (err) {
-    const message =
-      err instanceof StorageDeletionError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    const result: PruneBranchesResult = {
-      repoPath: repo.repoPath,
       registered: false,
       dryRun,
       pruned: [],
@@ -161,11 +171,114 @@ export const pruneBranchesCommand = async (
     return result;
   }
 
-  const entry = findRegistryEntryByRepoPath(entries, repo.repoPath);
+  const checkoutRoot = getGitRoot(targetDir, { scrubLocalEnv: true }) ?? targetDir;
+  const entry = findRegistryEntryByRepoPath(strictEntries ?? [], checkoutRoot);
+  const repo = await loadRepo(checkoutRoot);
+
+  const ownerTarget = entry
+    ? { path: entry.path, storagePath: entry.storagePath }
+    : repo
+      ? { path: repo.repoPath, storagePath: repo.storagePath }
+      : null;
+
+  if (!ownerTarget) {
+    const result: PruneBranchesResult = {
+      repoPath: checkoutRoot,
+      registered: false,
+      dryRun,
+      pruned: [],
+      skippedLive: [],
+      failed: [],
+      probeFailed: [],
+    };
+    emitResult(result, asJson);
+    return result;
+  }
+
+  // Validate checkout and registered storage identity before any deletion.
+  if (entry && repo) {
+    const sameRepo = registryPathEquals(
+      canonicalizePath(entry.path),
+      canonicalizePath(repo.repoPath),
+    );
+    const sameStorage = registryPathEquals(
+      canonicalizePath(entry.storagePath),
+      canonicalizePath(repo.storagePath),
+    );
+    if (!sameRepo || !sameStorage) {
+      const result: PruneBranchesResult = {
+        repoPath: checkoutRoot,
+        registered: true,
+        dryRun,
+        pruned: [],
+        skippedLive: [],
+        failed: [],
+        probeFailed: [],
+        incomplete: true,
+        error: `Storage identity mismatch between checkout (${repo.storagePath}) and registry (${entry.storagePath}).`,
+      };
+      emitResult(result, asJson);
+      process.exitCode = 1;
+      return result;
+    }
+  }
+
+  const resolvedRepoPath = repo?.repoPath ?? ownerTarget.path;
+  const rawStoragePath = repo?.storagePath ?? ownerTarget.storagePath;
   const registered = Boolean(entry);
 
+  let storagePath: string;
+  try {
+    storagePath = await requireDeletableStoragePath({
+      path: resolvedRepoPath,
+      storagePath: rawStoragePath,
+    });
+  } catch (err) {
+    const message =
+      err instanceof StorageDeletionError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    const result: PruneBranchesResult = {
+      repoPath: resolvedRepoPath,
+      registered,
+      dryRun,
+      pruned: [],
+      skippedLive: [],
+      failed: [],
+      probeFailed: [],
+      incomplete: true,
+      error: message,
+    };
+    emitResult(result, asJson);
+    process.exitCode = 1;
+    return result;
+  }
+
+  const storageMeta = await loadMeta(storagePath);
+  if (
+    storageMeta?.repoPath &&
+    !registryPathEquals(canonicalizePath(storageMeta.repoPath), canonicalizePath(resolvedRepoPath))
+  ) {
+    const result: PruneBranchesResult = {
+      repoPath: resolvedRepoPath,
+      registered,
+      dryRun,
+      pruned: [],
+      skippedLive: [],
+      failed: [],
+      probeFailed: [],
+      incomplete: true,
+      error: `Storage metadata repoPath (${storageMeta.repoPath}) does not match checkout (${resolvedRepoPath}).`,
+    };
+    emitResult(result, asJson);
+    process.exitCode = 1;
+    return result;
+  }
+
   const slots = await listStaleBranchSlots({
-    repoPath: repo.repoPath,
+    repoPath: resolvedRepoPath,
     storagePath,
     branches: entry?.branches,
     includeSize: false,
@@ -174,7 +287,7 @@ export const pruneBranchesCommand = async (
   const listingBlock = staleListingBlock(slots);
   if (listingBlock === 'heads-unavailable' || listingBlock === 'listing-failed') {
     const result: PruneBranchesResult = {
-      repoPath: repo.repoPath,
+      repoPath: resolvedRepoPath,
       registered,
       dryRun,
       pruned: [],
@@ -196,6 +309,7 @@ export const pruneBranchesCommand = async (
 
   const pruned: string[] = [];
   const skippedLive: string[] = [];
+  const skippedBusy: string[] = [];
   const failed: PruneBranchesFailure[] = [];
   let incomplete = false;
   let error: string | undefined;
@@ -206,7 +320,7 @@ export const pruneBranchesCommand = async (
     }
   } else {
     for (const slot of candidates) {
-      const heads = listLocalHeads(repo.repoPath, { scrubLocalEnv: true });
+      const heads = listLocalHeads(resolvedRepoPath, { scrubLocalEnv: true });
       if (heads === null) {
         incomplete = true;
         error = 'heads-unavailable';
@@ -216,8 +330,12 @@ export const pruneBranchesCommand = async (
         skippedLive.push(slot.branch);
         continue;
       }
+      if (slot.dir !== null && (await isSlotBusy(slot.dir))) {
+        skippedBusy.push(slot.branch);
+        continue;
+      }
       const removed = await removeBranchSlot({
-        repoPath: repo.repoPath,
+        repoPath: resolvedRepoPath,
         storagePath,
         branch: slot.branch,
         dir: slot.dir,
@@ -234,11 +352,12 @@ export const pruneBranchesCommand = async (
   }
 
   const result: PruneBranchesResult = {
-    repoPath: repo.repoPath,
+    repoPath: resolvedRepoPath,
     registered,
     dryRun,
     pruned,
     skippedLive,
+    ...(skippedBusy.length > 0 ? { skippedBusy } : {}),
     failed,
     probeFailed,
     ...(incomplete ? { incomplete: true } : {}),
@@ -247,7 +366,7 @@ export const pruneBranchesCommand = async (
 
   emitResult(result, asJson);
 
-  if (failed.length > 0 || incomplete || probeFailed.length > 0) {
+  if (failed.length > 0 || incomplete || probeFailed.length > 0 || skippedBusy.length > 0) {
     process.exitCode = 1;
   }
 
