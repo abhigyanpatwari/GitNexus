@@ -183,15 +183,34 @@ function inNamedNamespace(node: SyntaxNode): boolean {
   return named;
 }
 
-function catchIsUniversalThrowable(catchClause: SyntaxNode): boolean {
-  const raw = catchTypeText(catchClause);
+function catchTypeNames(catchClause: SyntaxNode): string[] {
+  const names: string[] = [];
+  const stack = [...(catchClause.children ?? [])];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.type === 'variable_name' || current.type === 'compound_statement') continue;
+    if (current.type === 'named_type') {
+      names.push(current.text.replace(/\s+/g, ''));
+      continue;
+    }
+    for (const child of current.children ?? []) stack.push(child);
+  }
+  return names.length > 0 ? names : [catchTypeText(catchClause)].filter((name) => name.length > 0);
+}
+
+function typeIsUniversalThrowable(raw: string, catchClause: SyntaxNode): boolean {
   const bare = raw.replace(/^\\+/, '');
   // PHP class names are case-insensitive: `catch (throwable)` is `\Throwable`.
+  // A union is universal when any arm is Throwable: `catch (Throwable|Stringable)`.
   if (bare.toLowerCase() === 'throwable') {
     if (raw.startsWith('\\') || !inNamedNamespace(catchClause)) return true;
     return importsGlobalThrowable(catchClause, bare);
   }
   return importsGlobalThrowable(catchClause, bare);
+}
+
+function catchIsUniversalThrowable(catchClause: SyntaxNode): boolean {
+  return catchTypeNames(catchClause).some((name) => typeIsUniversalThrowable(name, catchClause));
 }
 
 function namespaceIsBraced(node: SyntaxNode): boolean {

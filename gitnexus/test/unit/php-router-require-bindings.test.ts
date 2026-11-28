@@ -698,6 +698,19 @@ $app->router->group(['controller' => HomeController::class, 'prefix' => 'api'], 
     expect(bindings[0]?.controller).toBe('App\\Http\\Controllers\\HomeController');
   });
 
+  it('a union catch that includes Throwable handles the throw', () => {
+    const source = `<?php
+try { throw new Exception(); } catch (Throwable|Stringable $e) {}
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
   it('a differently cased Throwable catch still handles the throw', () => {
     const source = `<?php
 try { throw new Exception(); } catch (throwable $e) {}
