@@ -215,6 +215,20 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
+  // --drop-embeddings forces a rebuild, so the FTS-only path would report a
+  // drop-embeddings rebuild that never ran (PR #4170 review).
+  it('rejects combining --repair-fts with --drop-embeddings', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true, dropEmbeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(cliErrorMock).toHaveBeenCalledWith(
+      expect.stringMatching(/cannot combine `--repair-fts` with a full rebuild/i),
+    );
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+  });
+
   it.each([{ skills: [] }, { skills: [{ name: 'a', label: 'A', symbolCount: 10, fileCount: 2 }] }])(
     'passes the regenerated inventory and --no-stats to the instruction writer ($skills)',
     async ({ skills }) => {

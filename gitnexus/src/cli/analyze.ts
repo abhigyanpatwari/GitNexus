@@ -1588,7 +1588,10 @@ const analyzeCommandImpl = async (
     }
   }
 
-  if (options.repairFts && (options.force || options.parseCache === false)) {
+  if (
+    options.repairFts &&
+    (options.force || options.parseCache === false || options.dropEmbeddings)
+  ) {
     cliError(
       '  Cannot combine `--repair-fts` with a full rebuild. ' +
         'Use `--repair-fts` alone for fast FTS-only repair.\n',
