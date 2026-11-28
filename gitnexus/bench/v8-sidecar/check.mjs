@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertReferenceAdditionReceipt } from '../lib/reference-additions.mjs';
+import {
+  assertReferenceAdditionReceipt,
+  assertSemanticNodes,
+} from '../lib/reference-additions.mjs';
 import { quantile } from '../mcp-query/statistics.mjs';
 
 export function assessPairs(pairs) {
@@ -53,7 +56,7 @@ export function indexingMetrics(report, lifecycle) {
     }
   }
   const checkGraph = (baseline, candidate) => {
-    assert.deepEqual(candidate.graph.nodes, baseline.graph.nodes, 'Semantic nodes differ');
+    assertSemanticNodes(report.corpusTrees, baseline.graph.nodes, candidate.graph.nodes);
     const receipt = receipts.get(baseline.name);
     assertReferenceAdditionReceipt(
       report.corpusTrees,

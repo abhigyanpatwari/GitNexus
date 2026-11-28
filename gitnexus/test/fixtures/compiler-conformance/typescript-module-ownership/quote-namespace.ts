@@ -1,0 +1,1 @@
+export * as "other object" from "./left.js";

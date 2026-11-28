@@ -10,14 +10,16 @@
  * named param or an optional positional (`[...]`) param is optional.
  */
 
+import { dartNominalType } from './nullable-heritage.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { dartMethodConfig } from '../../method-extractors/configs/dart.js';
+import { dartMethodConfig, type DartParameterInfo } from '../../method-extractors/configs/dart.js';
 import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface DartArityMetadata {
   parameterCount: number | undefined;
   requiredParameterCount: number | undefined;
   parameterTypes: readonly string[] | undefined;
+  readonly declaredParameterTypes?: readonly string[];
 }
 
 /**
@@ -27,7 +29,7 @@ interface DartArityMetadata {
  * internally, so the wrapper is the correct node to pass.
  */
 export function computeDartArityMetadata(fnNode: SyntaxNode): DartArityMetadata {
-  const params = dartMethodConfig.extractParameters?.(fnNode) ?? [];
+  const params: readonly DartParameterInfo[] = dartMethodConfig.extractParameters?.(fnNode) ?? [];
 
   let optionalCount = 0;
   const types = declarationParameterTypes(params);
@@ -36,7 +38,16 @@ export function computeDartArityMetadata(fnNode: SyntaxNode): DartArityMetadata 
   }
 
   const total = params.length;
+  const declared = params.some((p) => p.nullableHeritageType?.endsWith('?'))
+    ? params.map((p) =>
+        p.type && p.nullableHeritageType !== null
+          ? dartNominalType(p.nullableHeritageType ?? p.type)
+          : null,
+      )
+    : undefined;
+  const declaredParameterTypes = declared?.every((type) => type !== null) ? declared : undefined;
   return {
+    declaredParameterTypes,
     parameterCount: total,
     requiredParameterCount: total - optionalCount,
     parameterTypes: types.length > 0 ? types : undefined,
