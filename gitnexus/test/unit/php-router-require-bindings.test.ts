@@ -570,6 +570,40 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toBeUndefined();
   });
 
+  it('a require passed as a call argument counts as already run', () => {
+    const source = `<?php
+register(require_once __DIR__ . '/../routes/web.php');
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a cycle of route files still applies the group context', () => {
+    const a = extractBindings(
+      `<?php
+$router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/b.php';
+});
+`,
+      'routes/a.php',
+    );
+    const b = extractBindings(
+      `<?php
+require __DIR__ . '/a.php';
+`,
+      'routes/b.php',
+    );
+    const map = resolvePhpRouterRequireBindings(new Set(['routes/a.php', 'routes/b.php']), [
+      ...a,
+      ...b,
+    ]);
+    expect(map.get('routes/b.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
   it('a require in a while condition counts as already run', () => {
     const source = `<?php
 while (require_once __DIR__ . '/../routes/web.php') {}

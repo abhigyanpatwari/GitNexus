@@ -190,8 +190,10 @@ export function resolvePhpRouterRequireBindings(
     }
     return current;
   };
-  for (const host of [...byHost.keys()].sort()) {
-    if (required.has(host)) continue;
+  const hosts = [...byHost.keys()].sort();
+  const roots = hosts.filter((host) => !required.has(host));
+  // A cycle with no outside entry still needs a walk. onChain stops the loop.
+  for (const host of roots.length > 0 ? roots : hosts) {
     expand(host, IDENTITY_CONTEXT, null, new Set());
   }
 

@@ -120,6 +120,11 @@ const MUST_RUN_CONTAINER_TYPES = new Set([
   'do_statement',
   'finally_clause',
   'assignment_expression',
+  'function_call_expression',
+  'scoped_call_expression',
+  'member_call_expression',
+  'arguments',
+  'argument',
 ]);
 
 const SHORT_CIRCUIT_OPERATORS = new Set(['&&', '||', 'and', 'or', '??']);
