@@ -1049,6 +1049,44 @@ describe('TypeScript cast/non-null constructor inference', () => {
 });
 
 // ---------------------------------------------------------------------------
+// satisfies / parenthesized constructor inference: new X() satisfies T, (new X())
+// ---------------------------------------------------------------------------
+
+describe('TypeScript satisfies/parenthesized constructor inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-satisfies-paren-constructor-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes and the Saveable save signature', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
+    // User.save, Repo.save, and the Saveable.save signature
+    expect(saveMethods.length).toBe(3);
+  });
+
+  // Both callers sit in their own function so each assertion pins one call
+  // site: an unresolved receiver must not pass by fanning out to every save.
+  const saveTargets = (caller: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === caller && c.target === 'save')
+      .map((c) => c.targetFilePath)
+      .sort();
+
+  it('resolves user.save() to User.save via new User() satisfies Saveable', () => {
+    expect(saveTargets('saveUser')).toEqual(['src/user.ts']);
+  });
+
+  it('resolves repo.save() to Repo.save via (new Repo())', () => {
+    expect(saveTargets('saveRepo')).toEqual(['src/repo.ts']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Double-cast constructor inference: new X() as unknown as T
 // ---------------------------------------------------------------------------
 
