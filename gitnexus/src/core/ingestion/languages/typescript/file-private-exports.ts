@@ -2,6 +2,7 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { collectEsmExportEvidence } from '../../ts-js-export-marker.js';
 import { getJsParser } from '../javascript/query.js';
+import { fixedNodeModuleFormat } from './cjs-export-assignment.js';
 import { getTsParser } from './query.js';
 
 /** Certify only modules whose exports the graph's syntactic checker can see. */
@@ -21,7 +22,12 @@ export function hasFilePrivateExportSemantics(filePath: string, content: string)
       bufferSize: getTreeSitterBufferSize(content),
     });
     if (tree.rootNode.hasError) return false;
-    const evidence = collectEsmExportEvidence(tree.rootNode, filePath);
+    const evidence = collectEsmExportEvidence(
+      tree.rootNode,
+      filePath,
+      content,
+      fixedNodeModuleFormat(filePath),
+    );
     if (!evidence || evidence.commonJs) return false;
     let isModule = false;
     for (const statement of tree.rootNode.namedChildren) {

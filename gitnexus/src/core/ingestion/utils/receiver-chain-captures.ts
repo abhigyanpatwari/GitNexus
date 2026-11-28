@@ -55,12 +55,13 @@ function isReceiverMatch(grouped: Record<string, Capture>): boolean {
 export function synthesizeReceiverChainCapture(
   grouped: Record<string, Capture>,
   receiverNode: SyntaxNode | undefined | null,
+  literalIndexName?: (index: SyntaxNode | null) => string | undefined,
 ): void {
   if (receiverNode === undefined || receiverNode === null) return;
   if (grouped['@reference.receiver-chain'] !== undefined) return;
   if (!isReceiverMatch(grouped)) return;
 
-  const extracted = extractMixedChain(receiverNode);
+  const extracted = extractMixedChain(receiverNode, literalIndexName);
   if (extracted === undefined || extracted.baseReceiverName === undefined) return;
 
   const encoded = encodeReceiverChain(extracted.baseReceiverName, extracted.chain);

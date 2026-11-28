@@ -23,6 +23,7 @@ From `gitnexus/`:
 | `npm run test:unit`             | Unit tests only (`test/unit/`)                     | Tight development loop                |
 | `npm run test:integration`      | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
 | `npm run test:conformance:java` | javac comparisons and GitNexus product checks      | After building the CLI (JDK 21)       |
+| `npm run test:conformance:typescript` | TypeScript compiler comparisons and Node module checks | After building the CLI |
 | `npm run test:coverage`         | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
 | `npm run test:parity`           | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform`   | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
@@ -50,8 +51,12 @@ From `gitnexus-web/`:
 # gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
 # gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
 cd gitnexus && npx tsc --noEmit && npm run typecheck:tests && npm test
-# For Java changes, set JAVA_HOME to JDK 21 and run the compiler comparisons.
-npm run build && npm run test:conformance:java
+# Build the CLI before running the compiler checks for the affected language.
+npm run build
+# Java checks require JAVA_HOME to point at JDK 21.
+npm run test:conformance:java
+# TypeScript checks use the compiler installed with the CLI.
+npm run test:conformance:typescript
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
 
@@ -83,7 +88,7 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 
 - **Unit** — Pure logic, parsers, graph/query helpers; fast; no network.
 - **Integration** — Real combinations (filesystem, MCP wiring, larger pipelines) as already organized under `gitnexus/test/integration`.
-- **Resolver / parity** — Java compiler fixtures live in `test/fixtures/compiler-conformance/`. Other languages have resolver suites in `test/integration/resolvers/`.
+- **Resolver / parity** — Java and TypeScript compiler fixtures live in `test/fixtures/compiler-conformance/`. Other languages have resolver suites in `test/integration/resolvers/`.
 - **E2E (web)** — Critical user paths only; prefer `data-testid` attributes for stable selectors. Tests run against real backend (`gitnexus serve`) and Vite dev server.
 
 ## Scope-resolution tests
@@ -91,6 +96,8 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 Run `npm run test:conformance:java` from a built `gitnexus/` checkout with JDK 21 to compare call targets, ambiguity, source declarations, and inheritance with javac. Add a self-contained `test/fixtures/compiler-conformance/java-<case>/` directory to register a new compiler case. The runner discovers it automatically. Other compilers and analyzers can use the same standalone comparison command by emitting JSON reports. See the [call-resolution conformance guide](gitnexus/tools/compiler-conformance/README.md).
 
 The same command runs product checks for Spring, persistence, rename, and fixtures that exercise Java alongside other languages. These checks verify behavior specific to GitNexus after the compiler comparisons. The Java job also runs the fixture benchmarks. For a clean checkout, `npm run test:java` builds the CLI before invoking the conformance command.
+
+From a built `gitnexus/` checkout, run `npm run test:conformance:typescript` to compare declaration locations and graph edges with the pinned TypeScript compiler. The suite also checks ESM and CommonJS behavior against Node.
 
 Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/registry.ts` (`SCOPE_RESOLVERS`) and add the resolver test file — no workflow or config edit needed.
 
@@ -159,9 +166,9 @@ PRs compare the checked-out merge commit with its first parent. The `Select CI c
 
 | Change | PR checks |
 | --- | --- |
-| CLI | CLI and test typechecks, sharded Linux Vitest coverage, Java conformance for runtime source changes |
+| CLI | CLI and test typechecks, sharded Linux Vitest coverage, Java and TypeScript conformance for runtime source changes |
 | Web | Web typecheck, unit tests with coverage, Chromium E2E |
-| Shared package | CLI, web, Java conformance and Chromium |
+| Shared package | CLI, web, Java and TypeScript conformance, and Chromium |
 | Eval | Locked pytest suite and workflow evidence preflight |
 | Docker server | Docker-server integration tests |
 | Documentation alone | CI status and CodeQL check names, without package coverage or scanner setup |
@@ -178,7 +185,7 @@ Reused package reports and eval receipts feed the same release audit as fresh re
 
 On releases, the `every test executed` job reconciles Vitest execution receipts from Ubuntu
 coverage, every Windows/macOS shard, the serial benchmark runs, and the real Python
-workflow preflight. Java fixture failures fail the dedicated conformance job.
+workflow preflight. Java and TypeScript fixture failures fail their respective compiler conformance jobs.
 The Vitest audit requires a recorded pass for every collected test. A skip
 on Linux is satisfied only by a pass of that exact test in another required job.
 Test identities include the file, suite/title and source location. Ambiguous

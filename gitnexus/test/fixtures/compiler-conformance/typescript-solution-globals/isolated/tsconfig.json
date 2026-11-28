@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "module": "ESNext", "moduleDetection": "legacy", "noResolve": true, "strict": true, "types": [] },
+  "files": ["main.ts"]
+}
