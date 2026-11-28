@@ -343,9 +343,8 @@ export interface PipelineOptions {
  * the legacy `if (!skipGraphPhases)` guard is now expressed that way on the
  * three graph phases, with no change in behaviour.
  *
- * Exported for the parity test (`pipeline-phase-registry.test.ts`), which
- * asserts the produced list matches FULL_ORDER (including symfonyConfig) for
- * every options combination.
+ * `pipeline-phase-registry.test.ts` verifies the default registration order
+ * and how options add or skip phases.
  */
 export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
   return (
