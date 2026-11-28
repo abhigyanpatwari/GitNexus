@@ -155,6 +155,115 @@ const Expr = class Internal {
     ]);
   });
 
+  it.each([
+    { language: 'JavaScript', ext: 'mjs', grouped: false },
+    { language: 'parenthesized JavaScript', ext: 'mjs', grouped: true },
+    { language: 'parenthesized TypeScript', ext: 'mts', grouped: true },
+    { language: 'parenthesized JSX', ext: 'jsx', grouped: true },
+  ])(
+    'resolves an anonymous $language default class and calls through its imported binding',
+    async ({ ext, grouped }) => {
+      const temp = await createTempDir();
+      try {
+        const source = `source.${ext}`;
+        const consumer = `consumer.${ext}`;
+        const classValue = `class extends Base {
+  run() {
+    helper();
+    const Bound = class Named { keep() {} };
+    return ((class { run() {} static hidden() {} field = 1; static staticField = 2; }));
+  }
+  static setup() { helper(); }
+}`;
+        await fs.writeFile(
+          path.join(temp.dbPath, source),
+          `function helper() {}
+class Base { inherited() {} }
+export default ${grouped ? `(/* outer */((${classValue} /* inner */)))` : classValue}`,
+        );
+        await fs.writeFile(
+          path.join(temp.dbPath, consumer),
+          `import Service from './${source}';
+export function use() { const service = new Service(); service.run(); Service.setup(); service.inherited(); }`,
+        );
+        const { graph } = await runPipelineFromRepo(temp.dbPath, () => {}, { workerPoolSize: 1 });
+        const owners = graph.nodes.filter(
+          (node) => node.label === 'Class' && node.properties.name === 'default',
+        );
+        expect(owners).toHaveLength(1);
+        const owner = owners[0]!;
+        expect(
+          [...graph.iterRelationshipsByType('EXTENDS')].map((edge) => [
+            edge.sourceId,
+            edge.targetId,
+          ]),
+        ).toEqual([[owner.id, `Class:${source}:Base`]]);
+        const methods = graph.relationships
+          .filter((edge) => edge.type === 'HAS_METHOD' && edge.sourceId === owner.id)
+          .map((edge) => edge.targetId);
+        expect(methods.map((id) => graph.getNode(id)?.properties.name).sort()).toEqual([
+          'run',
+          'setup',
+        ]);
+        const nested = graph.nodes.find(
+          (node) => node.label === 'Class' && node.properties.name === 'Named',
+        )!;
+        expect(
+          [...graph.iterRelationshipsByType('HAS_METHOD')]
+            .filter((edge) => edge.sourceId === nested.id)
+            .map((edge) => graph.getNode(edge.targetId)?.properties.name),
+        ).toEqual(['keep']);
+        expect(
+          graph.nodes.filter((node) => node.label === 'Method' && node.properties.name === 'run'),
+        ).toHaveLength(2);
+        expect(
+          graph.nodes
+            .filter((node) => node.label === 'Property')
+            .map((node) => node.properties.name)
+            .sort(),
+        ).toEqual(['field', 'staticField']);
+        expect(
+          [...graph.iterRelationshipsByType('HAS_PROPERTY')].filter(
+            (edge) => edge.sourceId === owner.id,
+          ),
+        ).toEqual([]);
+        const calls = [...graph.iterRelationshipsByType('CALLS')];
+        expect(
+          calls
+            .filter((edge) => edge.sourceId === `Function:${consumer}:use`)
+            .map((edge) => edge.targetId)
+            .sort(),
+        ).toEqual([owner.id, ...methods, `Method:${source}:Base.inherited#0`].sort());
+        expect(
+          calls
+            .filter((edge) => edge.targetId === `Function:${source}:helper`)
+            .map((edge) => edge.sourceId)
+            .sort(),
+        ).toEqual(methods.sort());
+      } finally {
+        await temp.cleanup();
+      }
+    },
+  );
+
+  it('keeps class expressions inside other default-export values on their original owners', async () => {
+    const values = [
+      ['comma', 'touch(), ((class { run() {} }))'],
+      ['conditional', 'flag ? ((class { run() {} })) : ((class {}))'],
+      ['assigned', 'slot = ((class { run() {} }))'],
+      ['named', '((class Original { run() {} }))'],
+    ];
+    const { graph } = await parseFilesWithWorkers(
+      values.map(([name, value]) => ({
+        path: `${name}.mjs`,
+        content: `let slot; const flag = true; function touch() {} export default (${value});`,
+      })),
+    );
+    expect(
+      graph.nodes.filter((node) => node.label === 'Class').map((node) => node.properties.name),
+    ).toEqual(['Original']);
+  });
+
   it.each(['ts', 'js'])(
     'keeps declaration and anonymous-expression controls in .%s',
     async (extension) => {

@@ -22,6 +22,20 @@ describe('shared parameter type projection', () => {
     expect(declarationParameterTypes([parameter(null)])).toEqual([]);
   });
 
+  it('keeps destructured and rest parameters distinct from implicit any in overloads', () => {
+    const parser = new Parser();
+    parser.setLanguage(TypeScript.typescript);
+    const tree = parser.parse('function f(x, { name }, [item], ...args): void;');
+    expect(tree.rootNode.hasError).toBe(false);
+    const signature = tree.rootNode.firstNamedChild!;
+    expect(computeTsArityMetadata(signature, true).declaredParameterTypes).toEqual([
+      'any',
+      '',
+      '',
+      '',
+    ]);
+  });
+
   for (const fixture of [
     {
       signature: 'f(x: number, y: string): number',

@@ -297,6 +297,32 @@ function runEvalServerHostFlagTest(
 }
 
 describe('CLI end-to-end', () => {
+  it('traces a call path using only endpoint UIDs (#4124)', () => {
+    const result = runCliRaw(
+      [
+        'trace',
+        '--from-uid',
+        'Function:src/middleware.ts:processRequest',
+        '--to-uid',
+        'Function:src/validator.ts:sanitize',
+        '--repo',
+        'mini-repo',
+      ],
+      MINI_REPO,
+    );
+
+    expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: 'ok',
+      hopCount: 1,
+      hops: [
+        { name: 'processRequest', filePath: 'src/middleware.ts' },
+        { name: 'sanitize', filePath: 'src/validator.ts' },
+      ],
+      edges: [{ relType: 'CALLS' }],
+    });
+  });
+
   it('status command exits cleanly', () => {
     const result = runCli('status', MINI_REPO);
 

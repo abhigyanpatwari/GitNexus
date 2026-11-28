@@ -14,6 +14,7 @@ import {
   getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -97,6 +98,92 @@ describe('C# heritage resolution', () => {
       expect(target!.label).not.toBe('Property');
     }
   });
+});
+
+describe('C# global-qualified inherited signatures', () => {
+  const result = useFixture('csharp-global-qualified-heritage', {
+    'Base.cs': `#nullable enable
+using Pack = Real;
+using Item = Real.T;
+class Wrapper<X> {}
+namespace Real { public class Wrapper<X> {} public struct Packet<X> {} public class T {} }
+namespace Other { public class Wrapper<X> {} public class T {} }
+class Base<T> {
+  public virtual void Root(global::Wrapper<T> value) {}
+  public virtual void Ref(global::Real.Wrapper<T>? value) {}
+  public virtual void Value(global::Real.Packet<T>? value) {}
+  public virtual void Nested(global::Real.Wrapper<global::Real.Packet<T>?>? value) {}
+  public virtual void Pair((global::Real.T, T) value) {}
+  public virtual void Alias(Pack::Wrapper<T> value) {}
+  public virtual void Fixed((global::Wrapper<T>, Item) value) {}
+}
+class StoredShort : Base<Item> {}
+class StoredAlias : Base<Pack::T> {}
+class Child : Base<int> {
+  public override void Root(global::Wrapper<int> value) {}
+  public override void Ref(global::Real.Wrapper<int>? value) {}
+  public override void Value(global::Real.Packet<int>? value) {}
+  public override void Nested(global::Real.Wrapper<global::Real.Packet<int>?>? value) {}
+  public override void Pair((global::Real.T, int) value) {}
+}`,
+    'Decoy.cs': `#nullable enable
+using Pack = Other;
+using Item = Other.T;
+class Decoy : Base<int> {
+  public void Root(global::Wrapper<string> value) {}
+  public void Ref(global::Real.Wrapper<string>? value) {}
+  public void Value(global::Real.Packet<int> value) {}
+  public void Nested(global::Real.Wrapper<global::Real.Packet<int>>? value) {}
+  public void Pair((global::Other.T, int) value) {}
+  public void Alias(Pack::Wrapper<int> value) {}
+  public void Fixed((global::Wrapper<int>, Item) value) {}
+}
+class ShortRebound : StoredShort {
+  public void Root(global::Wrapper<Item> value) {}
+}
+class Rebound : StoredAlias {
+  public void Root(global::Wrapper<Pack::T> value) {}
+}`,
+  });
+
+  it('substitutes free arguments and preserves the namespace and its qualified type names', () => {
+    const overrides = [...result().graph.iterRelationshipsByType('METHOD_OVERRIDES')];
+    expect(overrides.map((edge) => [edge.sourceId, edge.targetId]).sort()).toEqual([
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Nested#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Pair#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Ref#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Root#1'],
+      ['Class:Base.cs:Child', 'Method:Base.cs:Base.Value#1'],
+    ]);
+  });
+});
+
+it('substitutes nullable generic arguments across C# inheritance hops', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')].map((edge) => [
+    graph.getNode(edge.sourceId)?.properties.name,
+    edge.targetId,
+  ]);
+  const target = 'Method:Nullable.cs:Base.Accept#1';
+  const bare = 'Method:Nullable.cs:BareBase.Accept#1';
+  expect(overrides.sort()).toEqual([
+    ['AlreadyNullable', target],
+    ['BareChild', bare],
+    ['BareGeneric', bare],
+    ['Child', target],
+    ['Direct', target],
+    ['OpenChild', target],
+    ['OpenRef', target],
+  ]);
+  expect(
+    [...graph.iterRelationshipsByType('METHOD_IMPLEMENTS')].map((edge) => [
+      edge.sourceId,
+      edge.targetId,
+    ]),
+  ).toEqual([['Method:Nullable.cs:SeparateBranch.Read#1', 'Method:Nullable.cs:IPlain.Read#1']]);
 });
 
 // ---------------------------------------------------------------------------
@@ -3046,4 +3133,97 @@ describe('C# global-namespace type precedence', () => {
     );
     expect(drops).toEqual([]);
   });
+});
+
+it('compares CLR reference identities in nullable generic override signatures', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-reference-heritage'),
+    () => {},
+  );
+  const edges = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const base = 'Method:Ref.cs:Base.M#1';
+  const open = 'Method:Ref.cs:Opaque.M#1';
+  expect(edges).toEqual([
+    ['Class:Ref.cs:Annotated', base],
+    ['Class:Ref.cs:DirectOpaque', open],
+    ['Class:Ref.cs:EscapedPositive', open],
+    ['Class:Ref.cs:Simple', base],
+    ['Class:Ref.cs:StructPositive', open],
+    ['Class:Ref.cs:TwoHop', base],
+    ['Class:Ref.cs:TwoHopMarked', base],
+    ['Class:Use.cs:AcrossFiles', 'Method:Controls.cs:Contract.Check#1'],
+  ]);
+});
+
+it('preserves constructed C# arguments and their nullable value or reference signature', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/constructed-csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const base = 'Method:Constructed.cs:Base.Accept#1';
+  expect(overrides).toEqual([
+    ['Class:Child.cs:SameIdentity', base],
+    ['Class:Constructed.cs:Annotated', base],
+    ['Class:Constructed.cs:Constructed', base],
+    ['Class:Constructed.cs:DeepAnnotations', base],
+    ['Class:Constructed.cs:Explicit', base],
+    ['Class:Constructed.cs:InnerReference', base],
+    ['Class:Constructed.cs:Lifted', 'Method:Constructed.cs:ValueBase.Accept#1'],
+    ['Class:Constructed.cs:Nested', base],
+    ['Class:Constructed.cs:Simple', base],
+  ]);
+});
+
+it('resolves qualified nullable C# arguments by their declaring namespace and formal constraints', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/qualified-csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const target = 'Method:Types.cs:Base.M#1';
+  expect(overrides).toEqual([
+    ['Class:Alias.cs:SameAlias', target],
+    ['Class:Shadow.cs:NestedNamespace', target],
+    ['Class:Types.cs:Lifted', target],
+    ['Class:Types.cs:OpenNullable', target],
+    ['Class:Types.cs:OpenValue', target],
+    ['Class:Types.cs:RefString', target],
+    ['Class:Types.cs:Right', target],
+    ['Class:Types.cs:RootRight', target],
+  ]);
+});
+
+it('compares qualified scalar parameter types by CLR identity and preserves nullable value types', async () => {
+  const { graph } = await runPipelineFromRepo(
+    path.resolve(__dirname, '../../fixtures/nullable-heritage/scalar-csharp'),
+    () => {},
+  );
+  const overrides = [...graph.iterRelationshipsByType('METHOD_OVERRIDES')]
+    .map(({ sourceId, targetId }) => [sourceId, targetId])
+    .sort();
+  const base = 'Method:Types.cs:Base.M#1';
+  expect(overrides).toEqual([
+    ['Class:Alias.cs:AliasPositive', base],
+    ['Class:Common.cs:Ordinary', 'Method:Common.cs:OrdinaryBase.Direct#1'],
+    ['Class:Common.cs:Standard', 'Method:Common.cs:Open.Qualified#1'],
+    ['Class:Common.cs:Standard', 'Method:Common.cs:Open.Rooted#1'],
+    ['Class:Common.cs:Standard', 'Method:Common.cs:Open.Same#1'],
+    ['Class:Types.cs:ByRef', 'Method:Types.cs:ByRefBase.R#1'],
+    ['Class:Types.cs:FromGlobal', base],
+    ['Class:Types.cs:FromRelative', base],
+    ['Class:Types.cs:Grounded', 'Method:Types.cs:Generic.F#1'],
+    ['Class:Types.cs:StructFrom', base],
+    ['Class:Types.cs:StructTo', base],
+    ['Class:Types.cs:ToGlobal', base],
+    ['Class:Types.cs:ToRelative', base],
+    ['Class:Types.cs:Unmarked', base],
+    ['Class:Types.cs:ValueThroughHop', base],
+  ]);
 });
