@@ -122,17 +122,61 @@ def _probe_servers(source: Source, client: ModelClient, parent: Path) -> None:
             checkout_tools = {f"mcp__checkout__{name}" for name in TOOLS}
             permitted = checkout_tools | (set(GITNEXUS_READ_ONLY_TOOLS) if augmented else set())
             required = checkout_tools | ({"mcp__gitnexus__list_repos"} if augmented else set())
-            if (
-                not result["ok"]
-                or not required <= names <= permitted
-                or len(outputs) != len(tools)
-                or not patch.is_file()
-                or patch.read_bytes() != b"offline probe"
-                or (augmented and "benchmark-target" not in str(outputs.get("toolu_mock_1", {}).get("content")))
-            ):
-                arm = "with GitNexus" if augmented else "without GitNexus"
+            arm = "with GitNexus" if augmented else "without GitNexus"
+            if not result.get("ok"):
+                detail = result.get("error_detail")
+                kind = result.get("error_kind")
+                err_msg = ""
+                if isinstance(detail, dict):
+                    err = (
+                        detail.get("event_stream_error")
+                        or detail.get("stderr_tail")
+                        or detail.get("stdout_tail")
+                        or detail.get("process_detail")
+                    )
+                    rc = detail.get("returncode")
+                    subtype = detail.get("subtype")
+                    state = detail.get("process_state")
+                    if rc is not None and rc != 0:
+                        err_msg = f": exit code {rc} ({err})" if err else f": exit code {rc}"
+                    elif subtype:
+                        err_msg = f": {subtype} ({err})" if err else f": {subtype}"
+                    elif state and state not in ("ok", "completed"):
+                        err_msg = f": {state} ({err})" if err else f": {state}"
+                    elif err:
+                        err_msg = f": {err}"
+                elif detail:
+                    err_msg = f": {detail}"
+                elif kind:
+                    err_msg = f": {kind}"
+                raise SandboxError(f"offline CLI preflight {arm} session failed{err_msg}")
+
+            missing_tools = required - names
+            if missing_tools:
+                raise SandboxError(
+                    f"offline CLI preflight {arm} missing required tool(s): {', '.join(sorted(missing_tools))}"
+                )
+
+            unpermitted_tools = names - permitted
+            if unpermitted_tools:
+                raise SandboxError(
+                    f"offline CLI preflight {arm} declared unpermitted tool(s): {', '.join(sorted(unpermitted_tools))}"
+                )
+
+            if len(outputs) != len(tools):
                 raise SandboxError(
                     f"offline CLI preflight {arm} failed: {len(outputs)}/{len(tools)} successful tool results"
+                )
+
+            if not patch.is_file():
+                raise SandboxError(f"offline CLI preflight {arm} did not produce change.patch")
+
+            if patch.read_bytes() != b"offline probe":
+                raise SandboxError(f"offline CLI preflight {arm} change.patch content mismatch")
+
+            if augmented and "benchmark-target" not in str(outputs.get("toolu_mock_1", {}).get("content")):
+                raise SandboxError(
+                    f"offline CLI preflight {arm} list_repos output missing expected 'benchmark-target'"
                 )
 
 
