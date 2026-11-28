@@ -682,10 +682,11 @@ function isTransparentReceiverWrapper(node: SyntaxNode): boolean {
 const MAX_TRANSPARENT_WRAPPER_DEPTH = 3;
 
 /** Peel transparent wrappers off a base receiver node. */
-function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
+export function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
   let current = node;
   for (let i = 0; i < MAX_TRANSPARENT_WRAPPER_DEPTH && isTransparentReceiverWrapper(current); i++) {
-    const inner = current.namedChildren?.find((c) => c !== null);
+    // Comments are named children too: `(/* note */ svc)` exposes the comment first.
+    const inner = current.namedChildren?.find((c) => c !== null && !c.type.includes('comment'));
     if (inner === undefined || inner === null) break;
     current = inner;
   }

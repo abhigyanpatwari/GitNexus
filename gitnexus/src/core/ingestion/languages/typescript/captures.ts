@@ -72,6 +72,7 @@ import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captur
 import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
 import { synthesizeTsLocalImports } from './local-loaders.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { unwrapTransparentReceiver } from '../../utils/call-analysis.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -933,6 +934,21 @@ export function emitTsScopeCaptures(
       );
     }
 
+    // A receiver that is only a transparent wrapper around a bare name (`s!.run()`,
+    // `(s).run()`) carries the wrapper in its text, so the text lookup finds no
+    // binding named `s!`. The chain synthesizer mints nothing for a wrapper with no
+    // chain steps, so hand the resolver the operand's text instead.
+    const receiverNode = groupedNodes['@reference.receiver'];
+    if (receiverNode !== undefined && receiverNode !== null) {
+      const operand = unwrapTransparentReceiver(receiverNode);
+      if (operand !== receiverNode && grouped['@reference.receiver'] !== undefined) {
+        grouped['@reference.receiver'] = syntheticCapture(
+          '@reference.receiver',
+          receiverNode,
+          operand.text,
+        );
+      }
+    }
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver'], literalMethodName);
     out.push(grouped);
 

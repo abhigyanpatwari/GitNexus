@@ -1703,3 +1703,37 @@ export function known(undefined: string) { const value = pick({ text: undefined 
     expect(callers).toEqual(['Function:use.ts:known']);
   });
 });
+
+describe('TypeScript non-null and parenthesized receivers', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-nonnull-receiver'), () => {});
+  }, 60000);
+
+  it('resolves user!.save() to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaNonNull' && c.target === 'save');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/user.ts');
+  });
+
+  it('resolves (repo).save() to Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaParens' && c.target === 'save');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/repo.ts');
+  });
+  it('resolves (/* comment */ user).save() to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaCommentedParens' && c.target === 'save');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/user.ts');
+  });
+  it('resolves (repo! /* comment */).save() to Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'viaTrailingComment' && c.target === 'save');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('src/repo.ts');
+  });
+});
