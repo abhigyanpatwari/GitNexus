@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
+import { checkoutFingerprint } from './corpus-fingerprint.mjs';
 import { assertGraphParity } from './reference-migration.mjs';
 const args = process.argv.slice(2);
 assert(
@@ -46,16 +47,6 @@ const source =
 const head = (repo) =>
   runBenchmarkTool('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 assert.equal(head(baseline), head(candidate));
-const corpusRevision = head(baseline);
-const corpusRoots = ['gitnexus/src/core/ingestion', 'gitnexus-shared/src/scope-resolution'];
-const treeIds = corpusRoots.map((root) =>
-  runBenchmarkTool('git', ['ls-tree', '-d', '--format=%(objectname)', corpusRevision, '--', root], {
-    cwd: baseline,
-    encoding: 'utf8',
-  }).trim(),
-);
-// Other corpora still run under the ordinary graph comparison rules.
-const corpusTrees = treeIds.every(Boolean) ? treeIds.join(':') : null;
 for (const repo of isWorker ? [] : [baseline, candidate]) {
   assert.equal(
     runBenchmarkTool('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }),
@@ -63,6 +54,11 @@ for (const repo of isWorker ? [] : [baseline, candidate]) {
     'Checkout must be clean',
   );
   assert(!fs.existsSync(path.join(repo, control)));
+}
+// Keep the report field readable by existing performance checkers.
+const corpusTrees = isWorker ? undefined : checkoutFingerprint(baseline);
+if (!isWorker) {
+  assert.equal(checkoutFingerprint(candidate), corpusTrees, 'Materialized source corpora differ');
 }
 fs.mkdirSync(output, { recursive: true });
 process.env.GITNEXUS_HOME = path.join(output, 'home');
