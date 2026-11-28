@@ -74,7 +74,7 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 | Depth | Review priority           | Meaning                  |
 | ----- | ------------------------- | ------------------------ |
 | d=1   | **DIRECT — REVIEW FIRST** | Direct dependents        |
-| d=2   | LIKELY AFFECTED           | Indirect dependencies    |
+| d=2   | LIKELY AFFECTED           | Indirect dependents      |
 | d=3   | MAY NEED TESTING          | Transitive effects       |
 
 Depth is graph distance, not proof of failure. A d=1 edge is a strong review
