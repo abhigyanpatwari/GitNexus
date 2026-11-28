@@ -16,6 +16,7 @@ import {
   connectToServer,
   fetchRepos,
   fetchServerInfo,
+  getBackendUrl,
   normalizeServerUrl,
   connectHeartbeat,
   BackendError,
@@ -77,6 +78,7 @@ const AppContent = () => {
     setAvailableRepos,
     switchRepo,
     setCurrentRepo,
+    restoreChatHistory,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -136,6 +138,9 @@ const AppContent = () => {
       const repoIdentity = repoPath || projectName;
       setProjectName(projectName);
       setCurrentRepo(repoIdentity);
+      // Bring back this repo's conversation after a reload (#432), keyed by
+      // the server connectToServer just loaded it from as well as the repo.
+      restoreChatHistory(getBackendUrl(), repoIdentity);
 
       // Build KnowledgeGraph from server data for visualization. In chat-only
       // mode the graph download was skipped, so the shared builder keeps an
@@ -178,6 +183,7 @@ const AppContent = () => {
       setChatOnlyNodeCount,
       setProjectName,
       setCurrentRepo,
+      restoreChatHistory,
       initializeAgent,
       startEmbeddingsWithFallback,
     ],

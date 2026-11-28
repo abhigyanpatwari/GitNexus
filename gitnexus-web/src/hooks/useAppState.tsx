@@ -25,9 +25,11 @@ import {
   saveSettings,
 } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
+import { chatHistoryKey, loadChatHistory, saveChatHistory } from '../core/llm/chat-history-store';
 import { type EdgeType } from '../lib/constants';
 import {
   connectToServer,
+  getBackendUrl,
   runQuery as backendRunQuery,
   search as backendSearch,
   searchWithMetadata as backendSearchWithMetadata,
@@ -233,6 +235,13 @@ interface AppState {
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
+  /**
+   * Show the history saved this session for `repoIdentity` (the repo's path,
+   * or its name when the server reports no path) on the server at
+   * `serverUrl`, and save the chat under that server and repo from now on
+   * (#432).
+   */
+  restoreChatHistory: (serverUrl: string, repoIdentity: string) => void;
 
   // Code References Panel
   codeReferences: CodeReference[];
@@ -395,6 +404,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  // Storage key the current chatMessages belong to. Only restoreChatHistory
+  // sets it, in the same update as the messages, so the save effect below
+  // never writes one repo's messages under another repo's (or server's) key.
+  const [chatStorageKey, setChatStorageKey] = useState<string | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
 
@@ -782,6 +795,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       // Helper to update the message with current steps
       const updateMessage = () => {
+        // Once this reply is aborted (Stop, Clear, or a repo switch) its late
+        // frames must not write into whatever conversation is showing now.
+        if (chatAbortController.signal.aborted) return;
         // Build content from steps for backwards compatibility
         const contentParts = stepsForMessage
           .filter((s) => s.type === 'reasoning' || s.type === 'content')
@@ -1108,7 +1124,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
           signal: chatAbortController.signal,
         })) {
-          if (chunk.type === 'cancelled') {
+          // Once this reply is aborted (Stop, Clear, or a repo switch), none of
+          // its late chunks may touch the UI: besides the message, they add
+          // code references, highlight nodes and set errors, which would land
+          // in whatever repo is showing now.
+          if (chunk.type === 'cancelled' || chatAbortController.signal.aborted) {
             break;
           }
           onChunk(chunk);
@@ -1191,6 +1211,29 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
     setIsChatLoading(false);
   }, []);
+
+  const restoreChatHistory = useCallback((serverUrl: string, repoIdentity: string) => {
+    // Stop a reply still streaming for the previous repo; otherwise it keeps
+    // appending to this repo's conversation and gets saved under its key.
+    // As with Stop, the reply's own `finally` returns the chat to idle, so a
+    // message sent right after the switch can't be reset by that cleanup.
+    if (chatStateRef.current === 'streaming') {
+      chatStateRef.current = 'aborting';
+      chatAbortRef.current?.abort();
+      chatAbortRef.current = null;
+    }
+    const key = chatHistoryKey(serverUrl, repoIdentity);
+    setChatStorageKey(key);
+    setChatMessages(loadChatHistory(key));
+  }, []);
+
+  // Save the conversation once each turn settles. Skipped while a reply
+  // streams, so a long answer is written once rather than on every token.
+  // Clearing the chat saves an empty list, which removes the stored copy.
+  useEffect(() => {
+    if (!chatStorageKey || isChatLoading) return;
+    saveChatHistory(chatStorageKey, chatMessages);
+  }, [chatStorageKey, chatMessages, isChatLoading]);
 
   // Switch to a different repo on the connected server
   const switchRepo = useCallback(
@@ -1326,10 +1369,16 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         window.history.replaceState(null, '', urlObj.toString());
       }
 
-      // Reset the agent and clear chat history so the AI starts fresh for the new repo
+      // Reset the agent and show the new repo's own chat history (empty unless
+      // it was used earlier this session), keyed like handleServerConnect so
+      // a reload after a switch finds the same history (#432).
       agentRef.current = null;
       setIsAgentReady(false);
-      setChatMessages([]);
+      // getBackendUrl() is the server connectToServer just loaded it from.
+      restoreChatHistory(
+        getBackendUrl(),
+        (connectedRepo?.repoPath ?? connectedRepo?.path) || pNameStr,
+      );
 
       // Re-initialize agent with the new repo's graph context
       try {
@@ -1368,7 +1417,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodeReferences,
       setCodePanelOpen,
       setCodeReferenceFocus,
-      setChatMessages,
+      restoreChatHistory,
       setCurrentRepo,
     ],
   );
@@ -1597,6 +1646,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     sendChatMessage,
     stopChatResponse,
     clearChat,
+    restoreChatHistory,
     // Code References Panel
     codeReferences,
     isCodePanelOpen,
