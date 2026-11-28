@@ -36,6 +36,7 @@ import {
   startEmbeddings as backendStartEmbeddings,
   streamEmbeddingProgress,
   probeBackendStatus,
+  probeQueryService,
   // Aliased: switchRepo declares a local `let repoIdentity` that would shadow
   // a plain named import of this helper.
   repoIdentity as repoIdentityOf,
@@ -533,10 +534,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     if (serverDisconnectedRef.current) return false;
     const probeId = ++queryProbeId.current;
     setQueryReadiness('checking');
-    const status = await probeBackendStatus();
+    const ready =
+      (await probeBackendStatus()) === 'ok' && (await probeQueryService(repoRef.current));
     if (probeId !== queryProbeId.current) return false;
-    setQueryReadiness(status === 'ok' ? 'ready' : 'unavailable');
-    return status === 'ok';
+    setQueryReadiness(ready ? 'ready' : 'unavailable');
+    return ready;
   }, []);
 
   const setQueryServerConnected = useCallback(

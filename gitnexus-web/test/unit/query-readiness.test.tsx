@@ -7,6 +7,7 @@ import { AppStateProvider, useAppState } from '../../src/hooks/useAppState';
 import i18n, { i18nReady } from '../../src/i18n';
 import {
   probeBackendStatus,
+  probeQueryService,
   runQuery,
   type BackendProbeStatus,
 } from '../../src/services/backend-client';
@@ -14,6 +15,7 @@ import {
 vi.mock('../../src/services/backend-client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/services/backend-client')>()),
   probeBackendStatus: vi.fn(),
+  probeQueryService: vi.fn(),
   runQuery: vi.fn(),
 }));
 
@@ -60,6 +62,7 @@ const openQuery = (query = 'RETURN 1') => {
 
 beforeEach(async () => {
   vi.mocked(probeBackendStatus).mockReset().mockResolvedValue('ok');
+  vi.mocked(probeQueryService).mockReset().mockResolvedValue(true);
   vi.mocked(runQuery).mockReset().mockResolvedValue([]);
   await i18nReady;
   await i18n.changeLanguage('en');
@@ -75,7 +78,7 @@ describe('query readiness', () => {
     expect(screen.getByTestId('status-query-checking')).toBeInTheDocument();
     expect(screen.queryByTestId('status-ready')).not.toBeInTheDocument();
     expect(run).toBeDisabled();
-    await act(() => probe.resolve('unreachable'));
+    await act(async () => probe.resolve('unreachable'));
     expect(screen.getByTestId('status-query-unavailable')).toHaveTextContent('Query unavailable');
     expect(run).toHaveAccessibleDescription(/check the backend connection/i);
     fireEvent.click(run);
@@ -98,7 +101,7 @@ describe('query readiness', () => {
     vi.mocked(probeBackendStatus).mockReturnValueOnce(probe.promise);
     fireEvent.click(run);
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
-    await act(() => probe.resolve('ok'));
+    await act(async () => probe.resolve('ok'));
 
     expect(screen.getByTestId('status-query-unavailable')).toBeInTheDocument();
     expect(run).toBeDisabled();
@@ -141,7 +144,21 @@ describe('query readiness', () => {
     vi.mocked(probeBackendStatus).mockReturnValueOnce(probe.promise);
     fireEvent.click(screen.getByRole('button', { name: 'Switch repo' }));
     expect(screen.getByTestId('status-query-checking')).toBeInTheDocument();
-    await act(() => probe.resolve('unauthorized'));
+    await act(async () => probe.resolve('unauthorized'));
     expect(screen.getByTestId('status-query-unavailable')).toBeInTheDocument();
+  });
+
+  it('stays unavailable when the server is live but the repo cannot be queried', async () => {
+    vi.mocked(probeQueryService).mockResolvedValue(false);
+    start();
+    const { run } = openQuery();
+    expect(await screen.findByTestId('status-query-unavailable')).toBeInTheDocument();
+    expect(probeQueryService).toHaveBeenCalledWith('repo-a');
+    expect(run).toBeDisabled();
+
+    vi.mocked(probeQueryService).mockResolvedValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(await screen.findByTestId('status-ready')).toBeInTheDocument();
+    expect(run).toBeEnabled();
   });
 });
