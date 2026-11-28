@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,7 +17,9 @@ import {
 const tmpRoots: string[] = [];
 
 const makeVendorRoot = (): string => {
-  const root = mkdtempSync(join(tmpdir(), 'gn-fts-vendor-'));
+  // realpath: on macOS `os.tmpdir()` is a symlink (/var -> /private/var) and the
+  // resolver canonicalizes what it returns, so an unresolved root never matches.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'gn-fts-vendor-')));
   tmpRoots.push(root);
   return root;
 };
