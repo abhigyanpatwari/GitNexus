@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import {
+  javascriptProvider,
+  typescriptProvider,
+} from '../../src/core/ingestion/languages/typescript.js';
 import { createMethodExtractor } from '../../src/core/ingestion/method-extractors/generic.js';
 import {
   javaMethodConfig,
@@ -1577,6 +1581,36 @@ const jsCtx: MethodExtractorContext = {
   filePath: 'Test.js',
   language: SupportedLanguages.JavaScript,
 };
+
+it.each([
+  ['JavaScript', javascriptProvider, parseJavaScript, jsCtx],
+  ['TypeScript', typescriptProvider, parseTypeScript, tsCtx],
+] as const)(
+  'extracts only statically named ECMAScript methods in %s',
+  (_language, provider, parse, ctx) => {
+    const tree = parse(
+      String.raw`class C { plain() {} [key]() {} ['[key]']() {} ['']() {} [('r\u0075n')]() {} }`,
+    );
+    const owner = tree.rootNode.firstNamedChild!;
+    const extractor = provider.methodExtractor!;
+    expect(extractor.extract(owner, ctx)?.methods.map((method) => method.name)).toEqual([
+      'plain',
+      '[key]',
+      '',
+      'run',
+    ]);
+    const dynamic = owner.descendantsOfType('method_definition')[1]!;
+    expect(extractor.extractFromNode!(dynamic, ctx)).toBeNull();
+  },
+);
+
+it('uses the file format for legacy numeric keys in JavaScript method metadata', () => {
+  const tree = parseJavaScript('const obj = { [077]() {} };');
+  const method = tree.rootNode.descendantsOfType('method_definition')[0]!;
+  const extract = javascriptProvider.methodExtractor!.extractFromNode!;
+  expect(extract(method, { ...jsCtx, filePath: 'example.cjs' })?.name).toBe('63');
+  expect(extract(method, { ...jsCtx, filePath: 'example.mjs' })).toBeNull();
+});
 
 describe('JavaScript MethodExtractor', () => {
   const extractor = createMethodExtractor(javascriptMethodConfig);

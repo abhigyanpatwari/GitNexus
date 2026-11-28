@@ -6,6 +6,7 @@
     {"caller": "inaccessibleOwner", "member": "hidden", "source": ["client/HiddenUse.java#2:26"], "targets": 0},
     {"caller": "privateImport", "member": "secret", "source": ["api/PrivateHost.java#3:10"], "targets": 0},
     {"caller": "childDispatch", "member": "task", "excludes": "Method:Dispatch.java:OtherImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#11:10"]},
+    {"caller": "returnedChild", "member": "task", "excludes": "Method:Dispatch.java:OtherImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#16:10"]},
     {"caller": "anonymousDispatch", "member": "task", "excludes": "Method:Dispatch.java:ChildImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#12:10"]},
     {"caller": "anonymousDispatch", "member": "task", "excludes": "Method:Dispatch.java:OtherImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#12:10"]},
     {"caller": "runnableGood", "member": "run", "published": ["Method:Dispatch.java:Dispatch$2.run#0"], "compilerTargets": [], "source": ["Dispatch.java#13:10"]},

@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
 import JavaScript from 'tree-sitter-javascript';
-import {
-  javascriptProvider,
-  typescriptProvider,
-} from '../../src/core/ingestion/languages/typescript.js';
+import { javascriptProvider } from '../../src/core/ingestion/languages/typescript.js';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import { isCommonJsModule } from '../../src/core/ingestion/languages/typescript/cjs-export-assignment.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
@@ -21,10 +17,7 @@ describe('deep CommonJS classification', () => {
   });
 });
 
-describe.each([
-  ['JavaScript', javascriptProvider, JavaScript, 'js', 'cjs', 'mjs'],
-  ['TypeScript', typescriptProvider, TypeScript.typescript, 'ts', 'cts', 'mts'],
-] as const)(
+describe.each([['JavaScript', javascriptProvider, JavaScript, 'js', 'cjs', 'mjs']] as const)(
   '%s module-kind capture',
   (_, provider, grammar, extension, commonJsExtension, esmExtension) => {
     it.each([

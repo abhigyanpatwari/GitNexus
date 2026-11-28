@@ -10,6 +10,9 @@
  * constructor resolver can break a same-tail collision (`new B.Foo()` with both
  * `A.Foo` and `B.Foo`) by matching the explicit qualifier against the sidecar.
  */
+import { csharpParameterMode, renderCsharpHeritageType } from './heritage-type-shape.js';
+import { csharpSystemKeyword, isCsharpReservedTypeKeyword } from './identifiers.js';
+import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 
@@ -63,4 +66,98 @@ export function populateCsharpNamespacePrefixes(parsed: ParsedFile): void {
       def.namespacePrefix = prefix;
     }
   }
+}
+
+// An escaped segment remains part of its qualified name even when it spells an open type parameter.
+const qualifiedNames =
+  /[_\p{ID_Start}]\p{ID_Continue}*(?:\s*(?:\.|::)\s*@?[_\p{ID_Start}]\p{ID_Continue}*)*/gu;
+const nullableQualifiedNames = new RegExp(qualifiedNames.source + String.raw`(?:\s*\?)?`, 'gu');
+
+export function isStableCsharpTypeName(name: string): boolean {
+  return /^global\s*::/u.test(name) || isCsharpReservedTypeKeyword(name);
+}
+
+// A rooted constructor can still contain a file-local alias. Check both the
+// original type and each argument before comparing names across declarations.
+function stableType(
+  type: string,
+  bindings?: ReadonlyMap<string, string | null>,
+  shadowed?: ReadonlySet<string>,
+): boolean {
+  // Check complete type operands instead of guessing what a '?' annotates
+  // from its preceding character. Tuple element labels and aliases cannot bind formals.
+  return (
+    renderCsharpHeritageType(type, (name) => {
+      if (isStableCsharpTypeName(name)) return { name };
+      const actual = shadowed?.has(name) ? undefined : bindings?.get(name);
+      return actual !== undefined && (actual === null || stableType(actual)) ? { name } : undefined;
+    }) !== undefined
+  );
+}
+
+/** In a global-qualified signature, keep every qualified name as one token. */
+export function csharpQualifiedHeritageTypePattern(
+  type: string,
+  bindings: ReadonlyMap<string, string | null>,
+  shadowed?: ReadonlySet<string>,
+): RegExp | undefined {
+  return (type.includes('::') || (type.includes('[') && type.includes('?'))) &&
+    stableType(type, bindings, shadowed)
+    ? nullableQualifiedNames
+    : undefined;
+}
+
+/** Labels share C# identifier syntax, but only type operands can name a formal. */
+export const csharpTupleTypeOperands: NonNullable<ScopeResolver['heritageTypeOperands']> = (
+  type,
+  bindings,
+  shadowed,
+) => {
+  if (!type.includes('(')) return undefined;
+  const mode = csharpParameterMode.exec(type)?.[0] ?? '';
+  const operand = type.slice(mode.length);
+  const labels: { start: number; end: number }[] = [];
+  const shape = renderCsharpHeritageType(operand, undefined, false, {
+    visit(label, offset, length) {
+      if (label !== undefined)
+        labels.push({ start: mode.length + offset, end: mode.length + offset + length });
+    },
+  });
+  if (!labels.length) return undefined;
+  if (!shape) return [];
+  if (operand.includes('::') && !stableType(operand, bindings, shadowed)) return [];
+  labels.sort((a, b) => a.start - b.start);
+  let at = 0;
+  return [...type.matchAll(nullableQualifiedNames)].filter((match) => {
+    while (at < labels.length && labels[at].end <= match.index) at++;
+    return match.index >= mode.length && (at === labels.length || match.index < labels[at].start);
+  });
+};
+
+export function csharpFrameworkTypeNeedsScope(type: string): boolean {
+  if (type.includes('System')) {
+    for (const name of type.matchAll(/\bSystem\s*\.\s*(\w+)/gu)) {
+      if (
+        name[1] === 'ValueTuple' ||
+        name[1] === 'Nullable' ||
+        csharpSystemKeyword('System.' + name[1])
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
+export function csharpOverrideTypeNeedsScope(type: string): boolean {
+  if (csharpFrameworkTypeNeedsScope(type)) return true;
+  if (type.includes('?') && /(?<![\p{ID_Continue}.@:])\b(?:string|object)\s*\?/u.test(type))
+    return true;
+  if (!type.includes('(')) return false;
+  const mode = csharpParameterMode.exec(type)?.[0] ?? '';
+  let localName = false;
+  const shape = renderCsharpHeritageType(type.slice(mode.length), (name) => {
+    if (!isStableCsharpTypeName(name)) localName = true;
+    return { name };
+  });
+  return shape !== undefined && localName;
 }
