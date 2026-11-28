@@ -122,17 +122,29 @@ def _probe_servers(source: Source, client: ModelClient, parent: Path) -> None:
             checkout_tools = {f"mcp__checkout__{name}" for name in TOOLS}
             permitted = checkout_tools | (set(GITNEXUS_READ_ONLY_TOOLS) if augmented else set())
             required = checkout_tools | ({"mcp__gitnexus__list_repos"} if augmented else set())
-            if (
-                not result["ok"]
-                or not required <= names <= permitted
-                or len(outputs) != len(tools)
-                or not patch.is_file()
-                or patch.read_bytes() != b"offline probe"
-                or (augmented and "benchmark-target" not in str(outputs.get("toolu_mock_1", {}).get("content")))
-            ):
+            # Every predicate is named, so the error says which one tripped. The old
+            # message reported only the tool-result tally, which reads "2/2 successful"
+            # even when the tally was fine and a different predicate rejected the probe.
+            problems = []
+            if not result["ok"]:
+                problems.append(f"the CLI session failed ({result.get('error_kind') or 'unknown error'})")
+            if not required <= names:
+                problems.append(f"required tools missing from the model request: {sorted(required - names)}")
+            if not names <= permitted:
+                problems.append(f"tools outside the permitted set were offered: {sorted(names - permitted)}")
+            if len(outputs) != len(tools):
+                problems.append("not every probe tool call returned a successful tool result")
+            if not patch.is_file():
+                problems.append("submit_patch did not write change.patch")
+            elif patch.read_bytes() != b"offline probe":
+                problems.append("change.patch does not hold the submitted probe patch")
+            if augmented and "benchmark-target" not in str(outputs.get("toolu_mock_1", {}).get("content")):
+                problems.append("list_repos did not report the benchmark-target repository")
+            if problems:
                 arm = "with GitNexus" if augmented else "without GitNexus"
                 raise SandboxError(
-                    f"offline CLI preflight {arm} failed: {len(outputs)}/{len(tools)} successful tool results"
+                    f"offline CLI preflight {arm} failed: {'; '.join(problems)} "
+                    f"({len(outputs)}/{len(tools)} successful tool results)"
                 )
 
 

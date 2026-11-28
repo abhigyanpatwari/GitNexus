@@ -234,6 +234,10 @@ def test_native_paired_proposal_cost_and_grading(tmp_path):
             Path(os.environ["CLAUDE_CANARY_BIN"]), model, "high", "offline-fixture", provider.base_url, timeout=150
         )
         report = evaluator.evaluate([task], meta, runtime_root=runtime, client=client, out=out, oracle_root=oracles)
+        assert report["complete"], (
+            report["problems"],
+            [(row["arm"], row["run"], row["error_kind"]) for row in report["per_run"] if not row["ok"]],
+        )
         assert len(provider.requests) == 12
     assert observed == {False: 3, True: 3}
     assert len(tool_results) == 6
@@ -246,7 +250,7 @@ def test_native_paired_proposal_cost_and_grading(tmp_path):
         assert "Patch submitted" in str(results["toolu_mock_1"]["content"])
         if augmented:
             assert "benchmark-target" in str(results["toolu_mock_2"]["content"])
-    assert report["complete"] and report["schema"] == release_report.PROPOSAL_SCHEMA
+    assert report["schema"] == release_report.PROPOSAL_SCHEMA
     assert report["arms"]["baseline_nomcp"]["solved"] == 3 and report["arms"]["baseline"]["solved"] == 2
     for row in report["per_run"]:
         assert row["input_tokens"] == 22 and row["output_tokens"] == 14 and row["cost_usd"] == pytest.approx(0.000276)
@@ -254,3 +258,54 @@ def test_native_paired_proposal_cost_and_grading(tmp_path):
     # Historical release comparisons must reject a different measured toolset.
     with pytest.raises(ValueError, match="unsupported"):
         release_report.validate_report(report, runtime_sha=sha, task_set_digest=meta["task_set_digest"])
+
+
+class _FakeProvider:
+    """A provider whose recorded requests show a clean two-of-two tool round trip."""
+
+    base_url = "http://127.0.0.1:1"
+
+    def __init__(self, replies):
+        tools = [{"name": f"mcp__checkout__{name}"} for name in evaluator.TOOLS]
+        results = [
+            {"type": "tool_result", "tool_use_id": f"toolu_mock_{i}", "content": "benchmark-target"} for i in range(1)
+        ]
+        self.requests = [
+            SimpleNamespace(body={"tools": tools}),
+            SimpleNamespace(body={"messages": [{"role": "user", "content": results}]}),
+        ]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+@pytest.mark.parametrize(
+    ("ok", "patch_bytes", "expected"),
+    [
+        (False, b"offline probe", r"the CLI session failed \(session-error\)"),
+        (True, b"something else", "change.patch does not hold the submitted probe patch"),
+        (True, None, "submit_patch did not write change.patch"),
+    ],
+)
+def test_preflight_failure_names_the_predicate_that_rejected_the_probe(
+    monkeypatch, tmp_path, ok, patch_bytes, expected
+):
+    """The tally can read 1/1 (2/2 when augmented) while another predicate rejects the probe; the message must say which."""
+
+    def fake_propose(*_args, proposal, **_kwargs):
+        if patch_bytes is not None:
+            (proposal / "change.patch").write_bytes(patch_bytes)
+        return {"ok": ok, "error_kind": None if ok else "session-error"}
+
+    monkeypatch.setattr(evaluator, "propose", fake_propose)
+    monkeypatch.setattr(evaluator, "MockProvider", _FakeProvider)
+    # The fake request lists exactly the checkout tools, so the first (unaugmented) arm is the one probed.
+    source = evaluator.Source(tmp_path, tmp_path, [])
+    client = evaluator.ModelClient(Path("claude"), "claude-sonnet-4-6", "high", "fixture")
+    with pytest.raises(evaluator.SandboxError, match=expected) as caught:
+        evaluator._probe_servers(source, client, tmp_path)
+    message = str(caught.value)
+    assert "without GitNexus" in message and "(1/1 successful tool results)" in message
