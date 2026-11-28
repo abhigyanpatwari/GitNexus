@@ -300,7 +300,7 @@ Route::get(R::URI, 'OrderController@edit');
       expect.arrayContaining([
         expect.objectContaining({
           httpMethod: 'get',
-          routePath: null,
+          routePath: '',
           controllerName: 'OrderController',
           methodName: 'index',
         }),

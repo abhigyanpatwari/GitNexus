@@ -785,10 +785,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
       }
     }
 
-    let routePath = extractRouteUriArg(argsNode, httpMethod);
-    if (routePath === '' && receiverKind === 'laravel') {
-      routePath = null;
-    }
+    const routePath = extractRouteUriArg(argsNode, httpMethod);
 
     if (ROUTE_RESOURCE_METHODS.has(httpMethod) && receiverKind === 'laravel') {
       const target = extractControllerTarget(argsNode, receiverKind, httpMethod);

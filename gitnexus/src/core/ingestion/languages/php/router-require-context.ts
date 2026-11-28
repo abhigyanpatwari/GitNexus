@@ -124,23 +124,26 @@ export function resolvePhpRouterRequireBindings(
   };
   const resolved = new Map<string, PhpRouteRequireContext[]>();
   const seen = new Map<string, Set<string>>();
-  const record = (file: string, ctx: PhpRouteRequireContext) => {
+  const record = (file: string, ctx: PhpRouteRequireContext): boolean => {
     let keys = seen.get(file);
     if (!keys) {
       keys = new Set();
       seen.set(file, keys);
       resolved.set(file, []);
     }
-    if (keys.size >= MAX_CONTEXTS_PER_FILE) return;
+    if (keys.size >= MAX_CONTEXTS_PER_FILE) return false;
     const key = contextKey(ctx);
-    if (keys.has(key)) return;
+    if (keys.has(key)) return false;
     keys.add(key);
     resolved.get(file)!.push(ctx);
+    return true;
   };
   /**
    * Each entry file has its own include set. A `require_once` is skipped only
    * for that walk, after an earlier unguarded load of the same target.
    * Unguarded requires inline the target's bindings before later siblings.
+   * A target context already recorded is not expanded again, so a diamond of
+   * requires stays proportional to distinct contexts rather than paths.
    */
   const expand = (
     file: string,
@@ -155,14 +158,14 @@ export function resolvePhpRouterRequireBindings(
       if (onChain(here, edge.target)) continue;
       if (edge.binding.once && current.has(edge.target)) continue;
       const ctx = composeContext(incoming, edge.binding);
-      record(edge.target, ctx);
+      const fresh = record(edge.target, ctx);
       if (!edge.binding.unguarded) {
-        expand(edge.target, ctx, here, current);
+        if (fresh) expand(edge.target, ctx, here, current);
         continue;
       }
       const next = new Set(current);
       next.add(edge.target);
-      current = expand(edge.target, ctx, here, next);
+      current = fresh ? expand(edge.target, ctx, here, next) : next;
     }
     return current;
   };
