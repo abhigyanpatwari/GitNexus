@@ -1,0 +1,182 @@
+{
+  "compiler-conformance/typescript-module-ownership": [
+    "ambiguous.ts:4:0 TS2308",
+    "direct-mixed.ts:1:34 TS2308",
+    "entry.ts:102:12 TS2339",
+    "entry.ts:11:2 TS1362",
+    "entry.ts:13:13 TS2339",
+    "entry.ts:15:17 TS2339",
+    "entry.ts:17:6 TS1361",
+    "entry.ts:52:2 TS1362",
+    "entry.ts:54:2 TS1362",
+    "entry.ts:60:6 TS2339",
+    "entry.ts:66:10 TS2339",
+    "entry.ts:71:15 TS2339",
+    "entry.ts:78:10 TS2339",
+    "entry.ts:87:53 TS2694",
+    "entry.ts:92:2 TS1362",
+    "entry.ts:96:2 TS1362",
+    "entry.ts:9:2 TS1362",
+    "mixed-owners.ts:1:33 TS2308",
+    "mixed-owners.ts:1:33 TS2308",
+    "namespace-visibility.ts:6:38 TS2694",
+    "namespace.ts:5:2 TS2304",
+    "quoted/entry.ts:15:12 TS2339",
+    "reversed.ts:4:0 TS2308"
+  ],
+  "compiler-conformance/typescript-map-tuple-positions": [
+    "entry.ts:37:13 TS2491",
+    "entry.ts:37:41 TS2339"
+  ],
+  "compiler-conformance/typescript-default-import": [
+    "src/Ghost.ts:1:7 TS1192",
+    "src/Parent.tsx:6:38 TS7026",
+    "src/Parent.tsx:6:9 TS7026",
+    "src/c/Child.tsx:1:61 TS7026",
+    "src/c/Child.tsx:1:69 TS7026",
+    "src/c/Named.tsx:1:33 TS7026",
+    "src/c/Widget.tsx:1:41 TS7026"
+  ],
+  "compiler-conformance/typescript-ambient-module-exports": [
+    "use.ts:1:22 TS2305",
+    "use.ts:1:30 TS2305"
+  ],
+  "compiler-conformance/typescript-private-type-imports": ["ambient-use.ts:1:34 TS2306"],
+  "compiler-conformance/typescript-shadowed-receiver": [
+    "app.ts:10:17 TS7006",
+    "app.ts:16:36 TS7006",
+    "app.ts:5:20 TS7006"
+  ],
+  "compiler-conformance/typescript-type-value-namespaces": [
+    "erased.ts:2:37 TS1361",
+    "erased.ts:3:31 TS1361"
+  ],
+  "lang-resolution/ts-deep-field-chain": [
+    "models.ts:10:2 TS2564",
+    "models.ts:11:2 TS2564",
+    "models.ts:19:2 TS2564",
+    "models.ts:20:2 TS2564",
+    "models.ts:2:2 TS2564"
+  ],
+  "lang-resolution/ts-dynamic-this-no-seed": ["app.ts:17:11 TS2339"],
+  "lang-resolution/ts-field-type-disambig": [
+    "address.ts:2:2 TS2564",
+    "user.ts:4:2 TS2564",
+    "user.ts:5:2 TS2564"
+  ],
+  "lang-resolution/ts-mixed-chain": ["models.ts:16:2 TS2564", "models.ts:8:2 TS2564"],
+  "lang-resolution/ts-nullable-chain": [
+    "src/app.ts:12:2 TS18047",
+    "src/app.ts:19:2 TS18048",
+    "src/app.ts:26:2 TS18047"
+  ],
+  "lang-resolution/ts-param-property-fields": ["models.ts:2:2 TS2564"],
+  "lang-resolution/ts-virtual-dispatch": ["src/app.ts:22:9 TS2339"],
+  "lang-resolution/ts-write-access": [
+    "models.ts:2:2 TS2564",
+    "models.ts:6:2 TS2564",
+    "models.ts:7:2 TS2564"
+  ],
+  "lang-resolution/typescript-callable-alternatives": [
+    "compare.ts:10:2 TS2349",
+    "compare.ts:15:2 TS2349",
+    "compare.ts:25:4 TS2349",
+    "compare.ts:29:14 TS2869",
+    "compare.ts:30:4 TS2349",
+    "compare.ts:34:14 TS2571",
+    "compare.ts:40:4 TS2349",
+    "index.ts:54:14 TS2774"
+  ],
+  "lang-resolution/typescript-double-cast-inference": ["src/app.ts:9:7 TS2339"],
+  "lang-resolution/typescript-generic-calls": [
+    "src/service.ts:5:22 TS2591",
+    "src/token.ts:6:20 TS2591"
+  ],
+  "lang-resolution/typescript-hoc-wrapped": [
+    "src/debounce.ts:9:40 TS2345",
+    "src/nested.tsx:56:2 TS2345",
+    "src/use-callback.ts:14:40 TS2345"
+  ],
+  "lang-resolution/typescript-hof-callbacks": [
+    "src/multi-action-store.ts:39:19 TS2322",
+    "src/multi-action-store.ts:41:14 TS7006",
+    "src/multi-action-store.ts:45:17 TS7006",
+    "src/store.ts:41:21 TS2322"
+  ],
+  "lang-resolution/typescript-instanceof-narrowing": ["src/app.ts:3:17 TS7006"],
+  "lang-resolution/typescript-jsx-as-call": [
+    "src/html-only.tsx:10:2 TS7026",
+    "src/html-only.tsx:7:2 TS7026",
+    "src/html-only.tsx:8:14 TS7026",
+    "src/html-only.tsx:8:4 TS7026",
+    "src/html-only.tsx:9:17 TS7026",
+    "src/html-only.tsx:9:4 TS7026"
+  ],
+  "lang-resolution/typescript-local-shadow": ["src/app.ts:1:9 TS2440"],
+  "lang-resolution/typescript-mcp-tools": [
+    "src/server.ts:18:69 TS2345",
+    "src/server.ts:19:25 TS2769",
+    "src/server.ts:20:55 TS2322",
+    "src/server.ts:21:33 TS2345",
+    "src/server.ts:24:48 TS2345",
+    "src/server.ts:28:32 TS2345",
+    "src/server.ts:31:0 TS2630",
+    "src/server.ts:32:35 TS2345",
+    "src/server.ts:36:35 TS2345",
+    "src/server.ts:40:30 TS2345",
+    "src/server.ts:43:52 TS2345",
+    "src/server.ts:47:38 TS2345",
+    "src/server.ts:51:39 TS2345"
+  ],
+  "lang-resolution/typescript-member-access-for-loop": ["src/app.ts:27:32 TS2339"],
+  "lang-resolution/typescript-namespace-const": ["config.ts:19:2 TS1235"],
+  "lang-resolution/typescript-pnpm-workspace-imports": [
+    "apps/web/src/guess.ts:1:21 TS2307",
+    "apps/web/src/main.ts:1:21 TS2307",
+    "apps/web/src/outside.ts:1:30 TS2307"
+  ],
+  "lang-resolution/typescript-reexport-type": ["src/app.ts:4:19 TS1361", "src/app.ts:7:19 TS1361"],
+  "lang-resolution/typescript-side-effect-imports": [
+    "src/polyfill.ts:1:14 TS2397",
+    "src/polyfill.ts:2:11 TS7017",
+    "src/register.ts:1:14 TS2397",
+    "src/register.ts:2:12 TS7017"
+  ],
+  "lang-resolution/typescript-tsconfig-aliases": ["project TS5090", "project TS5102"],
+  "lang-resolution/typescript-tsx-jsx": [
+    "src/App.tsx:5:4 TS7026",
+    "src/App.tsx:7:4 TS7026",
+    "src/Button.tsx:4:30 TS7026",
+    "src/Button.tsx:4:9 TS7026"
+  ],
+  "compiler-conformance/typescript-union-instance-members": [
+    "dispatch.ts:25:15 TS2339",
+    "dispatch.ts:39:15 TS2349",
+    "dispatch.ts:55:81 TS2349",
+    "dispatch.ts:96:15 TS2349"
+  ],
+  "compiler-conformance/typescript-script-legacy": ["use.ts:5:33 TS2304"],
+  "compiler-conformance/typescript-qualified-heritage": ["value-member.ts:2:30 TS2749"],
+  "compiler-conformance/typescript-solution-globals": [
+    "app/src/main.ts:8:35 TS2304",
+    "isolated/main.ts:2:29 TS2304"
+  ],
+  "compiler-conformance/typescript-script-force": [
+    "use.ts:2:23 TS2304",
+    "use.ts:4:2 TS2552",
+    "use.ts:5:6 TS2552",
+    "use.ts:6:2 TS2304"
+  ],
+  "compiler-conformance/typescript-script-auto-package": ["use.ts:2:23 TS2304"],
+  "compiler-conformance/typescript-script-auto-jsx": ["use.ts:2:23 TS2304"],
+  "compiler-conformance/typescript-runtime-construction-guards": [
+    "app.ts:10:8 TS2339",
+    "app.ts:13:10 TS2339"
+  ],
+  "compiler-conformance/typescript-project-script-membership": [
+    "src/use.ts:2:25 TS2552",
+    "src/use.ts:2:38 TS2304",
+    "src/use.ts:8:44 TS2304",
+    "src/use.ts:8:60 TS2304"
+  ]
+}

@@ -221,6 +221,48 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
     ]);
   });
 
+  it.each(['js', 'ts'])(
+    'keeps a lexical for initializer distinct from its body and module in .%s',
+    async (extension) => {
+      const filename = `loop.${extension}`;
+      const { calls, nodes } = await analyze(
+        filename,
+        [
+          'function outerLeaf() { return 0; }',
+          'function loopLeaf() { return 1; }',
+          'function bodyLeaf() { return 2; }',
+          'function save() { return outerLeaf(); }',
+          'for (let save = () => loopLeaf(); save(); ) {',
+          '  function inLoop() { return save(); }',
+          '  {',
+          '    const save = function () { return bodyLeaf(); };',
+          '    function inBlock() { return save(); }',
+          '  }',
+          '  break;',
+          '}',
+          'for (var hoisted = () => 3; false; ) {}',
+          'export function after() { return save() + hoisted(); }',
+        ].join('\n'),
+      );
+
+      const fn = `Function:${filename}:`;
+      const outer = `${fn}save`;
+      const loop = `${fn}save@4:16`;
+      const block = `${fn}save@7:17`;
+      expect(nodes).toEqual([outer, loop, block]);
+      expect(calls).toEqual([
+        `File:${filename} -> ${loop}`,
+        `${fn}after -> ${fn}hoisted`,
+        `${fn}after -> ${outer}`,
+        `${fn}inBlock -> ${block}`,
+        `${fn}inLoop -> ${loop}`,
+        `${outer} -> ${fn}outerLeaf`,
+        `${loop} -> ${fn}loopLeaf`,
+        `${block} -> ${fn}bodyLeaf`,
+      ]);
+    },
+  );
+
   it('`var` still hoists past blocks to the function, per the spec', async () => {
     // The other half of block scoping: a `var` declared in a block belongs to
     // the FUNCTION environment record. If block scopes had captured `var` too,

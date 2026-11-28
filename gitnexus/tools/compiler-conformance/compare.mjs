@@ -12,6 +12,16 @@ export function compareCodeUnits(left, right) {
   return left < right ? -1 : 1;
 }
 
+// Compare graph tuples field by field so identifier punctuation cannot merge two rows.
+export function compareStringTuples(left, right) {
+  const sharedLength = Math.min(left.length, right.length);
+  for (let index = 0; index < sharedLength; index++) {
+    const order = compareCodeUnits(left[index], right[index]);
+    if (order) return order;
+  }
+  return left.length - right.length;
+}
+
 function position(value) {
   assert.ok(
     typeof value === 'string' && /^[1-9]\d*:(?:0|[1-9]\d*)$/.test(value),
