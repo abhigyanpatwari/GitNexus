@@ -822,6 +822,25 @@ export const probeBackendStatus = async (): Promise<BackendProbeStatus> => {
   }
 };
 
+/**
+ * Check that the backend can run a query against `repo`. `/api/health` only
+ * answers liveness; this goes through `/api/query`, the same path user queries
+ * take, so a missing repo or a graph database that cannot be opened reports as
+ * unavailable. Never throws.
+ */
+export const probeQueryService = async (repo?: string): Promise<boolean> => {
+  try {
+    const response = await fetchWithTimeout(`${_backendUrl}/api/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cypher: 'RETURN 1', repo }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
 /** Fetch list of indexed repositories. */
 export const fetchRepos = async (): Promise<BackendRepo[]> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/repos`);

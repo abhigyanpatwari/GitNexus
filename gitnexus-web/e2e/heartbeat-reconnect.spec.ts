@@ -67,8 +67,7 @@ test.describe('Heartbeat Reconnect', () => {
       // auto-connect may skip the landing screen
     }
 
-    // Wait for graph to load (heartbeat is blocked, but graph loads fine)
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('status-query-unavailable')).toBeVisible({ timeout: 30_000 });
 
     // The reconnecting banner should appear (heartbeat is failing)
     const banner = page.getByText('Server connection lost');
@@ -91,7 +90,11 @@ test.describe('Heartbeat Reconnect', () => {
       // auto-connect may skip the landing screen
     }
 
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('status-query-unavailable')).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Query', exact: true }).click();
+    await page.getByPlaceholder(/^MATCH \(n:Function\)/).fill('RETURN 1');
+    const run = page.getByRole('button', { name: /^Run/ });
+    await expect(run).toBeDisabled();
 
     // Verify banner appears
     const banner = page.getByText('Server connection lost');
@@ -104,6 +107,7 @@ test.describe('Heartbeat Reconnect', () => {
     await expect(banner).not.toBeVisible({ timeout: 30_000 });
 
     // Graph should still be there
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible();
+    await expect(page.getByTestId('status-ready')).toBeVisible();
+    await expect(run).toBeEnabled();
   });
 });

@@ -15,6 +15,7 @@ import {
   fetchRepos,
   getAuthToken,
   probeBackendStatus,
+  probeQueryService,
   runQuery,
   setAuthToken,
   setBackendUrl,
@@ -132,6 +133,38 @@ describe('backend-client access token', () => {
     setAuthToken('');
     expect(sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY)).toBeNull();
     expect(getAuthToken()).toBe('');
+  });
+
+  describe('probeQueryService', () => {
+    it('runs a trivial query against the repo and reports success', async () => {
+      const fetchMock = vi.fn(async () => jsonOk({ result: [] }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(probeQueryService('repo-a')).resolves.toBe(true);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe(`${BASE}/api/query`);
+      expect(JSON.parse(String(init.body))).toEqual({ cypher: 'RETURN 1', repo: 'repo-a' });
+    });
+
+    it('reports a live server that cannot query the repo as unavailable', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('{"error":"Repository not found"}', { status: 404 })),
+      );
+
+      await expect(probeQueryService('missing')).resolves.toBe(false);
+    });
+
+    it('reports a transport failure as unavailable without throwing', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          throw new TypeError('fetch failed');
+        }),
+      );
+
+      await expect(probeQueryService('repo-a')).resolves.toBe(false);
+    });
   });
 
   describe('probeBackendStatus', () => {
