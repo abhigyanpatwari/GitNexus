@@ -125,7 +125,7 @@ describe('Python competing-binding barrier drops', () => {
     );
   const barrierDrops = (filePath: string) =>
     getResolutionOutcomes(result).filter(
-      (outcome) =>
+      (outcome): outcome is Extract<typeof outcome, { kind: 'suppressed' }> =>
         outcome.kind === 'suppressed' &&
         outcome.reason === 'competing-binding-barrier' &&
         outcome.filePath === filePath,
