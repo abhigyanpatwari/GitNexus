@@ -131,7 +131,9 @@ export const en = {
   'tool.usage.trace':
     'Usage: gitnexus trace [from] [to] [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
-  'tool.stalePolicy.behind': 'Index is {{commits}} commit(s) behind HEAD',
+  'tool.stalePolicy.behind': 'Index is {{count}} commits behind HEAD',
+  'tool.stalePolicy.behind_one': 'Index is {{count}} commit behind HEAD',
+  'tool.stalePolicy.behind_other': 'Index is {{count}} commits behind HEAD',
   'tool.stalePolicy.diverged': 'Index is not at HEAD (diverged)',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",

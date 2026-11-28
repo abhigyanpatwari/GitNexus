@@ -147,7 +147,7 @@ describe('reportStalePolicy', () => {
 
   it('writes one line with the count and fails the command', () => {
     reportStalePolicy(applyStalePolicy(behind, 'error'));
-    expect(stderr).toHaveBeenCalledWith('Index is 1 commit(s) behind HEAD\n');
+    expect(stderr).toHaveBeenCalledWith('Index is 1 commit behind HEAD\n');
     expect(process.exitCode).toBe(1);
   });
 

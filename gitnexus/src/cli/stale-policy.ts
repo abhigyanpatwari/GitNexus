@@ -156,7 +156,7 @@ export function reportStalePolicy(outcome: StalePolicyOutcome<unknown>): void {
   const { commitsBehind } = outcome.failure;
   const reason =
     commitsBehind !== undefined
-      ? t('tool.stalePolicy.behind', { commits: commitsBehind })
+      ? t('tool.stalePolicy.behind', { count: commitsBehind })
       : t('tool.stalePolicy.diverged');
   process.stderr.write(reason + '\n');
   process.exitCode = 1;

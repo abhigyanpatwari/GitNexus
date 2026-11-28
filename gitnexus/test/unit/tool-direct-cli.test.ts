@@ -515,7 +515,7 @@ describe('direct CLI tool commands', () => {
       await queryCommand('auth flow', { stalePolicy: 'error' });
 
       expect(JSON.parse(writeSyncMock.mock.calls[0][1])).toEqual(staleResult());
-      expect(stderrText()).toBe('Index is 1 commit(s) behind HEAD\n');
+      expect(stderrText()).toBe('Index is 1 commit behind HEAD\n');
       expect(process.exitCode).toBe(1);
       expect(disconnectMock).toHaveBeenCalledOnce();
     });
@@ -585,7 +585,7 @@ describe('direct CLI tool commands', () => {
         allowCwdDefault: true,
       });
       expect(checkStalenessAsyncMock).toHaveBeenCalledWith('/repo', 'abc123');
-      expect(stderrText()).toBe('Index is 2 commit(s) behind HEAD\n');
+      expect(stderrText()).toBe('Index is 2 commits behind HEAD\n');
       expect(process.exitCode).toBe(1);
     });
 
@@ -604,7 +604,7 @@ describe('direct CLI tool commands', () => {
       callToolMock.mockResolvedValue({ status: 'found', path: [] });
       await traceCommand('a', 'b', { stalePolicy: 'error' });
       expect(process.exitCode).toBe(1);
-      expect(stderrText().match(/Index is 4 commit\(s\) behind HEAD/g)).toHaveLength(2);
+      expect(stderrText().match(/Index is 4 commits behind HEAD/g)).toHaveLength(2);
     });
 
     it('error measures a raw-row cypher result too', async () => {

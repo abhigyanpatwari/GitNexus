@@ -122,7 +122,9 @@ export const zhCN = {
   'tool.usage.trace':
     '用法：gitnexus trace [起点] [终点] [-f|--file <路径>] [--from-file <路径>] [--to-file <路径>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
-  'tool.stalePolicy.behind': '索引落后 HEAD {{commits}} 个提交',
+  'tool.stalePolicy.behind': '索引落后 HEAD {{count}} 个提交',
+  'tool.stalePolicy.behind_one': '索引落后 HEAD {{count}} 个提交',
+  'tool.stalePolicy.behind_other': '索引落后 HEAD {{count}} 个提交',
   'tool.stalePolicy.diverged': '索引不在 HEAD 上（已分叉）',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
