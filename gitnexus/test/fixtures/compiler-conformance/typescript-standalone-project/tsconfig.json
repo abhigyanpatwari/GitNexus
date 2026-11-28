@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "module": "esnext", "moduleDetection": "force", "types": [] },
+  "files": ["app.ts"]
+}

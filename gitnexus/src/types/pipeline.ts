@@ -10,6 +10,8 @@ import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
   relationshipIntegrity?: RelationshipIntegrityReceipt;
+  /** Sparse provider tags for source rows that depend on project configuration. */
+  fileParseContexts?: ReadonlyMap<string, string>;
   graph: KnowledgeGraph;
   /** Absolute path to the repo root — used for lazy file reads during LadybugDB loading */
   repoPath: string;

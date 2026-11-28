@@ -7,7 +7,7 @@ import {
 } from '../../utils/ast-helpers.js';
 import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { ParseTimeoutError, parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { stripUeMacros } from '../../cpp-ue-preprocessor.js';
 import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
@@ -158,6 +158,74 @@ function cppCaptureBudgetMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : CPP_CAPTURE_BUDGET_DEFAULT_MS;
 }
 
+function recoveryClosingAngle(recovery: SyntaxNode): SyntaxNode | null {
+  const closer = recovery.lastChild;
+  if (closer?.type === '>') return closer;
+  // A trailing formal may be parsed as the function's return type, with
+  // the closing angle in a separate error immediately after that type.
+  const next = recovery.nextNamedSibling;
+  const error = next?.type === 'function_definition' ? next.child(1) : null;
+  return error?.type === 'ERROR' && error.childCount === 1 ? error.firstChild : null;
+}
+
+function validRecoveredHeader(header: string, node: SyntaxNode, recovery: SyntaxNode): boolean {
+  // >= and <= have the same precedence and length. Change only confirmed
+  // operator tokens, then ask the grammar to verify the complete parameter list.
+  const chars = header.split('');
+  chars[node.endIndex - node.startIndex - 1] = '<';
+  for (const comparison of recovery.descendantsOfType('>=')) {
+    chars[comparison.startIndex - node.startIndex] = '<';
+  }
+  const checked = chars.join('');
+  const probe = 'template' + checked + ' struct Probe {};';
+  try {
+    const root = parseSourceSafe(getCppParser(), probe, undefined, {
+      bufferSize: getTreeSitterBufferSize(probe),
+    }).rootNode;
+    return (
+      !root.hasError && root.firstNamedChild?.childForFieldName('parameters')?.text === checked
+    );
+  } catch (error) {
+    if (error instanceof ParseTimeoutError) return false;
+    throw error;
+  }
+}
+
+/** The grammar can split >= across its closing angle and an adjacent ERROR. */
+function cppTypeParameterCapture(node: SyntaxNode, source: string, existing?: Capture): Capture {
+  const capture = existing ?? nodeToCapture('@declaration.type-parameters', node);
+  const recovery = node.nextSibling;
+  if (
+    recovery?.type !== 'ERROR' ||
+    recovery.startIndex !== node.endIndex ||
+    recovery.firstChild?.type !== '='
+  )
+    return capture;
+  const last = node.lastNamedChild;
+  if (last?.type !== 'optional_parameter_declaration') return capture;
+  const equals = last.children.find((child) => child.type === '=');
+  if (!equals) return capture;
+
+  const closer = recoveryClosingAngle(recovery);
+  if (node.lastChild?.type === '>' && closer?.type === '>') {
+    const header = source.slice(node.startIndex, closer.endIndex);
+    if (header.startsWith(capture.text + '=') && validRecoveredHeader(header, node, recovery)) {
+      return {
+        ...capture,
+        text: header,
+        range: {
+          ...capture.range,
+          endLine: closer.endPosition.row + 1,
+          endCol: closer.endPosition.column,
+        },
+      };
+    }
+  }
+  // The grammar could not verify the remaining text. Keep all complete
+  // preceding formals and the last name without assigning it a partial default.
+  return { ...capture, text: capture.text.slice(0, equals.startIndex - node.startIndex) + '>' };
+}
+
 export function emitCppScopeCaptures(
   sourceText: string,
   filePath: string,
@@ -246,13 +314,16 @@ export function emitCppScopeCaptures(
       nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'],
       'function_definition',
     );
-    if (callable?.parent?.type === 'template_declaration') {
-      const parameters = callable.parent.childForFieldName('parameters');
-      if (parameters !== null)
-        grouped['@declaration.type-parameters'] = nodeToCapture(
-          '@declaration.type-parameters',
-          parameters,
-        );
+    const parameters =
+      callable?.parent?.type === 'template_declaration'
+        ? callable.parent.childForFieldName('parameters')
+        : nodeMap['@declaration.type-parameters'];
+    if (parameters) {
+      grouped['@declaration.type-parameters'] = cppTypeParameterCapture(
+        parameters,
+        sourceText,
+        grouped['@declaration.type-parameters'],
+      );
     }
 
     // ── Handle using declarations (using namespace / using name) ────

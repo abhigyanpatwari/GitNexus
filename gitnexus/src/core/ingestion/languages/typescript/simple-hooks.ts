@@ -46,10 +46,9 @@ export function tsBindingScopeFor(
   // explicitly suppress their binding through @declaration.binding-name.
   if (decl['@callable.unbound'] !== undefined || decl['@class.expression'] !== undefined)
     return innermost.id;
-  // Method return type: hoist to Module (mirrors csharpBindingScopeFor).
-  if (decl['@type-binding.return'] !== undefined) {
-    return walkToScope(innermost, tree, 'Module');
-  }
+  // Literal member spellings can repeat across owners in the same module.
+  if (decl['@type.member-return']) return walkToScope(innermost, tree, 'Class', 'Object');
+  if (decl['@type-binding.return']) return walkToScope(innermost, tree, 'Module');
 
   // Parameter property (`constructor(public address: Address)`): hoist
   // to the enclosing Class scope so `user.address` field access

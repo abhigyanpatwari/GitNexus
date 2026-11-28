@@ -55,6 +55,7 @@
     "serve": "tsx src/cli/index.ts serve",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
+    "test:conformance:typescript": "node tools/compiler-conformance/typescript/check.mjs",
     "test:conformance:java": "node tools/compiler-conformance/java/check.mjs",
     "pretest:java": "node scripts/build.js",
     "test:java": "npm run test:conformance:java",
@@ -86,6 +87,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
+    "@babel/parser": "^8.0.0",
     "@eagleoutice/tree-sitter-r": "1.1.2",
     "@ladybugdb/core": "0.22.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -106,6 +108,7 @@
     "ignore": "^7.0.5",
     "js-yaml": "^5.0.0",
     "jsonc-parser": "^3.3.1",
+    "minimatch": "^11.0.5",
     "mnemonist": "^0.40.3",
     "node-addon-api": "^8.0.0",
     "node-gyp-build": "^4.8.0",
@@ -142,7 +145,6 @@
   ],
   "devDependencies": {
     "@babel/generator": "^8.0.0",
-    "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
     "@mermaid-js/tiny": "12.3.0",
