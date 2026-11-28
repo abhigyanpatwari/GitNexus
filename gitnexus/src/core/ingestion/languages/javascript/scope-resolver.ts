@@ -40,28 +40,39 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
 import { javascriptProvider } from '../typescript.js';
+import { javascriptParseContext } from './parse-context.js';
 import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
 import {
+  bindModuleFormatExports,
   ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
   typescriptModuleExports,
 } from '../typescript/module-exports.js';
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
-import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
+import {
+  loadNodeWorkspacePackages,
+  type WorkspacePackageOptions,
+} from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
 
-async function loadResolutionConfig(repoPath: string, fresh = false) {
+async function loadResolutionConfig(repoPath: string, options?: WorkspacePackageOptions) {
   return {
     tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, options),
   };
 }
 
 const javascriptScopeResolver: ScopeResolver = {
   postExtractSourceTextPolicy: 'uncached-files',
-  populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
+  populateWorkspaceReferences(files, context) {
+    canonicalizeEcmaWorkspaceBindings(files);
+    const config = context.resolutionConfig as
+      | Awaited<ReturnType<typeof loadResolutionConfig>>
+      | undefined;
+    bindModuleFormatExports(files, null, config?.nodeWorkspacePackages ?? null);
+  },
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,
@@ -78,7 +89,10 @@ const javascriptScopeResolver: ScopeResolver = {
   // outright. Without them a bare specifier used to fall through to suffix
   // matching (#2953); now it simply does not resolve.
   loadResolutionConfig,
-  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
+  captureResolutionConfig: (repoPath, scanFiles) => loadResolutionConfig(repoPath, { scanFiles }),
+  fileParseContext: javascriptParseContext,
+  refreshResolutionConfig: (repoPath, filePaths) =>
+    loadResolutionConfig(repoPath, { fresh: true, filePaths }),
 
   // JavaScript LEGB — same tier ordering as TypeScript; no declaration-
   // merging across type/value/namespace spaces.

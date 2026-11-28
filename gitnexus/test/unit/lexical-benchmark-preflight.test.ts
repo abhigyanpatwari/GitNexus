@@ -55,6 +55,54 @@ describe('lexical benchmark preflight', () => {
     expect(fs.existsSync(output)).toBe(false);
   });
 
+  it('fingerprints cone ancestor files and rejects different materialized paths at one revision', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lexical-sparse-'));
+    scratch.push(root);
+    const before = path.join(root, 'before');
+    const after = path.join(root, 'after');
+    fs.mkdirSync(before);
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', args, { cwd, stdio: 'pipe' });
+    git(before, 'init', '--quiet');
+    for (const file of ['src/code/file.ts', 'src/ancestor.ts', 'extra/other.ts']) {
+      fs.mkdirSync(path.dirname(path.join(before, file)), { recursive: true });
+      fs.writeFileSync(path.join(before, file), '');
+    }
+    git(before, 'add', '.');
+    git(
+      before,
+      '-c',
+      'user.name=test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-qm',
+      'corpus',
+    );
+    git(root, 'clone', '--quiet', before, after);
+    git(before, 'sparse-checkout', 'set', 'src/code');
+    const result = spawnSync(
+      process.execPath,
+      [harness, root, root, before, after, path.join(root, 'output')],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Materialized source corpora differ');
+
+    const { checkoutFingerprint } = await import(
+      new URL('../../bench/lexical-lookup/corpus-fingerprint.mjs', import.meta.url).href
+    );
+    const initial = checkoutFingerprint(before);
+    fs.writeFileSync(path.join(before, 'src/ancestor.ts'), 'export const flag = 1;');
+    git(before, 'add', 'src/ancestor.ts');
+    const edited = checkoutFingerprint(before);
+    expect(edited).not.toBe(initial);
+    git(before, 'update-index', '--chmod=+x', 'src/ancestor.ts');
+    expect(checkoutFingerprint(before)).not.toBe(edited);
+  });
+
   it.each(['empty', 'indexes', 'results.json'])(
     'rejects existing %s output before touching corpora',
     (contents) => {
@@ -192,7 +240,9 @@ describe('lexical benchmark sample collection', () => {
         );
         expect(result.status, result.stderr).toBe(0);
         const report = JSON.parse(fs.readFileSync(path.join(output, 'results.json'), 'utf8'));
-        expect(report.corpusTrees).toBeNull();
+        expect(report.corpusTrees).toBe(
+          'checkout-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        );
         expect(report.screen).toBe(screen === '1');
         expect(report.baseFirst).toBe(false);
         expect(report.pairs).toBe(expectedPairs);
