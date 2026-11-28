@@ -103,6 +103,19 @@ Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/re
 
 ## Cross-platform testing
 
+### Windows checkouts
+
+Git for Windows can report `Filename too long` when a deeply nested checkout
+contains the Java conformance fixtures. Use a shorter checkout path or enable
+`core.longpaths` for the checkout command without changing global Git settings.
+For example, from an existing checkout:
+
+```powershell
+git -c core.longpaths=true worktree add --detach C:/src/gitnexus-java HEAD
+```
+
+### CI coverage
+
 Release CI runs the platform-sensitive subset on Windows and macOS. PRs that select the CLI suite run sharded coverage on Ubuntu.
 
 The subset is defined in `gitnexus/scripts/cross-platform-tests.ts` and includes:
