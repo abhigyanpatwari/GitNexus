@@ -296,12 +296,15 @@ function throwIsDefinitelyCaught(node: SyntaxNode): boolean {
 }
 
 /**
- * Nodes that can skip later siblings. Loop-local exits (`break` / `continue`)
- * do not propagate through the loop or switch statement itself.
+ * Nodes that can skip later siblings. `break` / `continue` of level N pass
+ * through N - 1 loops, then stop: the loop they finish is not an exit, so
+ * statements after that loop still run.
  */
 function collectMayExit(root: SyntaxNode): Set<number> {
   const mayExit = new Set<number>();
   const hard = new Set<number>();
+  /** Remaining `break` / `continue` levels to carry outward. A loop consumes one. */
+  const breakLevels = new Map<number, number>();
   const stack: { node: SyntaxNode; done: boolean }[] = [{ node: root, done: false }];
   while (stack.length > 0) {
     const frame = stack.pop()!;
@@ -312,12 +315,8 @@ function collectMayExit(root: SyntaxNode): Set<number> {
       continue;
     }
     if (LOOP_LOCAL_EXIT_NODE_TYPES.has(frame.node.type)) {
-      if (loopExitLevels(frame.node) > 1) {
-        mayExit.add(frame.node.id);
-        hard.add(frame.node.id);
-      } else {
-        mayExit.add(frame.node.id);
-      }
+      mayExit.add(frame.node.id);
+      breakLevels.set(frame.node.id, loopExitLevels(frame.node));
       continue;
     }
     if (HARD_EXIT_NODE_TYPES.has(frame.node.type)) {
@@ -329,17 +328,33 @@ function collectMayExit(root: SyntaxNode): Set<number> {
     }
     let childHard = false;
     let childLocal = false;
+    let pendingBreak = 0;
     for (const child of children) {
       if (DEFERRED_SCOPE_TYPES.has(child.type)) continue;
       if (hard.has(child.id)) childHard = true;
-      else if (mayExit.has(child.id)) childLocal = true;
+      const levels = breakLevels.get(child.id) ?? 0;
+      if (levels > pendingBreak) pendingBreak = levels;
+      else if (mayExit.has(child.id) && levels === 0) childLocal = true;
+    }
+    if (LOOP_OR_SWITCH_TYPES.has(frame.node.type)) {
+      if (pendingBreak > 1) {
+        mayExit.add(frame.node.id);
+        breakLevels.set(frame.node.id, pendingBreak - 1);
+      }
+      if (childHard) {
+        mayExit.add(frame.node.id);
+        hard.add(frame.node.id);
+      }
+      continue;
     }
     if (childHard) {
       mayExit.add(frame.node.id);
       hard.add(frame.node.id);
+    } else if (pendingBreak > 0) {
+      mayExit.add(frame.node.id);
+      breakLevels.set(frame.node.id, pendingBreak);
     } else if (
       childLocal &&
-      !LOOP_OR_SWITCH_TYPES.has(frame.node.type) &&
       !(frame.node.type === 'try_statement' && tryCatchesAllThrows(frame.node))
     ) {
       mayExit.add(frame.node.id);
@@ -462,6 +477,12 @@ export function extractPhpRouterRequireBindings(
       SHORT_CIRCUIT_OPERATORS.has((node.children ?? []).find((child) => !child.isNamed)?.text ?? '')
         ? (node.children ?? []).find((child) => child.isNamed)
         : undefined;
+    const alwaysEvaluated =
+      node.type === 'conditional_expression'
+        ? (node.children ?? []).find((child) => child.isNamed)
+        : node.type === 'return_statement'
+          ? (node.children ?? []).find((child) => child.isNamed && child.type !== 'return')
+          : undefined;
     const ordered: WalkFrame[] = [];
     for (const child of children) {
       // Try/catch bodies may skip. `finally` runs once the try is reached,
@@ -476,7 +497,7 @@ export function extractPhpRouterRequireBindings(
             ? false
             : node.type === 'if_statement' && child.type === 'parenthesized_expression'
               ? mustRun
-              : child === shortCircuitLeft
+              : child === shortCircuitLeft || child === alwaysEvaluated
                 ? mustRun
                 : childMustRun;
       ordered.push({ node: child, group, mustRun: runs, deferred: frame.deferred });

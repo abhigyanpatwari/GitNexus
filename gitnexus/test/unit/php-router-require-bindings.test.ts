@@ -907,6 +907,56 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toEqual(['api']);
   });
 
+  it('break 2 does not hide a require after the outer loop', () => {
+    const source = `<?php
+foreach ([1] as $i) {
+  foreach ([1] as $j) { break 2; }
+}
+require_once __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a require in a ternary condition counts as already run', () => {
+    const source = `<?php
+$x = (require_once __DIR__ . '/../routes/web.php') ? 1 : 2;
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a require in a ternary branch does not count as already run', () => {
+    expect(
+      webContexts(`<?php
+$x = $on ? require_once __DIR__ . '/../routes/web.php' : 0;
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual([null, 'api']);
+  });
+
+  it('a require used as a return value counts as already run', () => {
+    const bindings = extractBindings(
+      `<?php
+return require_once __DIR__ . '/../routes/web.php';
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings).toEqual([
+      expect.objectContaining({ requiredPath: 'routes/web.php', unguarded: true }),
+    ]);
+  });
+
   it('break 2 does not treat a require in the outer loop as a definite load', () => {
     const source = `<?php
 foreach ([1] as $i) {
