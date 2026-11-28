@@ -27,6 +27,8 @@ import {
   keepPoolErrorAsIs,
   readBufferPoolExhaustionRemedy,
   withReadBufferPoolRemedy,
+  withWritableRecoveryPoolContext,
+  isPoolErrorSettled,
   sleep,
   throwIfStorageVersionMismatch,
   toNativeSafePath,
@@ -669,7 +671,7 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
       });
       return;
     }
-    throw err;
+    throw withWritableRecoveryPoolContext(err);
   } finally {
     if (db) await db.close().catch(() => {});
   }
@@ -784,6 +786,7 @@ function ladybugUnavailableError(repoId: string, err: Error | undefined): Error 
   // (Opens with an explicit reservation rethrow raw before reaching here.)
   const remedy = err ? readBufferPoolExhaustionRemedy(err.message) : undefined;
   if (remedy) {
+    if (err && isPoolErrorSettled(err)) return err;
     return keepPoolErrorAsIs(
       new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, { cause: err }),
     );

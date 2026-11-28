@@ -704,7 +704,7 @@ export const readBufferPoolExhaustionRemedy = (message: string): string | undefi
 };
 
 // Errors withReadBufferPoolRemedy must return unchanged: ones it already
-// wrapped, and ones from a pool with an explicit reservation.
+// wrapped and ones from another pool, such as a writable WAL recovery.
 const settledPoolErrors = new WeakSet<object>();
 
 /**
@@ -717,13 +717,27 @@ export const keepPoolErrorAsIs = <T>(err: T): T => {
   return err;
 };
 
+export const isPoolErrorSettled = (err: unknown): boolean =>
+  typeof err === 'object' && err !== null && settledPoolErrors.has(err);
+
+/** Preserve native exhaustion text and cause from the temporary writable WAL recovery. */
+export const withWritableRecoveryPoolContext = (err: unknown): unknown => {
+  const message = err instanceof Error ? err.message : String(err);
+  if (!BUFFER_POOL_EXHAUSTION_RE.test(message)) return err;
+  return keepPoolErrorAsIs(
+    new Error(`The LadybugDB writer buffer pool filled during writable WAL recovery. ${message}`, {
+      cause: err,
+    }),
+  );
+};
+
 /**
  * `err` with the reader-pool remedy appended (engine text first, `err` kept as
  * `cause`), or `err` itself when it is not buffer-pool exhaustion, was already
  * wrapped, or was marked with keepPoolErrorAsIs.
  */
 export const withReadBufferPoolRemedy = (err: unknown): unknown => {
-  if (typeof err === 'object' && err !== null && settledPoolErrors.has(err)) return err;
+  if (isPoolErrorSettled(err)) return err;
   const message = err instanceof Error ? err.message : String(err);
   const remedy = readBufferPoolExhaustionRemedy(message);
   return remedy ? keepPoolErrorAsIs(new Error(`${message} ${remedy}`, { cause: err })) : err;
