@@ -1017,32 +1017,39 @@ fn main() {
   }, 60_000);
 
   it('indexes Go method formals by position when receivers share a method name', async () => {
-    const receivers = Array.from({ length: 64 }, (_, index) => index);
-    const source = [
+    const applyDeclarations = Array.from(
+      { length: 64 },
+      (_, index) => `func (Receiver${index}) Apply(callback func()) { callback() }`,
+    );
+    const sourceLines = [
       'package main',
-      ...receivers.flatMap((index) => [
+      ...applyDeclarations.flatMap((declaration, index) => [
         `type Receiver${index} struct{}`,
-        `func (Receiver${index}) Apply(callback func()) { callback() }`,
+        declaration,
         `func target${index}() {}`,
         `func run${index}() { var receiver Receiver${index}; receiver.Apply(target${index}) }`,
       ]),
-    ].join('\n');
+    ];
     const positions = vi.spyOn(definitionIds, 'definitionIdPosition');
     try {
-      const result = await runSource('go', source);
+      const result = await runSource('go', sourceLines.join('\n'));
       const edges = getRelationships(result, 'CALLS')
         .filter((edge) => edge.source === 'Apply' && edge.rel.reason === 'callable-value-flow')
-        .map(
-          (edge) =>
-            `${result.graph.getNode(edge.rel.sourceId)?.properties.startLine}:${edge.target}`,
-        )
+        .map((edge) => {
+          // Go method nodes store zero-based source rows.
+          const startRow = result.graph.getNode(edge.rel.sourceId)?.properties.startLine;
+          const declaration = startRow === undefined ? undefined : sourceLines[startRow];
+          return `${declaration} -> ${edge.target}`;
+        })
         .sort();
-      expect(edges).toEqual(receivers.map((index) => `${4 * index + 2}:target${index}`).sort());
+      expect(edges).toEqual(
+        applyDeclarations.map((declaration, index) => `${declaration} -> target${index}`).sort(),
+      );
 
       const ownerPositionLookups = positions.mock.calls.filter(([id]) => id?.endsWith(':Apply'));
       // The lookup is shared by several resolver stages. Allow a constant number of
       // lookups per method while catching a full scan of the name bucket per formal.
-      expect(ownerPositionLookups.length).toBeLessThanOrEqual(receivers.length * 16);
+      expect(ownerPositionLookups.length).toBeLessThanOrEqual(applyDeclarations.length * 16);
     } finally {
       positions.mockRestore();
     }
