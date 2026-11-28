@@ -561,6 +561,119 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
   });
 
+  it('ambiguous exact method name in controller file → fail-open, no stamp', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index#1', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index#2', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute()], []);
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
+  it('an empty routePath still resolves its handler as the root route', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ routePath: '' })], []);
+
+    expect(out.get(routeNodeKey('GET', '/'))).toBe('method:OrderController.index');
+  });
+
+  it('a handler spelled in another case resolves to the controller method', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
+  });
+
+  it('two same-name methods owned by another class do not block the case-insensitive fallback', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CTRL, 'INDEX', 'method:Other.INDEX#1', 'Method', {
+      ownerId: 'class:Other',
+    });
+    model.symbols.add(CTRL, 'INDEX', 'method:Other.INDEX#2', 'Method', {
+      ownerId: 'class:Other',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
+  });
+
+  it('uses case-insensitive fallback when a single unrelated same-name method exists in another class', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'Other', 'class:Other', 'Class');
+    model.symbols.add(CTRL, 'INDEX', 'method:Other.INDEX', 'Method', {
+      ownerId: 'class:Other',
+    });
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
+  });
+
+  it('a case-insensitive match owned by another class is not stamped', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:Helper.index', 'Method', {
+      ownerId: 'class:Helper',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
+  it('an exact-case match owned by another class is not stamped', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:Helper.index', 'Method', {
+      ownerId: 'class:Helper',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'index' })], []);
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
+  it('non-PHP route file does not use case-insensitive controller method fallback', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [laravelRoute({ filePath: 'routes/web.py', methodName: 'INDEX' })],
+      [],
+    );
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
   it('ambiguous controller short-name (>1) → fail-open, no stamp', () => {
     const model = createSemanticModel();
     model.symbols.add(

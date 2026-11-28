@@ -105,7 +105,7 @@ import {
   templateArgumentsIdTag,
   templateConstraintsIdTag,
 } from '../utils/template-arguments.js';
-import type { LanguageProvider } from '../language-provider.js';
+import type { ExtractedRouteRequireBinding, LanguageProvider } from '../language-provider.js';
 import {
   mergeCanonicalDefinitionProperties,
   runDefinitionPropertiesExtractor,
@@ -500,6 +500,12 @@ export interface ParseWorkerResult {
    */
   routerModuleAliases?: ExtractedRouterModuleAlias[];
   /**
+   * Bootstrap router-group require bindings for cross-file prefix propagation
+   * (e.g. Lumen `$app->router->group(..., require ...)`). Optional for parse-cache
+   * backward compatibility.
+   */
+  routeRequireBindings?: ExtractedRouteRequireBinding[];
+  /**
    * Per-file Python module-level string constants (#2391). parse-impl aggregates
    * these into a repo-wide, file-path-keyed map and resolves each decorator
    * route's non-literal path expression against it. Optional for cache backward
@@ -718,6 +724,7 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
   lookupExactAll: () => [],
+  lookupExactUniqueCaseInsensitive: () => undefined,
   lookupCallableByName: () => [],
   getFiles: () => [][Symbol.iterator](),
   getStats: () => ({ fileCount: 0 }),
@@ -3134,6 +3141,14 @@ const processFileGroupFiles = (
     if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
       for (const r of extractedRoutes) result.routes.push(r);
+    }
+
+    if (provider.extractRouteRequireBindings) {
+      const bindings = provider.extractRouteRequireBindings(tree, file.path, file.content);
+      if (bindings.length > 0) {
+        const target = (result.routeRequireBindings ??= []);
+        for (const binding of bindings) target.push(binding);
+      }
     }
 
     // Content-based route extraction via provider hook (path-gate lives on

@@ -23,6 +23,7 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 import type { LanguageProvider, RouteHookConfig } from './language-provider.js';
+import { getProviderForFile } from './languages/index.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import {
   isTestRouteFile,
@@ -177,6 +178,30 @@ export function buildExportedTypeMapFromGraph(
  * confidence the tiered resolver previously assigned these edges.
  */
 const ROUTE_EDGE_CONFIDENCE = 0.5;
+
+/** Exact same-file Method definitions owned by `controllerDef` (prevents another class's method from matching or suppressing fallback). */
+function lookupOwnedControllerMethods(
+  symbols: SymbolTableReader,
+  controllerDef: SymbolDefinition,
+  methodName: string,
+): SymbolDefinition[] {
+  return symbols
+    .lookupExactAll(controllerDef.filePath, methodName)
+    .filter((def) => def.type === 'Method' && def.ownerId === controllerDef.nodeId);
+}
+
+/** Unique case-insensitive Method of the controller class (after exact miss or >1 exact defs). Returns undefined when more than one owned method folds to the same name. */
+function routeHandlerMethodCaseInsensitiveFallback(
+  symbols: SymbolTableReader,
+  controllerDef: SymbolDefinition,
+  methodName: string,
+): string | undefined {
+  return symbols.lookupExactUniqueCaseInsensitive(
+    controllerDef.filePath,
+    methodName,
+    controllerDef.nodeId,
+  )?.nodeId;
+}
 
 /**
  * Resolve a route's controller class from its normalized dot-joined
@@ -335,9 +360,16 @@ export const processRoutesFromExtracted = async (
     const confidence = ROUTE_EDGE_CONFIDENCE;
 
     // Method must live in the controller's own file (the legacy emitter only
-    // accepted same-file method resolutions).
-    const methodDefs = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
-    const methodId = methodDefs[0]?.nodeId;
+    // accepted same-file method resolutions) and be owned by the controller class.
+    const methodDefs = lookupOwnedControllerMethods(model.symbols, controllerDef, route.methodName);
+    let methodId = methodDefs.length === 1 ? methodDefs[0]?.nodeId : undefined;
+    if (!methodId && getProviderForFile(route.filePath)?.caseInsensitiveRouteMethods) {
+      methodId = routeHandlerMethodCaseInsensitiveFallback(
+        model.symbols,
+        controllerDef,
+        route.methodName,
+      );
+    }
     const sourceId = generateId('File', route.filePath);
 
     if (!methodId) {
@@ -525,7 +557,7 @@ export function resolveRouteHandlerSymbols(
   // Laravel framework routes — controller class + method name.
   for (const route of extractedRoutes) {
     // Match the routes phase's admission rule for extracted declarations.
-    if (!route.routePath) continue;
+    if (route.routePath == null) continue;
     let methodId: string | undefined;
     if (route.controllerName && route.methodName) {
       let controllerDef: SymbolDefinition | undefined;
@@ -536,7 +568,21 @@ export function resolveRouteHandlerSymbols(
         const controllerDefs = model.types.lookupClassByName(route.controllerName);
         if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
       }
-      if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+      if (controllerDef) {
+        const exactDefs = lookupOwnedControllerMethods(
+          model.symbols,
+          controllerDef,
+          route.methodName,
+        );
+        methodId = exactDefs.length === 1 ? exactDefs[0]?.nodeId : undefined;
+        if (!methodId && getProviderForFile(route.filePath)?.caseInsensitiveRouteMethods) {
+          methodId = routeHandlerMethodCaseInsensitiveFallback(
+            model.symbols,
+            controllerDef,
+            route.methodName,
+          );
+        }
+      }
     } else if (!route.controllerName && route.methodName) {
       methodId = pickSameFileHandler(
         model.symbols.lookupExactAll(route.filePath, route.methodName),

@@ -3,20 +3,17 @@
  * framework-route → controller-method `CALLS`-edge emitter in
  * call-processor.ts.
  *
- * RING4-2 (#943) migrates this emitter off the legacy `ResolutionContext.resolve`
- * tiered lookup and onto the scope-resolution registry / symbol table. These
- * tests pin the *current* edge-emission behavior (which had no direct coverage)
- * so the migration is provably behavior-preserving:
+ * RING4-2 (#943) migrates this emitter onto the symbol table. The cases below
+ * are the emission contract, including later route-handler rules:
  *
- *   - resolvable controller + same-file method  → CALLS edge to the method node
- *   - resolvable controller + unknown method    → CALLS edge to a *guessed* Method id
- *   - unknown controller                        → no edge
- *   - ambiguous global controller (>1 match)    → no edge
+ *   - unique same-file owned method     → CALLS edge to that method node
+ *   - unknown or ambiguous owned method → CALLS edge to a guessed Method id
+ *   - unknown or ambiguous controller   → no edge
  *   - one edge emitted per route
+ *   - PHP case-insensitive fallback only when the owned exact set is not unique
+ *     and the folded owner match is unique
  *
- * Confidence values captured here (controller resolves at the `global` tier for
- * routes-file → controller references, so 0.5; guessed-method edges are × 0.8)
- * are the contract the migrated implementation must match.
+ * Confidence: resolved controller method 0.5; guessed-method edges are × 0.8.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -149,6 +146,20 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
 
+  it('route with null routePath but resolvable handler → CALLS edge still emitted', async () => {
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['index']);
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ routePath: null, methodName: 'index' })],
+      model,
+    );
+
+    expect(routeCallsEdges(graph)).toHaveLength(1);
+    expect(routeCallsEdges(graph)[0].targetId).toBe('method:OrderController.index');
+  });
+
   it('route missing methodName → skipped', async () => {
     const graph = createKnowledgeGraph();
     const model = modelWithController(['index']);
@@ -180,11 +191,93 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     ]);
   });
 
-  it('overloaded controller method → edge targets the first-registered definition', async () => {
-    // Two same-name method definitions in the controller file (overloads).
-    // The emitter takes lookupExactAll(...)[0] — first-registered wins, parity
-    // with the legacy same-file tier which returned candidates[0]. Pins the
-    // selection policy so it can't silently drift.
+  it('route method name with mismatched casing → unique case-insensitive match to the method node', async () => {
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['getExistAddressTypes']);
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ methodName: 'getexistaddresstypes' })],
+      model,
+    );
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.getExistAddressTypes');
+    expect(edges[0].confidence).toBeCloseTo(0.5, 5);
+  });
+
+  it('ambiguous case-insensitive method match → guessed Method id at reduced confidence', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'INDEX', 'method:OrderController.INDEX', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'Index' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:Index`));
+    expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
+  });
+
+  it('same-name exact method in another class does not suppress controller case-insensitive fallback', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'Helper', 'class:Helper', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'INDEX', 'method:Helper.INDEX', 'Method', {
+      ownerId: 'class:Helper',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'INDEX' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.index');
+  });
+
+  it('same-name method in another class does not resolve when the controller lacks that method', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'Helper', 'class:Helper', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:Helper.index', 'Method', {
+      ownerId: 'class:Helper',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:index`));
+  });
+
+  it('non-PHP route file does not use case-insensitive controller method fallback', async () => {
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['index']);
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ filePath: 'routes/web.py', methodName: 'INDEX' })],
+      model,
+    );
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:INDEX`));
+    expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
+  });
+
+  it('overloaded controller method → fail-open guessed edge (no unique exact owner)', async () => {
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
     model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
@@ -199,7 +292,8 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
 
     const edges = routeCallsEdges(graph);
     expect(edges).toHaveLength(1);
-    expect(edges[0].targetId).toBe('method:OrderController.index#1');
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:index`));
+    expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
   });
 
   it('aliased controller resolves via controllerQualifiedName → edge emitted', async () => {

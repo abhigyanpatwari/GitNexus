@@ -49,6 +49,65 @@ describe('SymbolTable', () => {
     });
   });
 
+  describe('lookupExactUniqueCaseInsensitive', () => {
+    const owner = { ownerId: 'class:Ctrl' };
+
+    it('returns the sole case-insensitive match in a file', () => {
+      table.add('app/Ctrl.php', 'getExistAddressTypes', 'method:ctrl.getExist', 'Method', owner);
+      const hit = table.lookupExactUniqueCaseInsensitive(
+        'app/Ctrl.php',
+        'getexistaddresstypes',
+        'class:Ctrl',
+      );
+      expect(hit?.nodeId).toBe('method:ctrl.getExist');
+    });
+
+    it('returns undefined when multiple symbols differ only by case', () => {
+      table.add('app/Ctrl.php', 'index', 'method:ctrl.index', 'Method', owner);
+      table.add('app/Ctrl.php', 'INDEX', 'method:ctrl.INDEX', 'Method', owner);
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'index', 'class:Ctrl'),
+      ).toBeUndefined();
+    });
+
+    it('never matches a free function, so it cannot stand in for a controller action', () => {
+      table.add('app/Ctrl.php', 'Helper', 'func:helper', 'Function');
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'helper', 'class:Ctrl'),
+      ).toBeUndefined();
+    });
+
+    it('folds ASCII letters only, like PHP', () => {
+      table.add('app/Ctrl.php', 'État', 'method:ctrl.Etat', 'Method', owner);
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'état', 'class:Ctrl'),
+      ).toBeUndefined();
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'ÉTAT', 'class:Ctrl')?.nodeId,
+      ).toBe('method:ctrl.Etat');
+    });
+
+    it('sees a method added after an earlier lookup of the same file', () => {
+      table.add('app/Ctrl.php', 'existing', 'method:ctrl.existing', 'Method', owner);
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'show', 'class:Ctrl'),
+      ).toBeUndefined();
+      table.add('app/Ctrl.php', 'Show', 'method:ctrl.Show', 'Method', owner);
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'show', 'class:Ctrl')?.nodeId,
+      ).toBe('method:ctrl.Show');
+    });
+
+    it('ignores a method of another class in the same file', () => {
+      table.add('app/Ctrl.php', 'Show', 'method:helper.Show', 'Method', {
+        ownerId: 'class:Helper',
+      });
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'show', 'class:Ctrl'),
+      ).toBeUndefined();
+    });
+  });
+
   describe('lookupExact', () => {
     it('finds a symbol by file path and name', () => {
       table.add('src/index.ts', 'main', 'func:main', 'Function');

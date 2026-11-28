@@ -252,6 +252,7 @@ export const createSemanticModel = (): MutableSemanticModel => {
     lookupExact: rawSymbols.lookupExact,
     lookupExactFull: rawSymbols.lookupExactFull,
     lookupExactAll: rawSymbols.lookupExactAll,
+    lookupExactUniqueCaseInsensitive: rawSymbols.lookupExactUniqueCaseInsensitive,
     lookupCallableByName: rawSymbols.lookupCallableByName,
     getFiles: rawSymbols.getFiles,
     getStats: rawSymbols.getStats,
