@@ -526,22 +526,33 @@ describe('Header', () => {
       expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
     });
 
-    it('names the running job when a re-analyze is rejected with 409', async () => {
+    it('names the competing job after a 409 and clears the alert when it completes', async () => {
+      vi.useFakeTimers();
+      const competingJob = runningJob({ repoName: 'other-repo', repoId: 'id-x' });
       vi.mocked(fetchActiveAnalyzeJobs)
         .mockResolvedValueOnce([])
-        .mockResolvedValue([runningJob({ repoName: 'other-repo', repoId: 'id-x' })]);
+        .mockResolvedValueOnce([competingJob])
+        .mockResolvedValueOnce([competingJob])
+        .mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...competingJob, status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
       vi.mocked(startAnalyze).mockRejectedValue(
         new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
       );
       render(<Header availableRepos={repos()} />);
 
       fireEvent.click(screen.getByRole('button', { name: /reels/i }));
-      await waitFor(() => expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1));
-      await userEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      fireEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
 
-      expect(await screen.findByRole('alert')).toHaveTextContent(
+      expect(screen.getByRole('alert')).toHaveTextContent(
         'other-repo is still being analyzed (42%)',
       );
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 2));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith(competingJob.id);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
   });
 });

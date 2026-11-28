@@ -14,6 +14,7 @@ import {
 import { useAppState } from '../hooks/useAppState';
 import { useActiveAnalyzeJobs } from '../hooks/useActiveAnalyzeJobs';
 import {
+  BackendError,
   deleteRepo,
   fetchRepos,
   repoIdentity,
@@ -79,7 +80,7 @@ export const Header = ({
   const [showAnalyzer, setShowAnalyzer] = useState(false);
   const [reanalyzing, setReanalyzing] = useState<string | null>(null); // repo identity being re-analyzed
   const [deleteError, setDeleteError] = useState<string | null>(null); // surfaced when a delete is rejected (e.g. origin-blocked 403)
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null); // surfaced when a re-analyze cannot start (e.g. 409 busy)
+  const [analyzeError, setAnalyzeError] = useState<{ message: string; busy: boolean } | null>(null);
   const [reanalyzeProgress, setReanalyzeProgress] = useState<JobProgress | null>(null);
   const reanalyzeSseRef = useRef<AbortController | null>(null);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
@@ -113,6 +114,7 @@ export const Header = ({
   // Server-side analyze jobs, polled while the switcher is open (#1584). The
   // server runs one job at a time, so any running job blocks a new analyze.
   const { jobs: runningJobs, readyRepoIds } = useActiveAnalyzeJobs(isRepoDropdownOpen, () => {
+    setAnalyzeError((error) => (error?.busy ? null : error));
     fetchRepos()
       .then((repos) => onReposChanged?.(repos))
       .catch(() => {});
@@ -361,7 +363,10 @@ export const Header = ({
                                         console.error('Failed to start re-analysis:', err);
                                         setReanalyzing(null);
                                         setReanalyzeProgress(null);
-                                        setAnalyzeError(await formatAnalyzeStartError(err, t));
+                                        setAnalyzeError({
+                                          message: await formatAnalyzeStartError(err, t),
+                                          busy: err instanceof BackendError && err.status === 409,
+                                        });
                                       }
                                     }}
                                     disabled={analyzeBlocked}
@@ -451,7 +456,7 @@ export const Header = ({
                     {/* Surfaced re-analyze start failure (e.g. another job running) */}
                     {analyzeError && (
                       <div className="px-3 py-2 text-xs text-red-400" role="alert">
-                        {analyzeError}
+                        {analyzeError.message}
                       </div>
                     )}
 
