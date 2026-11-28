@@ -84,9 +84,75 @@ function addIndexedName(index: NameIndex, node: GraphNode): void {
   index.bySimpleName.set(simpleName, index.bySimpleName.has(simpleName) ? AMBIGUOUS : node.id);
 }
 
-function resolveIndexedName(index: NameIndex | undefined, name: string) {
+function isQualifiedTypeName(name: string): boolean {
+  return name.includes('.') || name.includes('\\');
+}
+
+function resolveIndexedName(
+  index: NameIndex | undefined,
+  name: string,
+  options?: { caseInsensitive?: boolean },
+): string | typeof AMBIGUOUS | undefined {
   if (index === undefined) return undefined;
-  return name.includes('.') ? index.byQualifiedName.get(name) : index.bySimpleName.get(name);
+  const map = isQualifiedTypeName(name) ? index.byQualifiedName : index.bySimpleName;
+  const exact = map.get(name);
+  if (exact !== undefined || options?.caseInsensitive !== true) return exact;
+
+  const needle = name.toLowerCase();
+  let found: string | typeof AMBIGUOUS | undefined;
+  for (const [key, id] of map) {
+    if (key.toLowerCase() !== needle) continue;
+    if (found === undefined) {
+      found = id;
+      continue;
+    }
+    if (found !== id) return AMBIGUOUS;
+  }
+  return found;
+}
+
+function lookupPreferenceByType(
+  byType: Readonly<Record<string, string>>,
+  typeName: string,
+): string | undefined {
+  const exact = byType[typeName];
+  if (exact !== undefined) return exact;
+  const lower = typeName.toLowerCase();
+  return Object.entries(byType).find(([key]) => key.toLowerCase() === lower)?.[1];
+}
+
+/**
+ * Resolve a type-scoped preference using the injection spelling and the graph
+ * node that spelling resolved to. Never matches on short-name equality alone
+ * across differently-qualified types (App\Log\Logger vs Other\Logger).
+ */
+function preferenceReasonForType(
+  provider: DiProviderMatch,
+  targetTypeName: string,
+  resolvedTypeNode: GraphNode | undefined,
+): string | undefined {
+  const byType = provider.preferenceByType;
+  if (byType !== undefined && Object.keys(byType).length > 0) {
+    const keys = [targetTypeName];
+    if (resolvedTypeNode !== undefined) {
+      const qualifiedName = resolvedTypeNode.properties.qualifiedName;
+      if (typeof qualifiedName === 'string' && qualifiedName.length > 0) {
+        keys.push(qualifiedName);
+      }
+      const name = resolvedTypeNode.properties.name;
+      if (!isQualifiedTypeName(targetTypeName) && typeof name === 'string' && name.length > 0) {
+        keys.push(name);
+      }
+    }
+    for (const key of keys) {
+      const hit = lookupPreferenceByType(byType, key);
+      if (hit !== undefined) return hit;
+    }
+  }
+  if (provider.preferenceReason !== undefined) {
+    return provider.preferenceReason;
+  }
+  return undefined;
 }
 
 function providerCandidates(
@@ -250,13 +316,16 @@ export const diPhase: PipelinePhase<DIOutput> = {
       const cacheKey = `${language}\0${provider.providedTypeName}`;
       let assignableTypeNames = assignableNamesByProvidedType.get(cacheKey);
       if (assignableTypeNames === undefined) {
+        const caseInsensitive = language === 'php';
         const classEntry = resolveIndexedName(
           classesByLanguage.get(language),
           provider.providedTypeName,
+          { caseInsensitive },
         );
         const interfaceEntry = resolveIndexedName(
           interfacesByLanguage.get(language),
           provider.providedTypeName,
+          { caseInsensitive },
         );
         const rootTypeId =
           typeof classEntry === 'string' && interfaceEntry === undefined
@@ -315,13 +384,16 @@ export const diPhase: PipelinePhase<DIOutput> = {
       const edgeSourceId =
         candidate.edgeSource === 'site' && siteNode !== undefined ? siteNode.id : consumerClassId;
 
+      const caseInsensitive = candidate.language === 'php';
       const classEntry = resolveIndexedName(
         classesByLanguage.get(candidate.language),
         candidate.targetTypeName,
+        { caseInsensitive },
       );
       const interfaceEntry = resolveIndexedName(
         interfacesByLanguage.get(candidate.language),
         candidate.targetTypeName,
+        { caseInsensitive },
       );
       if (
         classEntry === AMBIGUOUS ||
@@ -401,9 +473,17 @@ export const diPhase: PipelinePhase<DIOutput> = {
         continue;
       }
 
+      const resolvedTypeNode = rootTypeId === undefined ? undefined : ctx.graph.getNode(rootTypeId);
       const preferred = viable.flatMap((id) => {
-        const reason = providers.get(id)?.preferenceReason;
-        return reason === undefined ? [] : [{ id, reason }];
+        const provider = providers.get(id);
+        if (provider === undefined) return [];
+        const reason = preferenceReasonForType(
+          provider,
+          candidate.targetTypeName,
+          resolvedTypeNode,
+        );
+        if (reason === undefined) return [];
+        return [{ id, reason }];
       });
       if (!usedNamedSelection && preferred.length === 1) {
         const selected = preferred[0];

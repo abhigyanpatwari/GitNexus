@@ -48,6 +48,7 @@ import {
   taintSummariesPhase,
   callSummariesPhase,
   mroPhase,
+  symfonyConfigPhase,
   diPhase,
   communitiesPhase,
   processesPhase,
@@ -337,6 +338,7 @@ export interface PipelineOptions {
  *     → crossFile → scopeResolution → [springAutoConfiguration, springAop,
  *       springDestinations] → pruneLocalSymbols
  *     → mro → springAopInheritance → di → communities → processes
+ *   parse → symfonyConfig
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
  * object, and `.register()` it at the appropriate position below. Opt-in
@@ -344,9 +346,8 @@ export interface PipelineOptions {
  * the legacy `if (!skipGraphPhases)` guard is now expressed that way on the
  * three graph phases, with no change in behaviour.
  *
- * Exported for the parity test (`pipeline-phase-registry.test.ts`), which
- * asserts the produced list is byte-identical to the legacy array for every
- * options combination.
+ * `pipeline-phase-registry.test.ts` verifies the default registration order
+ * and how options add or skip phases.
  */
 export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
   return (
@@ -377,6 +378,8 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(springAopInheritancePhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      // Symfony services.yaml aliases → preferred providers for PHP INJECTS (#1857).
+      .register(symfonyConfigPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(communitiesPhase, {
         enabledWhen: (o) => !o.skipGraphPhases && o.skipDerivedGraphPhases !== true,

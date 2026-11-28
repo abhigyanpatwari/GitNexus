@@ -49,9 +49,14 @@ export interface DiProviderMatch {
    * provider from injection into its own declaration site without knowing the
    * framework-specific declaration model. */
   declaredByNodeId?: string;
-  /** Present when the framework marks this as its preferred candidate. The
-   *  value is appended to the emitted edge reason when it disambiguates. */
+  /** Global preference for every injectable type (e.g. Spring `@Primary`).
+   *  Used when `preferenceByType` is omitted, empty, or has no key for the
+   *  resolved injection type. */
   preferenceReason?: string;
+  /** Type-scoped preference reasons (type name → reason). Looked up against
+   *  the injection spelling and the resolved type node's name/qualifiedName.
+   *  Empty object ⇒ no type-scoped hits (global preference still applies). */
+  preferenceByType?: Readonly<Record<string, string>>;
 }
 
 /** Per-language DI behavior. Matchers receive whole nodes so the shared phase

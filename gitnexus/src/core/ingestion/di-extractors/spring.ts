@@ -283,7 +283,12 @@ function isProviderMatch(value: unknown): value is DiProviderMatch {
     provider.names.every((name) => typeof name === 'string') &&
     (provider.providedTypeName === undefined || typeof provider.providedTypeName === 'string') &&
     (provider.declaredByNodeId === undefined || typeof provider.declaredByNodeId === 'string') &&
-    (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string')
+    (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string') &&
+    (provider.preferenceByType === undefined ||
+      (typeof provider.preferenceByType === 'object' &&
+        provider.preferenceByType !== null &&
+        !Array.isArray(provider.preferenceByType) &&
+        Object.values(provider.preferenceByType).every((reason) => typeof reason === 'string')))
   );
 }
 
