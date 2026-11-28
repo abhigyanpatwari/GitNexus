@@ -63,6 +63,8 @@ vi.mock('react-i18next', () => ({
       if (key === 'header:ready') return 'Ready';
       if (key === 'errors:analyzeBusy')
         return `${options?.repoName} is still being analyzed (${options?.percent}%)`;
+      if (key === 'errors:analyzeStopping')
+        return `The analysis worker for ${options?.repoName} is stopping`;
       if (key === 'header:reanalyzeRepo') return `Re-analyze ${options?.repoName ?? ''}`;
       if (key === 'header:reanalyzingRepo')
         return `Re-analyzing ${options?.repoName ?? ''}: ${options?.message ?? ''}`;
@@ -544,6 +546,26 @@ describe('Header', () => {
 
       expect(getAnalyzeStatus).not.toHaveBeenCalled();
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('describes a terminal worker holding the slot as stopping', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([runningJob({ status: 'failed', stopping: true })]);
+      vi.mocked(startAnalyze).mockRejectedValue(
+        new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
+      );
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      fireEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The analysis worker for repo-1 is stopping',
+      );
     });
 
     it('names the competing job after a 409 and clears the alert when it completes', async () => {

@@ -39,6 +39,7 @@ export async function formatAnalyzeStartError(error: unknown, t: TFunction): Pro
   if (error instanceof BackendError && error.status === 409) {
     const [job] = await fetchActiveAnalyzeJobs().catch(() => []);
     if (job?.repoName) {
+      if (job.stopping) return t('errors:analyzeStopping', { repoName: job.repoName });
       return t('errors:analyzeBusy', {
         repoName: job.repoName,
         percent: Math.round(job.progress.percent),

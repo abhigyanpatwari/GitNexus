@@ -6,6 +6,7 @@
   "analysisFailed": "Analysis failed. Check server logs.",
   "startAnalysisFailed": "Failed to start analysis",
   "analyzeBusy": "{{repoName}} is still being analyzed ({{percent}}%). Try again when it finishes.",
+  "analyzeStopping": "The analysis worker for {{repoName}} is stopping. Try again when it exits.",
   "invalidGithubUrl": "Please enter a valid GitHub repository URL.",
   "invalidAzureDevOpsUrl": "Please enter a valid Azure DevOps repository URL.",
   "missingFolderPath": "Please enter a folder path.",
