@@ -76,6 +76,8 @@ export interface ReferenceSite {
   /** Lexical lookup anchor when it differs from the reference's structural owner. */
   readonly lookupScope?: ScopeId;
   readonly lookupPurpose?: import('./types.js').LookupPurpose;
+  /** The inheritance clause distinguishes extension from implementation at this site. */
+  readonly heritageKind?: 'EXTENDS' | 'IMPLEMENTS';
   /** The name being referenced (e.g., `'save'`, `'User'`, `'count'`). */
   readonly name: string;
   /**
@@ -110,9 +112,9 @@ export interface ReferenceSite {
    * whose `@reference.inherits` anchor spans the whole base gets this for free,
    * and one whose anchor is the bare name simply leaves it absent.
    *
-   * ABSENT MEANS UNKNOWN, never "not generic" — the two are indistinguishable
-   * here, and only the first is safe to act on. Consumers must fail OPEN on
-   * absence (keep the target), matching `SymbolDefinition.typeParameters`.
+   * An explicit empty list confirms a bare base and allows its declared
+   * defaults to apply. An absent list can represent a bare base or missing
+   * capture data. Consumers then retain the target without specializing it.
    */
   readonly typeArguments?: readonly string[];
   /** Source-text range of this reference. */

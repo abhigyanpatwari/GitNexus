@@ -363,17 +363,21 @@ export function validatePair(pair) {
   // An ingestion fix can deliberately change resolved edges. The frozen
   // real corpus then needs exact expected graphs for both versions. Other
   // inputs continue to require equality across versions.
+  const candidateTrees = candidate.provenance.runtimeSourceTrees;
   const expected =
-    candidate.provenance.runtimeHead !== baseline.provenance.runtimeHead
+    candidate.provenance.runtimeHead !== baseline.provenance.runtimeHead &&
+    Array.isArray(candidateTrees) &&
+    candidateTrees.length === 2 &&
+    candidateTrees.every((tree) => typeof tree === 'string' && /^[a-f0-9]{40}$/.test(tree))
       ? benchmarkBaseline.graphExpectations?.find(
           (entry) =>
             Array.isArray(entry.baselineSourceTrees) &&
             isDeepStrictEqual(entry.baselineSourceTrees, baseline.provenance.runtimeSourceTrees) &&
-            Array.isArray(entry.candidateSourceTrees) &&
-            isDeepStrictEqual(
-              entry.candidateSourceTrees,
-              candidate.provenance.runtimeSourceTrees,
-            ) &&
+            (isDeepStrictEqual(entry.candidateSourceTrees, candidateTrees) ||
+              (Array.isArray(entry.equivalentCandidateSourceTrees) &&
+                entry.equivalentCandidateSourceTrees.some((trees) =>
+                  isDeepStrictEqual(trees, candidateTrees),
+                ))) &&
             entry.sourceDigest === baseline.provenance.sourceDigest &&
             entry.sourceFiles === files,
         )
