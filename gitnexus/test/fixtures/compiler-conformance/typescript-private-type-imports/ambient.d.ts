@@ -1,0 +1,1 @@
+interface AmbientEntry { value: string }

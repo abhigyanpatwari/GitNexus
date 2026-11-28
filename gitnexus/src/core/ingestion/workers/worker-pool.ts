@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { logger } from '../../logger.js';
 import { createQuarantine } from './quarantine.js';
+import type { ParseWorkerInput } from './parse-worker.js';
 import { spawnWithOwnHeapLimit } from './worker-heap-limit.js';
 
 /**
@@ -21,7 +22,7 @@ import { spawnWithOwnHeapLimit } from './worker-heap-limit.js';
  * removing it cut one full structured-clone pass per message.
  *
  * Sub-batch dispatch payload shape:
- *   `{ type: 'sub-batch', files: Array<{ path: string; content: Uint8Array; cacheKey?: string }> }`
+ *   `{ type: 'sub-batch', files: Array<{ path: string; content: Uint8Array; cacheKey?: string; parseContext?: string }> }`
  *
  * The file `content` is a `Uint8Array` (not a string) so its
  * underlying `ArrayBuffer` can be transferred zero-copy via
@@ -36,8 +37,6 @@ import { spawnWithOwnHeapLimit } from './worker-heap-limit.js';
  * bypasses the pool, so transferring its outputs is safe.
  */
 
-type ParseWorkerItem = { path: string; content: string; cacheKey?: string };
-
 /**
  * Type guard: every element of `items` has the parse-worker shape
  * (`{path: string, content: string}`). Used to narrow the generic input
@@ -47,7 +46,7 @@ type ParseWorkerItem = { path: string; content: string; cacheKey?: string };
  */
 function isParseWorkerItemArray<T>(
   items: readonly T[],
-): items is readonly T[] & readonly ParseWorkerItem[] {
+): items is readonly T[] & readonly ParseWorkerInput[] {
   if (items.length === 0) return false;
   for (const it of items) {
     if (it == null || typeof it !== 'object') return false;
@@ -72,7 +71,10 @@ function isParseWorkerItemArray<T>(
  */
 export function buildDispatchMessage<T>(items: readonly T[]): {
   message:
-    | { type: 'sub-batch'; files: Array<{ path: string; content: Uint8Array; cacheKey?: string }> }
+    | {
+        type: 'sub-batch';
+        files: ParseWorkerInput<Uint8Array>[];
+      }
     | {
         type: 'sub-batch';
         files: readonly T[];
@@ -83,9 +85,9 @@ export function buildDispatchMessage<T>(items: readonly T[]): {
     return { message: { type: 'sub-batch', files: items } };
   }
 
-  // After the type guard, `items` is narrowed to `readonly ParseWorkerItem[]`.
+  // After the type guard, `items` is narrowed to `readonly ParseWorkerInput[]`.
   const encoder = new TextEncoder();
-  const files: Array<{ path: string; content: Uint8Array; cacheKey?: string }> = [];
+  const files: ParseWorkerInput<Uint8Array>[] = [];
   const transferList: ArrayBuffer[] = [];
   for (const item of items) {
     const u8 = encoder.encode(item.content);
@@ -93,6 +95,7 @@ export function buildDispatchMessage<T>(items: readonly T[]): {
       path: item.path,
       content: u8,
       ...(item.cacheKey === undefined ? {} : { cacheKey: item.cacheKey }),
+      ...(item.parseContext === undefined ? {} : { parseContext: item.parseContext }),
     });
     transferList.push(u8.buffer as ArrayBuffer);
   }

@@ -56,6 +56,7 @@ describe('parse cache artifact identity', () => {
     'src/core/ingestion/languages/cobol/flow-source.ts',
     'node_modules/gitnexus-shared/src/index.ts',
     'node_modules/gitnexus-shared/dist/index.js',
+    'node_modules/@babel/parser/lib/index.js',
     'node_modules/tree-sitter-javascript/prebuilds/test/binding.node',
     'vendor/tree-sitter-proto/src/node-types.json',
   ])('invalidates for changed input bytes: %s', (relative) => {

@@ -476,6 +476,7 @@ export async function runChunkedParseAndResolve(
   usedWorkerPool: boolean;
   /** Files dispatched to parser workers after parse-cache lookup. */
   reparsedFileCount: number;
+  fileParseContexts: ReadonlyMap<string, string>;
   /** Files restored from parse-cache chunks without parser-worker dispatch. */
   parseCacheHitFileCount: number;
   /** Worker-produced ParsedFile artifacts aggregated across chunks.
@@ -825,6 +826,7 @@ export async function runChunkedParseAndResolve(
   let chunkCacheMisses = 0;
   let parseCacheHitFileCount = 0;
   let reparsedFileCount = 0;
+  const fileParseContexts = new Map<string, string>();
   let parseFailure: unknown;
   let parsingFailed = false;
 
@@ -1290,10 +1292,22 @@ export async function runChunkedParseAndResolve(
       const chunkContents = await chunkContentPromise;
       chunkContentPromises[chunkIdx] = undefined; // release the in-memory copy
       startChunkPrefetch(chunkIdx + parseChunkConcurrency);
-      const chunkFiles: Array<{ path: string; content: string }> = [];
+      const chunkFiles: ParseWorkerInput[] = [];
       for (const p of chunkPaths) {
         const content = chunkContents.get(p);
-        if (content !== undefined) chunkFiles.push({ path: p, content });
+        if (content === undefined) continue;
+        const language = getLanguageFromFilename(p);
+        const context =
+          language &&
+          SCOPE_RESOLVERS.get(language)?.fileParseContext?.(
+            p,
+            content,
+            capturedResolutionConfigs?.get(language),
+          );
+        if (context) fileParseContexts.set(p, context);
+        chunkFiles.push(
+          context ? { path: p, content, parseContext: context } : { path: p, content },
+        );
       }
 
       const selection = chunkFiles.map((file) => {
@@ -1311,6 +1325,7 @@ export async function runChunkedParseAndResolve(
                       options?.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
                   }
                 : false,
+              file.parseContext,
             )
           : '';
         if (parseCache) parseCache.usedKeys.add(key);
@@ -1994,6 +2009,7 @@ export async function runChunkedParseAndResolve(
     // is intentionally measured at dispatch time rather than inferred from
     // the git/hash diff.
     reparsedFileCount,
+    fileParseContexts,
     parseCacheHitFileCount,
     // Per-file ParsedFile artifacts produced by workers' calls to
     // `extractParsedFile`. Consumed by scope-resolution as a re-extraction
