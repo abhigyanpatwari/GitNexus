@@ -9,14 +9,15 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isBuiltin } from 'node:module';
 import type Parser from 'tree-sitter';
-import { unboundCallableName } from './typescript/unbound-callables.js';
+import { blockCallableIdentity, unboundCallableName } from './typescript/unbound-callables.js';
+import { literalMethodName } from './typescript/identifiers.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig, LanguageProvider } from '../language-provider.js';
 import {
   typescriptClassConfig,
   javascriptClassConfig,
-  resolveTsJsContainerTypeOwner,
+  resolveTsJsEnclosingTypeOwner,
   createTsJsClassExtractor,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
@@ -84,6 +85,7 @@ import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javascriptConfig } from '../field-extractors/configs/typescript-javascript.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
+import { withMergedInterfaceMethodIds } from './typescript/interface-method-ids.js';
 import {
   typescriptMethodConfig,
   javascriptMethodConfig,
@@ -103,6 +105,7 @@ import {
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
   isBlockedCallbackRegistrationCall,
+  isRegistrationHandle,
 } from '../ts-js-hoc-utils.js';
 import {
   emitTsScopeCaptures,
@@ -182,6 +185,16 @@ const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
   return null;
 };
 
+// Graph method metadata uses the same literal keys as the definition query.
+const tsJsMethodNames = {
+  extractLiteralName: (node: SyntaxNode, filePath?: string) =>
+    literalMethodName(node.childForFieldName('name'), filePath),
+  extractName(node: SyntaxNode) {
+    const key = node.childForFieldName('name');
+    return key?.type === 'computed_property_name' ? undefined : key?.text;
+  },
+};
+
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
  * anonymous AST nodes — they take their name from the surrounding
@@ -212,6 +225,14 @@ const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
 ): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
+  if (
+    node.type === 'method_definition' ||
+    node.type === 'method_signature' ||
+    node.type === 'abstract_method_signature'
+  ) {
+    const funcName = literalMethodName(node.childForFieldName('name'), filePath);
+    return funcName === undefined ? null : { funcName, label: 'Method' };
+  }
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
 
   const unboundName = unboundCallableName(node);
@@ -236,7 +257,9 @@ const tsExtractFunctionName = (
         }
       }
     }
-    return { funcName: nameNode?.text ?? null, label: 'Function' };
+    const funcName = nameNode?.text ?? null;
+    const identityName = funcName ? blockCallableIdentity(parent, funcName) : undefined;
+    return { funcName, label: 'Function', ...(identityName && { identityName }) };
   }
 
   // Object property pair: `{ addItem: (item) => ... }`.
@@ -281,9 +304,12 @@ const tsExtractFunctionName = (
 
     // Existing path: const X = HOC(arrow)
     if (declarator?.type === 'variable_declarator') {
+      if (isRegistrationHandle(declarator)) return { funcName: null, label: 'Function' };
       const nameNode = declarator.childForFieldName?.('name');
       if (nameNode?.type === 'identifier') {
-        return { funcName: nameNode.text, label: 'Function' };
+        const funcName = nameNode.text;
+        const identityName = blockCallableIdentity(declarator, funcName);
+        return { funcName, label: 'Function', ...(identityName && { identityName }) };
       }
       return { funcName: null, label: 'Function' };
     }
@@ -328,6 +354,10 @@ const tsExtractFunctionName = (
 
   return { funcName: null, label: 'Function' };
 };
+
+const skipRegistrationHandleFunction: NonNullable<
+  LanguageProvider['shouldSkipDefinitionCapture']
+> = (captures, label) => label === 'Function' && isRegistrationHandle(captures.name?.parent);
 
 export const BUILT_INS: ReadonlySet<string> = new Set([
   'console',
@@ -546,19 +576,25 @@ export const typescriptProvider = defineLanguage({
     },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
+  mroStrategy: 'depth-first',
+  separateStaticAndInstanceMethods: true,
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
-  methodExtractor: createMethodExtractor({
-    ...typescriptMethodConfig,
-    extractFunctionName: tsExtractFunctionName,
-  }),
+  methodExtractor: withMergedInterfaceMethodIds(
+    createMethodExtractor({
+      ...typescriptMethodConfig,
+      ...tsJsMethodNames,
+      extractFunctionName: tsExtractFunctionName,
+    }),
+  ),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
+  shouldSkipDefinitionCapture: skipRegistrationHandleFunction,
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(typescriptClassConfig),
-  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
+  resolveContainerTypeOwner: resolveTsJsEnclosingTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
@@ -657,12 +693,14 @@ export const javascriptProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
     ...javascriptMethodConfig,
+    ...tsJsMethodNames,
     extractFunctionName: tsExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
+  shouldSkipDefinitionCapture: skipRegistrationHandleFunction,
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(javascriptClassConfig),
-  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
+  resolveContainerTypeOwner: resolveTsJsEnclosingTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({

@@ -112,6 +112,7 @@ import {
   shouldHarvestModuleConstants,
 } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
+import { setTreeParseContext } from '../file-parse-context.js';
 import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
 import {
   persistParsedFileShardSync,
@@ -556,14 +557,15 @@ export interface ParseWorkerResult {
   fileCount: number;
 }
 
-export interface ParseWorkerInput {
+export interface ParseWorkerInput<Content extends string | Uint8Array = string> {
   path: string;
-  content: string;
+  content: Content;
   cacheKey?: string;
+  parseContext?: string;
 }
 
 type WorkerIncomingMessage =
-  | { type: 'sub-batch'; files: ParseWorkerInput[] }
+  | { type: 'sub-batch'; files: ParseWorkerInput<string | Uint8Array>[] }
   | { type: 'flush'; chunkHash?: string };
 
 // ============================================================================
@@ -1101,7 +1103,7 @@ const enclosingFunctionIdAt = (
       // nested prefix exists it IS `ownerName`, so this branch and the
       // owner branch below cannot disagree about which prefix applies.
       const qualifiedName =
-        efnResult?.identityName === null
+        efnResult?.identityName !== undefined
           ? callableOwnQualifiedName(current, filePath, provider)
           : nestedPrefix !== undefined
             ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
@@ -1665,6 +1667,7 @@ const processFileGroupFiles = (
       continue;
     }
 
+    if (file.parseContext !== undefined) setTreeParseContext(tree, file.parseContext);
     result.fileCount++;
     onFileProcessed?.();
 
@@ -1685,13 +1688,6 @@ const processFileGroupFiles = (
     const classOwnersByNodeId = new Map<number, string>();
     const callableBindings = new Map<number, string>();
 
-    // #2687: ONE pass over `matches` yields both suppression sets — the
-    // definition-name claims by rank (callable > Property > value), so the dedup
-    // below cannot depend on tree-sitter's match order, and the concrete-typedef
-    // ranges the typedef guard consumes.
-    const definitionPreScan = buildDefinitionPreScan(matches, provider);
-    const concreteTypedefRanges = definitionPreScan.concreteTypedefRanges;
-
     // Produce the `ParsedFile` for the scope-resolution pipeline HERE, reusing
     // the tree we just parsed (no second tree-sitter parse). Scope-resolution
     // consumes these via the disk-backed parsedfile-store instead of
@@ -1710,13 +1706,21 @@ const processFileGroupFiles = (
         reportWarning(message);
       },
       tree,
-      scopeSourceKind,
+      { sourceKind: scopeSourceKind, parseContext: file.parseContext },
       notebookSegments,
       lineOffset,
       scriptLanguage,
       sourceLineMap,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
+    // Rank definition matches after scope extraction, when the provider has resolved local names.
+    // #2687: ONE pass over `matches` yields both suppression sets — the
+    // definition-name claims by rank (callable > Property > value), so the dedup
+    // below cannot depend on tree-sitter's match order, and the concrete-typedef
+    // ranges the typedef guard consumes.
+    const definitionPreScan = buildDefinitionPreScan(matches, provider);
+    const concreteTypedefRanges = definitionPreScan.concreteTypedefRanges;
+
     let requestScopeIndex: PositionIndex | undefined;
     // Native node ids can be reused by a later tree. Keep this memo in the
     // file's closure so isolation does not depend on clearing a global map.
@@ -2184,7 +2188,7 @@ const processFileGroupFiles = (
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
-      if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
+      if (definitionPreScan.skippedMatches?.has(match)) continue;
 
       // `{ timer: setTimeout(() => …, 100) }` registers a timer, not a
       // Function — the TSQ-path twin of the emit-side gate in
@@ -2296,11 +2300,16 @@ const processFileGroupFiles = (
       const cjsDefaultExportName = isCjsDefaultExport
         ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
         : null;
+      const literalMethod = nodeLabel === 'Method' && captureMap['name.literal'] !== undefined;
+      const callableNode = captureMap['callable'] ?? definitionNode;
       const inferredFunction =
-        !nameNode && nodeLabel === 'Function' && definitionNode
-          ? provider.methodExtractor?.extractFunctionName?.(definitionNode, file.path)
+        ((nodeLabel === 'Function' && (!nameNode || captureMap['callable'])) || literalMethod) &&
+        callableNode
+          ? provider.methodExtractor?.extractFunctionName?.(callableNode, file.path)
           : undefined;
-      const inferredFunctionName = inferredFunction?.funcName;
+      const inferredFunctionName =
+        !nameNode || literalMethod ? inferredFunction?.funcName : undefined;
+      if (literalMethod && inferredFunctionName == null) continue;
 
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (
@@ -2572,8 +2581,8 @@ const processFileGroupFiles = (
           : undefined;
 
       const qualifiedNameBeforeModScope =
-        inferredFunction?.identityName === null && definitionNode
-          ? callableOwnQualifiedName(definitionNode, file.path, provider)
+        inferredFunction?.identityName !== undefined && callableNode
+          ? callableOwnQualifiedName(callableNode, file.path, provider)
           : rustImplQualifiedName !== undefined
             ? rustImplQualifiedName
             : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
@@ -2972,7 +2981,9 @@ const processFileGroupFiles = (
           name: nodeName,
           filePath: file.path,
           startLine,
-          ...(shouldObjectOwnerQualifyCallable(nodeLabel) ? { startColumn } : {}),
+          ...(shouldObjectOwnerQualifyCallable(nodeLabel) || nodeLabel === 'Property'
+            ? { startColumn }
+            : {}),
           endLine: definitionNode ? mapRow(definitionNode.endPosition.row) : startLine,
           language: language,
           isExported,
@@ -3342,12 +3353,11 @@ const sharedContentDecoder = new TextDecoder('utf-8');
  * the UTF-8 decode happens — runs on the worker thread in parallel with
  * continued main-thread work.
  */
-function decodeSubBatchFiles(
-  files: Array<{ path: string; content: Uint8Array | string; cacheKey?: string }>,
-): ParseWorkerInput[] {
+function decodeSubBatchFiles(files: ParseWorkerInput<string | Uint8Array>[]): ParseWorkerInput[] {
   return files.map((f) => ({
     path: f.path,
     ...(f.cacheKey === undefined ? {} : { cacheKey: f.cacheKey }),
+    ...(f.parseContext === undefined ? {} : { parseContext: f.parseContext }),
     // Test scaffolding (the writeReadyWorker preamble that wraps
     // parentPort.on) may already convert content to string before
     // calling here; tolerate both shapes so the same worker code
@@ -3365,9 +3375,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
-      const files = decodeSubBatchFiles(
-        msg.files as Array<{ path: string; content: Uint8Array | string; cacheKey?: string }>,
-      );
+      const files = decodeSubBatchFiles(msg.files);
       if (FILE_RESULTS_ENABLED) {
         // Scheduling remains batched. Extraction and encoding are file-local,
         // so neither worker assignment nor a neighbour's edit changes ownership.

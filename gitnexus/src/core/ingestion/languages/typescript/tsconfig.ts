@@ -48,13 +48,30 @@ export interface TsconfigScope {
    */
   readonly baseUrl: string | null;
   readonly paths: readonly TsPathMapping[];
+  readonly moduleDetection?: string;
+  readonly module?: string;
+  readonly moduleResolution?: string;
+  readonly jsx?: string;
+  readonly files?: readonly string[];
+  readonly include?: readonly string[];
+  readonly exclude?: readonly string[];
+  readonly noResolve?: boolean;
+  readonly strict?: boolean;
+  readonly strictNullChecks?: boolean;
+  readonly exactOptionalPropertyTypes?: boolean;
 }
 
 /** Every tsconfig in the repo, indexed so the nearest one to a file wins. */
 export interface TsconfigIndex {
   /** Deepest-first, so the first `dir` that prefixes a file path governs it. */
   readonly scopes: readonly TsconfigScope[];
+  /** Configured programs, including projects reached through solution references. */
+  readonly programs?: readonly TsconfigScope[];
+  /** Named projects that can govern files outside a default project or solution. */
+  readonly standalonePrograms?: readonly TsconfigScope[];
 }
+
+const nearestByIndex = new WeakMap<TsconfigIndex, Map<string, TsconfigScope>>();
 
 const SCAN_MAX_DIRS = 20_000;
 const SCAN_MAX_DEPTH = 24;
@@ -71,11 +88,40 @@ const MAX_EXTENDS_DEPTH = 16;
  */
 export function tsconfigFor(index: TsconfigIndex | null, filePath: string): TsconfigScope | null {
   if (index === null) return null;
-  for (const scope of index.scopes) {
-    if (scope.dir === '') return scope;
-    if (filePath.startsWith(`${scope.dir}/`)) return scope;
+  // A single project has no competing ancestor configs to search for on each import.
+  if (index.scopes.length === 1) {
+    const scope = index.scopes[0];
+    return scope.dir === '' || filePath.startsWith(`${scope.dir}/`) ? scope : null;
   }
-  return null;
+  let nearest = nearestByIndex.get(index);
+  if (!nearest) {
+    nearest = new Map();
+    for (const scope of index.scopes) if (!nearest.has(scope.dir)) nearest.set(scope.dir, scope);
+    nearestByIndex.set(index, nearest);
+  }
+  for (
+    let slash = filePath.lastIndexOf('/');
+    slash > 0;
+    slash = filePath.lastIndexOf('/', slash - 1)
+  ) {
+    const scope = nearest.get(filePath.slice(0, slash));
+    if (scope) return scope;
+  }
+  return nearest.get('') ?? null;
+}
+
+// Read lazily: a project can append previously unseen references to this same set.
+async function* readProjectConfigs(paths: ReadonlySet<string>, extended: Set<string>) {
+  for (const absPath of paths)
+    yield readCompilerOptions(absPath, 0, extended).then((options) => ({ absPath, options }));
+}
+
+function repoRelativeFileSelection(repoRoot: string, options: ResolvedOptions) {
+  const selection: Pick<ResolvedOptions, 'files' | 'include' | 'exclude'> = {};
+  for (const key of ['files', 'include', 'exclude'] as const) {
+    if (options[key]) selection[key] = options[key].map((entry) => repoRelative(repoRoot, entry));
+  }
+  return selection;
 }
 
 /** Load every tsconfig in the repo, resolving `extends` chains. */
@@ -83,9 +129,11 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   const files = await findTsconfigFiles(repoRoot);
   if (files.length === 0) return null;
 
-  const ranked: { scope: TsconfigScope; rank: number }[] = [];
-  for (const absPath of files) {
-    const options = await readCompilerOptions(absPath, 0);
+  const ranked: { scope: TsconfigScope; rank: number; path: string }[] = [];
+  const references = new Map<string, string[]>();
+  const extended = new Set<string>();
+  const pathsToRead = new Set(files);
+  for await (const { absPath, options } of readProjectConfigs(pathsToRead, extended)) {
     if (options === null) continue;
     // `readCompilerOptions` resolves both to ABSOLUTE paths against whichever
     // config in the `extends` chain declared them, which is the only way the
@@ -101,9 +149,29 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
     // package lookups — silently inherited the repo root's aliases instead.
     // An empty scope is the accurate answer for such a file, and only a scope
     // can express it.
+    const selection = repoRelativeFileSelection(repoRoot, options);
+    const { references: declared = [], ...compilerOptions } = options;
+    const targets = declared.filter((target) => {
+      const relative = path.relative(repoRoot, target);
+      return (
+        relative &&
+        !path.isAbsolute(relative) &&
+        relative.split(path.sep)[0] !== '..' &&
+        !relative.split(path.sep).includes('node_modules')
+      );
+    });
+    references.set(absPath, targets);
+    for (const target of targets) pathsToRead.add(target);
     ranked.push({
-      scope: { dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths },
+      scope: {
+        ...compilerOptions,
+        ...selection,
+        dir: repoRelative(repoRoot, path.dirname(absPath)),
+        baseUrl,
+        paths,
+      },
       rank: configRank(path.basename(absPath)),
+      path: absPath,
     });
   }
   if (ranked.length === 0) return null;
@@ -117,7 +185,18 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   // directory listing returned first made a config's own `paths` invisible
   // whenever its base happened to be listed earlier.
   ranked.sort((a, b) => b.scope.dir.length - a.scope.dir.length || a.rank - b.rank);
-  return { scopes: ranked.map((entry) => entry.scope) };
+  const programs = new Set(ranked.filter((entry) => entry.rank < 2).map((entry) => entry.path));
+  for (const program of programs)
+    for (const target of references.get(program) ?? []) programs.add(target);
+  const scopes = ranked.map((entry) => entry.scope);
+  const standalone = ranked.filter(
+    (entry) => !programs.has(entry.path) && !extended.has(entry.path),
+  );
+  return {
+    scopes,
+    programs: ranked.filter((entry) => programs.has(entry.path)).map((entry) => entry.scope),
+    standalonePrograms: standalone.map((entry) => entry.scope),
+  };
 }
 
 /**
@@ -132,8 +211,20 @@ function configRank(fileName: string): number {
 
 /** Resolved compiler options, rebased to repo-relative paths. */
 interface ResolvedOptions {
+  strict?: boolean;
+  strictNullChecks?: boolean;
+  exactOptionalPropertyTypes?: boolean;
+  noResolve?: boolean;
+  references?: string[];
   baseUrl?: string;
   paths?: TsPathMapping[];
+  moduleDetection?: string;
+  module?: string;
+  moduleResolution?: string;
+  jsx?: string;
+  files?: string[];
+  include?: string[];
+  exclude?: string[];
 }
 
 /**
@@ -147,7 +238,7 @@ interface ResolvedOptions {
 async function readCompilerOptions(
   absPath: string,
   depth: number,
-  repoRootHint?: string,
+  extended: Set<string>,
 ): Promise<ResolvedOptions | null> {
   if (depth > MAX_EXTENDS_DEPTH) {
     logger.warn(`[typescript] tsconfig extends chain too deep at ${absPath}; ignoring the rest`);
@@ -166,12 +257,31 @@ async function readCompilerOptions(
   // EFFECTIVE `baseUrl`, which a config declaring `paths` alone inherits from
   // its base. Resolving them against this config's own directory instead would
   // load the right alias pattern and point every target at the wrong place.
-  const inherited = await readExtended(parsed.extends, dir, depth, repoRootHint);
+  const inherited = await readExtended(parsed.extends, dir, depth, extended);
 
   const own: ResolvedOptions = {};
+  for (const key of ['files', 'include', 'exclude'] as const) {
+    const list = parsed[key];
+    if (Array.isArray(list)) {
+      own[key] = list
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => path.resolve(dir, entry));
+    }
+  }
   const compilerOptions = parsed.compilerOptions;
   if (compilerOptions !== null && typeof compilerOptions === 'object') {
     const opts = compilerOptions as Record<string, unknown>;
+    for (const key of [
+      'noResolve',
+      'strict',
+      'strictNullChecks',
+      'exactOptionalPropertyTypes',
+    ] as const) {
+      if (typeof opts[key] === 'boolean') own[key] = opts[key];
+    }
+    for (const key of ['moduleDetection', 'module', 'moduleResolution', 'jsx'] as const) {
+      if (typeof opts[key] === 'string') own[key] = opts[key].toLowerCase();
+    }
     if (typeof opts.baseUrl === 'string') {
       own.baseUrl = path.resolve(dir, opts.baseUrl);
     }
@@ -198,7 +308,28 @@ async function readCompilerOptions(
   return {
     ...(inherited ?? {}),
     ...own,
+    // Project references belong to this configuration and are never inherited.
+    references: Array.isArray(parsed.references)
+      ? parsed.references.flatMap((reference: unknown) => {
+          if (
+            !reference ||
+            typeof reference !== 'object' ||
+            !('path' in reference) ||
+            typeof reference.path !== 'string'
+          )
+            return [];
+          const target = path.resolve(dir, reference.path);
+          return [path.extname(target) === '.json' ? target : path.join(target, 'tsconfig.json')];
+        })
+      : undefined,
   };
+}
+
+async function* extendedTargets(value: unknown, fromDir: string) {
+  const specs = Array.isArray(value) ? value : [value];
+  for (const spec of specs) {
+    if (typeof spec === 'string') yield resolveExtendsTarget(spec, fromDir);
+  }
 }
 
 /** Follow `extends`, which may be a string or (TS 5+) an array, base-first. */
@@ -206,15 +337,13 @@ async function readExtended(
   value: unknown,
   fromDir: string,
   depth: number,
-  repoRootHint?: string,
+  extended: Set<string>,
 ): Promise<ResolvedOptions | null> {
-  const specs = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
   let merged: ResolvedOptions | null = null;
-  for (const spec of specs) {
-    if (typeof spec !== 'string') continue;
-    const resolved = await resolveExtendsTarget(spec, fromDir);
+  for await (const resolved of extendedTargets(value, fromDir)) {
     if (resolved === null) continue;
-    const options = await readCompilerOptions(resolved, depth + 1, repoRootHint);
+    extended.add(resolved);
+    const options = await readCompilerOptions(resolved, depth + 1, extended);
     if (options === null) continue;
     // Later entries win over earlier ones, per tsc's array semantics.
     merged = { ...(merged ?? {}), ...options };

@@ -604,8 +604,10 @@ export function computeFileResultKey(
   contentHash: string,
   identity: ParseCacheIdentity,
   pdg: boolean | PdgCacheKey = false,
+  parseContext?: string,
 ): string {
-  return computeChunkHash([{ filePath, contentHash }], identity, pdg);
+  const key = computeChunkHash([{ filePath, contentHash }], identity, pdg);
+  return parseContext === undefined ? key : sha256Hex(JSON.stringify([key, parseContext]));
 }
 
 export async function loadParseCacheFiles(
