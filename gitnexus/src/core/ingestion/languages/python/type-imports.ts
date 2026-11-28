@@ -264,7 +264,7 @@ export function walkPythonScopes(
         continue;
       }
       if (TARGET_WRAPPERS.has(type)) {
-        pushChildren(node, scope, flags, depth, entry);
+        pushChildren(node, scope, flags, depth, { kind: entry.kind, statement: entry.statement });
         continue;
       }
       // An attribute or subscript target reads its object.
