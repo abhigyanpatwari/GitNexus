@@ -31,7 +31,8 @@ function yieldsBinding(block: SyntaxNode | null, name: string): boolean {
 function cleanupCall(statement: SyntaxNode | undefined, name: string): SyntaxNode | undefined {
   if (statement?.type !== 'expression_statement') return;
   const expression = statement.firstNamedChild;
-  const call = expression?.type === 'await' ? expression.firstNamedChild : expression;
+  const awaited = expression?.type === 'await';
+  const call = awaited ? expression.firstNamedChild : expression;
   if (call?.type !== 'call' || call.childForFieldName('arguments')?.namedChildCount !== 0) return;
   const method = call.childForFieldName('function');
   if (method?.type !== 'attribute') return;
@@ -40,7 +41,7 @@ function cleanupCall(statement: SyntaxNode | undefined, name: string): SyntaxNod
   if (
     object?.type === 'identifier' &&
     object.text === name &&
-    (attribute === 'close' || attribute === 'aclose')
+    (attribute === 'close' || (attribute === 'aclose' && awaited))
   )
     return call;
 }

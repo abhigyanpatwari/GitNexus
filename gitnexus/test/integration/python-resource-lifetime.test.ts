@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,37 @@ describe('Python dependency resource lifetimes', () => {
     expect(targets('studies', 'OWNS_RESOURCE')).toEqual([]);
     expect(targets('conditional_cleanup', 'OWNS_RESOURCE')).toEqual([]);
   });
+});
+
+it('records asynchronous close only when the coroutine is awaited', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'gitnexus-async-cleanup-'));
+  try {
+    await writeFile(
+      join(repo, 'connection.py'),
+      [
+        'async def unawaited_cleanup():',
+        '    connection = connect()',
+        '    try:',
+        '        yield connection',
+        '    finally:',
+        '        connection.aclose()',
+        '',
+        'async def awaited_cleanup():',
+        '    connection = connect()',
+        '    try:',
+        '        yield connection',
+        '    finally:',
+        '        await connection.aclose()',
+      ].join('\n'),
+    );
+    const { graph } = await runPipelineFromRepo(repo, () => {}, {});
+    const owners = graph.relationships
+      .filter((edge) => edge.type === 'OWNS_RESOURCE')
+      .map((edge) => graph.getNode(edge.sourceId)?.properties.name);
+    expect(owners).toEqual(['awaited_cleanup']);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });
 
 it('recovers the same lifetime facts from the durable parse cache', async () => {
