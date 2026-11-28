@@ -38,6 +38,20 @@
  * be a suppressed live injection, the forbidden false-negative direction)
  * while still suppressing `res.send(b)` (xss IS neutralized).
  *
+ * ## Barrier guards (#3913)
+ *
+ * Transforming sanitizers are not the only safe pattern: a sink reached only
+ * because a validating predicate vouched for the value (`if (!isValidHostName(x))
+ * return; exec(x)`) should also be clean. Before recording a finding, the
+ * engine consults {@link buildBarrierGuardIndex}: if the sink block is
+ * control-dependent on a validator call over the same binding on the validated
+ * CDG branch sense, the finding is suppressed and a kill is recorded. Unknown
+ * predicates never kill (under-kill only). Barriers also refuse when the
+ * occurrence reached the sink through any nested call — unmodeled (`viaCall`)
+ * *or* a matched sanitizer that did not neutralize this sink kind (e.g.
+ * `exec(escape(req.body))` after validating `req.body`: `escape` is modeled
+ * for xss only, so `viaCall` stays false, but the value was still transformed).
+ *
  * - **Occurrence interposition (KTD4a):** evaluated over the U1 site
  *   structure. An occurrence reaching a sink arg / def-feeding position
  *   through a matched sanitizer site accumulates that sanitizer's
@@ -98,6 +112,15 @@
 
 import { createFunctionRefinement, type FunctionRefinement } from './guard-refinement.js';
 import { applyValueEffect, provesInertCommand, UNKNOWN_VALUE } from './value-refinement.js';
+import {
+  barrierControllerPoint,
+  buildBarrierGuardIndex,
+  isBarrierGuarded,
+  memberPropertiesAtArg,
+  memberPropertyAssignedOnValidatedPath,
+  subjectBindingAssignedOnValidatedPath,
+  type BarrierGuardOptions,
+} from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
 import { pointKey } from '../cfg/reaching-defs.js';
 import type { DefUseFact, FunctionDefUse, ProgramPoint } from '../cfg/reaching-defs.js';
@@ -266,6 +289,15 @@ interface OccPath {
 
 const DIRECT_PATH: OccPath = { kinds: EMPTY_KINDS, viaCall: false, sanitizers: [] };
 
+/**
+ * True when the occurrence may not be the validated value: transforming call
+ * (`viaCall`, including matched sanitizers at uncleared `args` positions), or
+ * a recorded sanitizer hop.
+ */
+function pathMayTransform(path: OccPath): boolean {
+  return path.viaCall || path.sanitizers.length > 0;
+}
+
 /** Per-statement match/site context, indexed once per visited statement. */
 interface StmtContext {
   readonly point: ProgramPoint;
@@ -303,6 +335,7 @@ export function computeTaintFlows(
   matches: FunctionSiteMatches,
   limits?: TaintLimits,
   refinement: FunctionRefinement = createFunctionRefinement(cfg),
+  barrierOptions?: BarrierGuardOptions,
 ): FunctionTaintResult {
   if (defUse.status !== 'computed') {
     return {
@@ -315,6 +348,8 @@ export function computeTaintFlows(
   }
 
   const bindings = defUse.bindings;
+  // #3913 — CDG-aware validating-predicate barriers (isValid*/validate*/validX).
+  const barrierIndex = buildBarrierGuardIndex(cfg, barrierOptions);
   const guardProvesSink = (
     block: number,
     statement: number,
@@ -395,17 +430,29 @@ export function computeTaintFlows(
     return sortKinds(kinds);
   };
 
-  /** A call/new site the model does not understand (anything but a matched sanitizer). */
-  const isUnmodeledCall = (ctx: StmtContext, siteIndex: number): boolean => {
+  /**
+   * A call/new site that may transform the value without a proven kill at
+   * `argPos`: anything but a matched sanitizer that clears that position.
+   * Matched sanitizers with `args` that omit this position stay transforming
+   * (`viaCall`) so barriers cannot treat `sanitize(req.body, other)` as the
+   * validated value when only arg 1 is cleared.
+   */
+  const isUnmodeledCall = (ctx: StmtContext, siteIndex: number, argPos?: number): boolean => {
     const site = ctx.sites[siteIndex];
-    return site.kind !== 'member-read' && !ctx.sanitizersBySite.has(siteIndex);
+    if (site.kind === 'member-read') return false;
+    if (!ctx.sanitizersBySite.has(siteIndex)) return true;
+    // Matched sanitizer: modeled only for positions it actually clears.
+    if (argPos !== undefined && neutralizedAt(ctx, siteIndex, argPos).length === 0) return true;
+    return false;
   };
 
   const emerge = (ctx: StmtContext, siteIndex: number, argPos: number, inner: OccPath): OccPath => {
+    // Proto-key `.filter` does NOT neutralize sink kinds: rejecting `__proto__`
+    // does not strip shell metacharacters (kind-blind kill → false negative).
     const added = neutralizedAt(ctx, siteIndex, argPos);
     return {
       kinds: added.length === 0 ? inner.kinds : new Set([...inner.kinds, ...added]),
-      viaCall: inner.viaCall || isUnmodeledCall(ctx, siteIndex),
+      viaCall: inner.viaCall || isUnmodeledCall(ctx, siteIndex, argPos),
       sanitizers:
         added.length === 0 ? inner.sanitizers : [...inner.sanitizers, { siteIndex, kinds: added }],
     };
@@ -450,8 +497,12 @@ export function computeTaintFlows(
     });
     if (site.receiver === b) {
       // Receiver TITO (KTD5): the receiver's value flows through the call
-      // into its result — but a sanitizer does not neutralize its receiver.
-      out.push({ ...DIRECT_PATH, viaCall: isUnmodeledCall(ctx, siteIndex) });
+      // into its result — a sanitizer never neutralizes its receiver, so the
+      // path is always transforming (`viaCall`) even when the site is matched
+      // (barriers must not treat `host.escape()` as the validated value).
+      // Proto-key `.filter` is intentionally not an exception: key-shape
+      // guards must not kind-blind kill command-injection (#3913 under-kill).
+      out.push({ ...DIRECT_PATH, viaCall: true });
     }
     guard.delete(siteIndex);
     return out;
@@ -539,6 +590,48 @@ export function computeTaintFlows(
         kill: { sanitizer, killedDef, bindingIdx },
         kinds: new Set(kinds),
       });
+  };
+
+  /**
+   * Suppress a finding when the sink use of `bindingIdx` is control-dependent
+   * on a validating predicate over that binding on the validated branch (#3913).
+   * `taintDefPoint` refuses suppression when the reaching value was assigned
+   * after the check. Records a kill so SANITIZES evidence still surfaces.
+   *
+   * Controllers are name-heuristic validators only (`isValid*` / `validate*` /
+   * `validX`); proto-only callees never enter the index.
+   */
+  const suppressedByBarrier = (
+    bindingIdx: number,
+    sinkPoint: ProgramPoint,
+    kind: SinkKind,
+    taintDefPoint?: ProgramPoint,
+    sinkProperty?: string,
+    sinkSiteIndex?: number,
+  ): boolean => {
+    const controller = isBarrierGuarded(
+      barrierIndex,
+      bindingIdx,
+      sinkPoint.blockIndex,
+      taintDefPoint,
+      sinkProperty,
+    );
+    if (!controller) return false;
+    // Member writes (`req.body = …`) and object rebinding (`req = other`)
+    // before the sink invalidate the barrier (not always visible as taintDefPoint).
+    if (
+      sinkSiteIndex !== undefined &&
+      memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint, sinkSiteIndex)
+    )
+      return false;
+    if (
+      subjectBindingAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint, sinkSiteIndex)
+    )
+      return false;
+    // Record only the suppressed sink kind — not KIND_ORDER (validators are
+    // not kind-blind sanitizers of every sink class).
+    recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, [kind]);
+    return true;
   };
 
   // KTD6 statement-level finding identity: source occurrence + sink occurrence
@@ -741,6 +834,8 @@ export function computeTaintFlows(
         // else: floor — tainted with no exclusions added, no kill (the input
         // provably never flows into the producing call; conflation FP pinned).
       }
+      // Proto-key `.filter` intentionally does not add exclusions here —
+      // rejecting `__proto__` must not suppress command-injection findings.
       const exclusions =
         addKinds.size === 0 ? inputExclusions : new Set([...inputExclusions, ...addKinds]);
       deriveTaint(d, ctx.point, exclusions, parentKey, source, viaCall);
@@ -798,6 +893,22 @@ export function computeTaintFlows(
           )
             continue;
           if (!sofar.kinds.has(kind)) {
+            const localBinding = srcSite.object as number;
+            // Statement-local: omit taintDefPoint; pass property. Refuse when
+            // the value reaches the sink through a nested call — unmodeled or
+            // a kind-partial sanitizer (escape ≠ command-safe).
+            if (
+              !pathMayTransform(sofar) &&
+              suppressedByBarrier(
+                localBinding,
+                ctx.point,
+                kind,
+                undefined,
+                srcSite.property,
+                siteIndex,
+              )
+            )
+              continue;
             recordFinding(
               kind,
               sourceOcc,
@@ -805,13 +916,13 @@ export function computeTaintFlows(
                 point: ctx.point,
                 siteIndex,
                 argIndex: argPos,
-                bindingIdx: srcSite.object as number,
+                bindingIdx: localBinding,
                 entryName: sink.entry.name,
               },
               [
                 {
-                  bindingIdx: srcSite.object as number,
-                  name: bindings[srcSite.object as number]?.name ?? `#${srcSite.object}`,
+                  bindingIdx: localBinding,
+                  name: bindings[localBinding]?.name ?? `#${localBinding}`,
                   point: ctx.point,
                   ...(sofar.viaCall ? { viaCall: true } : {}),
                 },
@@ -904,6 +1015,14 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
+              // Under-kill: multi-property args, or any transform path in this
+              // argument (unmodeled call or kind-partial sanitizer — direct +
+              // wrap(host) / escape(host) must not let the direct win).
+              const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
+              if (!paths.some(pathMayTransform) && sinkProps.length <= 1) {
+                if (suppressedByBarrier(b, ctx.point, kind, t.point, sinkProps[0], siteIndex))
+                  continue;
+              }
               const chain = chainHops(key);
               chain.hops.push({
                 bindingIdx: b,

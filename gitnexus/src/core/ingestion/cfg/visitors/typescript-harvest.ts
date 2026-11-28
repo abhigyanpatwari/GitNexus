@@ -217,10 +217,13 @@ export class TsHarvester {
   }
 
   decorate(cfg: FunctionCfg): FunctionCfg {
-    if (!this.refinementSafe) return { ...cfg, refinementSafe: false };
-    if (!this.hasRefinementFacts) return cfg;
+    const functionName = resolveTsFunctionName(this.fnNode);
+    const withName = functionName ? { functionName } : {};
+    if (!this.refinementSafe) return { ...cfg, ...withName, refinementSafe: false };
+    if (!this.hasRefinementFacts) return functionName ? { ...cfg, functionName } : cfg;
     return {
       ...cfg,
+      ...withName,
       refinementSafe: this.refinementSafe,
       ...(this.primitiveBindings?.size ? { primitiveBindings: [...this.primitiveBindings] } : {}),
     };
@@ -1303,6 +1306,175 @@ class FactAccumulator {
       ...(refinement ? { refinement } : {}),
     };
   }
+}
+
+/**
+ * Decode a JS/TS string literal's contents (`"isValid\u004bey"` → `isValidKey`).
+ * Under-kill: returns undefined when the literal cannot be decoded safely.
+ */
+function decodeJsStringLiteral(raw: string): string | undefined {
+  if (raw.length < 2) return undefined;
+  const quote = raw[0];
+  if ((quote !== '"' && quote !== "'") || raw[raw.length - 1] !== quote) return undefined;
+  let out = '';
+  for (let i = 1; i < raw.length - 1; i++) {
+    const ch = raw[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next === undefined) return undefined;
+    // \u{1F600} code-point form (must precede fixed-width \uXXXX).
+    if (next === 'u' && raw[i + 2] === '{') {
+      const end = raw.indexOf('}', i + 3);
+      if (end > i + 3) {
+        const hex = raw.slice(i + 3, end);
+        if (/^[0-9a-fA-F]{1,6}$/.test(hex)) {
+          const cp = parseInt(hex, 16);
+          if (cp <= 0x10ffff) {
+            out += String.fromCodePoint(cp);
+            i = end;
+            continue;
+          }
+        }
+      }
+    }
+    if (next === 'u' && /^[0-9a-fA-F]{4}/.test(raw.slice(i + 2, i + 6))) {
+      out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16));
+      i += 5;
+      continue;
+    }
+    if (next === 'x' && /^[0-9a-fA-F]{2}/.test(raw.slice(i + 2, i + 4))) {
+      out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 4), 16));
+      i += 3;
+      continue;
+    }
+    const simple: Record<string, string> = {
+      n: '\n',
+      r: '\r',
+      t: '\t',
+      b: '\b',
+      f: '\f',
+      v: '\v',
+      '0': '\0',
+      '\\': '\\',
+      "'": "'",
+      '"': '"',
+    };
+    if (simple[next] !== undefined) {
+      out += simple[next];
+      i += 1;
+      continue;
+    }
+    // Line continuation: backslash + newline is removed (`"isValid\<NL>Key"` → isValidKey).
+    if (next === '\n') {
+      i += 1;
+      continue;
+    }
+    if (next === '\r') {
+      i += 1;
+      if (raw[i + 1] === '\n') i += 1;
+      continue;
+    }
+    // Unknown escape — keep the escaped char (JS behavior for many).
+    out += next;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * Enclosing binding name for an expression assigned to a variable/field
+ * (`const isValidKey = function helper() {}` → `isValidKey`).
+ */
+function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
+  let parent = fnNode.parent;
+  // Skip value wrappers: const f = (x => …), (fn) as T, fn!, <T>fn
+  while (
+    parent &&
+    (parent.type === 'parenthesized_expression' ||
+      parent.type === 'as_expression' ||
+      parent.type === 'satisfies_expression' ||
+      parent.type === 'non_null_expression' ||
+      parent.type === 'type_assertion')
+  ) {
+    parent = parent.parent;
+  }
+  if (!parent) return undefined;
+
+  if (parent.type === 'variable_declarator') {
+    const declName = parent.childForFieldName('name');
+    if (declName?.type === 'identifier') return declName.text;
+    return undefined;
+  }
+
+  if (parent.type === 'assignment_expression') {
+    const left = parent.childForFieldName('left');
+    if (left?.type === 'identifier') return left.text;
+    // validators.isValidKey = function helper() { … } → isValidKey (call-site leaf)
+    if (left?.type === 'member_expression') {
+      const prop = left.childForFieldName('property');
+      if (
+        prop &&
+        (prop.type === 'property_identifier' ||
+          prop.type === 'identifier' ||
+          prop.type === 'private_property_identifier')
+      ) {
+        return prop.text;
+      }
+      return undefined;
+    }
+    // validators['isValidKey'] / validators["isValid\u004bey"] = …
+    if (left?.type === 'subscript_expression') {
+      const index = left.childForFieldName('index');
+      if (index?.type === 'string') return decodeJsStringLiteral(index.text);
+    }
+    return undefined;
+  }
+
+  // public safeKey = (key) => …  /  safeKey: (key) => …  /  "isValidKey": …
+  if (parent.type === 'public_field_definition' || parent.type === 'pair') {
+    const key =
+      parent.childForFieldName('name') ??
+      parent.childForFieldName('key') ??
+      parent.namedChildren[0];
+    if (
+      key &&
+      (key.type === 'identifier' ||
+        key.type === 'property_identifier' ||
+        key.type === 'private_property_identifier')
+    ) {
+      return key.text;
+    }
+    if (key?.type === 'string') return decodeJsStringLiteral(key.text);
+  }
+
+  return undefined;
+}
+
+/**
+ * Function name for CFG decoration (#3913 proto-guard discovery).
+ * Prefers the enclosing binding for assigned expressions so
+ * `const isValidKey = function helper() {}` is discovered/excluded as
+ * `isValidKey` (the call-site name), not the inner `helper`.
+ * Falls back to the node's own `name` for declarations / methods.
+ */
+export function resolveTsFunctionName(fnNode: SyntaxNode): string | undefined {
+  const fromEnclosing = enclosingTsBindingName(fnNode);
+  if (fromEnclosing) return fromEnclosing;
+
+  const nameNode = fnNode.childForFieldName('name');
+  if (
+    nameNode &&
+    (nameNode.type === 'identifier' ||
+      nameNode.type === 'property_identifier' ||
+      nameNode.type === 'private_property_identifier')
+  ) {
+    return nameNode.text;
+  }
+
+  return undefined;
 }
 
 /** Trim trailing empty arg positions; drop `args` entirely when all-empty. */

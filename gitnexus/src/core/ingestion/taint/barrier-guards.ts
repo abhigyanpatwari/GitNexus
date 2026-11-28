@@ -1,0 +1,761 @@
+/**
+ * Validating-predicate barrier guards (#3913).
+ *
+ * Taint is killed by transforming sanitizers today. Patched CVEs often guard
+ * a sink with a validating predicate instead (`if (!isValidHostName(x)) return;
+ * exec(x)`). When the sink use of binding `b` is control-dependent on such a
+ * predicate over `b` on the *validated* branch sense, suppress the finding.
+ *
+ * Controllers are name-heuristic only (`isValid*` / `validate*` / `validX`).
+ * Same-file affirming `__proto__` reject helpers are *excluded* from that set
+ * even when named `isValid*` (rejecting `__proto__` must not kind-blind kill
+ * command-injection). Compound validator args and post-check member writes
+ * also under-kill.
+ *
+ * PURE AND DETERMINISTIC: no I/O, no logger. Under-kill only — unknown or
+ * non-dominating predicates never kill.
+ */
+import {
+  computeControlDependence,
+  type CdgLabel,
+  type ControlDepEdge,
+} from '../cfg/control-dependence.js';
+import type { FunctionCfg, SiteRecord } from '../cfg/types.js';
+import type { ProgramPoint } from '../cfg/reaching-defs.js';
+import type { ParsedImport } from 'gitnexus-shared';
+
+export interface BarrierController {
+  readonly controllerBlock: number;
+  readonly subjectBinding: number;
+  /**
+   * When the validator argument is a member-read (`req.body`), the property
+   * that was checked. Absent for plain bindings (`hostname`). Matching a sink
+   * requires the same property (or both absent) so validating `req.body`
+   * cannot suppress `exec(req.query)`.
+   */
+  readonly subjectProperty?: string;
+  /** CDG label on which the subject is considered validated. */
+  readonly validatedLabel: CdgLabel;
+  readonly siteIndex: number;
+  readonly statementIndex: number;
+  readonly callee: string;
+}
+
+export interface BarrierGuardIndex {
+  /** Controllers keyed by the binding they validate. */
+  readonly bySubject: ReadonlyMap<number, readonly BarrierController[]>;
+  /** CDG edges for this function (empty when CDG is unavailable/empty). */
+  readonly cdg: readonly ControlDepEdge[];
+}
+
+export interface BarrierGuardOptions {
+  /**
+   * Same-file affirming `__proto__` reject helpers (from
+   * {@link discoverProtoGuardCallees}). Excluded from CDG barriers even when
+   * the name matches `isValid*` — rejecting `__proto__` must not kind-blind
+   * kill command-injection.
+   */
+  readonly excludeBarrierCallees?: ReadonlySet<string>;
+  /** Precomputed CDG edges (tests); otherwise computed when needed. */
+  readonly cdgEdges?: readonly ControlDepEdge[];
+}
+
+/**
+ * Validator-name heuristic (#3913), under-kill only.
+ *
+ * Accepts `isValid*` / `validate*` / `validX` shapes that vouch for the value.
+ * Rejects:
+ * - bare `isX` / `checkX` / `hasX` (e.g. `checkToken` must not kill command-injection)
+ * - names containing `invalid` (`isInvalid` must not barrier the true branch)
+ * - builtins like `isNaN` / `isArray`
+ */
+export function isBarrierCalleeName(callee: string): boolean {
+  const base = calleeLeaf(callee);
+  if (!base) return false;
+  if (/invalid/i.test(base)) return false;
+  if (/^isValid/i.test(base)) return true;
+  if (/^validate/i.test(base)) return true;
+  // `validHost` / `validKey` — but not substring matches inside unrelated words.
+  if (/^valid[A-Z_]/.test(base)) return true;
+  return false;
+}
+
+export function calleeLeaf(callee: string): string {
+  if (!callee) return '';
+  return callee.includes('.') ? (callee.split('.').pop() ?? callee) : callee;
+}
+
+const PROTO_LIT = `['"]__proto__['"]`;
+
+/**
+ * True when includes/indexOf is used to *reject* `__proto__`
+ * (`!key.includes("__proto__")`, `indexOf(...) === -1`, or
+ * `["__proto__", ...].includes(key)`). Bare `key.includes("__proto__")` is an
+ * acceptor and must not count.
+ */
+function rejectsProtoViaIncludesOrIndexOf(text: string): boolean {
+  if (new RegExp(`!\\s*[\\w$.]*\\.\\s*includes\\s*\\(\\s*${PROTO_LIT}\\s*\\)`).test(text))
+    return true;
+  if (new RegExp(`!\\s*[\\w$.]*\\.\\s*indexOf\\s*\\(\\s*${PROTO_LIT}\\s*\\)`).test(text))
+    return true;
+  if (new RegExp(`\\.\\s*indexOf\\s*\\(\\s*${PROTO_LIT}\\s*\\)\\s*===?\\s*-1`).test(text))
+    return true;
+  if (new RegExp(`\\.\\s*indexOf\\s*\\(\\s*${PROTO_LIT}\\s*\\)\\s*<\\s*0`).test(text)) return true;
+  // Denylist haystack: ["__proto__", ...].includes(key)
+  if (new RegExp(`\\[[^\\]]*${PROTO_LIT}[^\\]]*\\]\\s*\\.\\s*includes\\s*\\(`).test(text))
+    return true;
+  return false;
+}
+
+/** True when `text` affirms the key is not `__proto__` (return or expr body). */
+function isAffirmingProtoRejectReturn(text: string): boolean {
+  if (!new RegExp(PROTO_LIT).test(text)) return false;
+  // Inverted acceptors return false when key !== "__proto__" — not a guard.
+  if (/\breturn\s+false\b/.test(text)) return false;
+  const rejectsProto =
+    new RegExp(`!==\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`(?<![=!])!=(?!=)\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*!==`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*!=(?!=)`).test(text) ||
+    rejectsProtoViaIncludesOrIndexOf(text);
+  if (!rejectsProto) return false;
+  // `return key !== "__proto__"` (possibly with &&).
+  if (/\breturn\b/.test(text)) return true;
+  // Expression-bodied arrow: whole block is the predicate. Reject bare
+  // parenthesized conditions like `(key !== "__proto__")` from `if (...)`.
+  let s = text.replace(/\s+/g, '');
+  while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
+  if (!s.includes('&&') && !s.includes('||') && !rejectsProtoViaIncludesOrIndexOf(text)) {
+    return false;
+  }
+  return true;
+}
+
+/** True when `text` has a real `===`/`==` against `__proto__` (not `!==`/`!=`). */
+function hasProtoEquality(text: string): boolean {
+  return (
+    new RegExp(`(?<![=!])===\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`(?<![=!])==(?!=)\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*===`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*==(?!=)`).test(text)
+  );
+}
+
+/** True when a block rejects the key via `return false` or `throw`. */
+function isProtoRejectAction(text: string): boolean {
+  return /\breturn\s+false\b/.test(text) || /\bthrow\b/.test(text);
+}
+
+/**
+ * True when a function CFG body *rejects* the `__proto__` key.
+ * Under-kill: affirming `return … !== "__proto__"`, or
+ * `if (key === "__proto__") return false` / `throw …` where the reject
+ * action is control-dependent on the equality's true branch (not merely
+ * co-present). Throw and return-false are equivalent rejection forms.
+ */
+export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
+  for (const block of cfg.blocks) {
+    if (isAffirmingProtoRejectReturn(block.text)) return true;
+  }
+  const equalityControllers = cfg.blocks.filter((b) => hasProtoEquality(b.text));
+  if (equalityControllers.length === 0) return false;
+  const cdg = computeControlDependence(cfg).edges;
+  for (const controller of equalityControllers) {
+    for (const dep of cfg.blocks) {
+      if (!isProtoRejectAction(dep.text)) continue;
+      const onTrue = cdg.some(
+        (e) =>
+          e.controllerBlock === controller.index &&
+          e.dependentBlock === dep.index &&
+          e.label === 'T',
+      );
+      if (onTrue) return true;
+    }
+  }
+  return false;
+}
+
+/** Proto-reject helper keyed by declared name + defining file. */
+export interface ProtoGuardRef {
+  readonly name: string;
+  readonly filePath: string;
+}
+
+/**
+ * Discover functions whose body guards against `__proto__` (#3913 §2).
+ * Per-CFG try: a throwing `block.text` getter must skip that CFG, not abort.
+ * Requires `functionName` on the CFG (TS/JS harvest).
+ */
+export function discoverProtoGuardRefs(cfgs: readonly FunctionCfg[]): readonly ProtoGuardRef[] {
+  const out: ProtoGuardRef[] = [];
+  for (const cfg of cfgs) {
+    if (!cfg.functionName) continue;
+    try {
+      if (functionContainsProtoGuard(cfg)) {
+        out.push({ name: cfg.functionName, filePath: cfg.filePath });
+      }
+    } catch {
+      // Malformed CFG — skip (same isolation intent as emit-safe filtering).
+    }
+  }
+  return out;
+}
+
+/** Declared names only (same-file / simple callers). */
+export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): ReadonlySet<string> {
+  return new Set(discoverProtoGuardRefs(cfgs).map((r) => r.name));
+}
+
+const stripModuleExt = (s: string): string => s.replace(/\.(tsx?|jsx?|mjs|cjs)$/i, '');
+
+function dirnamePosix(filePath: string): string {
+  const n = filePath.replace(/\\/g, '/');
+  const i = n.lastIndexOf('/');
+  return i < 0 ? '' : n.slice(0, i);
+}
+
+/**
+ * Resolve a relative import specifier against the importing file's directory
+ * (`current/app.ts` + `./guards` → `current/guards`). Non-relative targets
+ * (bare package names) return the stripped specifier as-is.
+ */
+export function resolveImportTargetFromImporter(
+  importerFilePath: string,
+  targetRaw: string,
+): string {
+  const target = targetRaw.replace(/\\/g, '/');
+  if (!target.startsWith('./') && !target.startsWith('../')) {
+    return stripModuleExt(target);
+  }
+  const dir = dirnamePosix(importerFilePath);
+  const parts = [...(dir ? dir.split('/') : []), ...target.split('/')];
+  const stack: string[] = [];
+  for (const p of parts) {
+    if (p === '' || p === '.') continue;
+    if (p === '..') {
+      if (stack.length > 0) stack.pop();
+      continue;
+    }
+    stack.push(p);
+  }
+  return stripModuleExt(stack.join('/'));
+}
+
+/**
+ * Relative import target resolves to this file from `importerFilePath`.
+ * `./guards` from `current/app.ts` matches `current/guards.ts`, not
+ * `other/guards.ts`. Non-relative targets require an exact stripped match.
+ */
+function importTargetMatchesFile(
+  targetRaw: string,
+  filePath: string,
+  importerFilePath: string,
+): boolean {
+  const file = stripModuleExt(filePath.replace(/\\/g, '/'));
+  const resolved = resolveImportTargetFromImporter(importerFilePath, targetRaw);
+  if (resolved.length === 0 || file.length === 0) return false;
+  return file === resolved;
+}
+
+/**
+ * Unique file among `candidates` that matches `targetRaw` from the importer,
+ * or undefined when none / ambiguous.
+ */
+function uniqueFileForImportTarget(
+  targetRaw: string,
+  candidates: readonly string[],
+  importerFilePath: string,
+): string | undefined {
+  const hits = [
+    ...new Set(candidates.filter((f) => importTargetMatchesFile(targetRaw, f, importerFilePath))),
+  ];
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+/**
+ * True when `callee` is excluded: exact match (qualified namespace form) or
+ * bare/leaf match for same-file and named-import exclusions.
+ */
+export function calleeIsExcludedBarrier(
+  callee: string,
+  excludeBarrierCallees: ReadonlySet<string>,
+): boolean {
+  if (excludeBarrierCallees.has(callee)) return true;
+  const leaf = calleeLeaf(callee);
+  // Bare leaf entries exclude both `isValidKey` and `obj.isValidKey` (local
+  // wraps). Qualified entries (`guards.isValidKey`) match only exactly.
+  return excludeBarrierCallees.has(leaf);
+}
+
+/**
+ * Per-file barrier exclusions: same-file proto-reject helpers, plus repo
+ * proto helpers this file imports from a module resolved relative to
+ * `importerFilePath` (named local / alias local only — never the exported
+ * name for aliases; namespace as `ns.name` only).
+ */
+export function resolveBarrierExclusions(
+  localCfgs: readonly FunctionCfg[],
+  imports: readonly ParsedImport[],
+  repoProtoGuards?: readonly ProtoGuardRef[],
+  importerFilePath?: string,
+): ReadonlySet<string> {
+  const out = new Set(discoverProtoGuardCallees(localCfgs));
+  if (!repoProtoGuards || repoProtoGuards.length === 0) return out;
+  const importer = importerFilePath ?? localCfgs.find((c) => c.filePath)?.filePath ?? '';
+  if (!importer) return out;
+  const candidateFiles = repoProtoGuards.map((r) => r.filePath);
+  for (const imp of imports) {
+    if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') continue;
+    if (imp.typeOnly === true) continue;
+    const file = uniqueFileForImportTarget(imp.targetRaw, candidateFiles, importer);
+    if (!file) continue;
+    if (imp.kind === 'named' || imp.kind === 'alias') {
+      const imported = imp.importedName;
+      if (!imported) continue;
+      const hit = repoProtoGuards.some((r) => r.name === imported && r.filePath === file);
+      if (!hit) continue;
+      // Alias: only the local binding is callable here — do not exclude the
+      // exported name (a separate local `isValidKey` must remain a barrier).
+      if (imp.kind === 'alias') {
+        out.add(imp.localName);
+      } else {
+        out.add(imp.localName ?? imported);
+      }
+    } else {
+      // import * as guards → exclude only `guards.isValidKey`, not bare leaf
+      // (a separate validators.isValidKey must remain a barrier).
+      const ns = imp.localName;
+      if (!ns) continue;
+      for (const r of repoProtoGuards) {
+        if (r.filePath === file) out.add(`${ns}.${r.name}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** True when `block` may execute before `sinkPoint` (line, then block index). */
+function blockMayPrecedeSink(
+  block: { index: number; endLine: number },
+  sinkPoint: ProgramPoint,
+): boolean {
+  if (block.endLine < sinkPoint.line) return true;
+  // Same-line distinct CFG blocks (e.g. `if (r) req.body = q; exec(req.body)`):
+  // endLine alone is not ordered — use block index.
+  return block.endLine === sinkPoint.line && block.index < sinkPoint.blockIndex;
+}
+
+/**
+ * Blocks on the controller's validated branch, including nested conditions
+ * (transitive CDG). A write under `if (rewrite)` after the validator is not
+ * a *direct* dependent of the validator — only of `rewrite` — but still
+ * executes on the validated path before the sink.
+ */
+function validatedRegionBlocks(
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+): ReadonlySet<number> {
+  const region = new Set<number>();
+  for (const e of index.cdg) {
+    if (e.controllerBlock === controller.controllerBlock && e.label === controller.validatedLabel) {
+      region.add(e.dependentBlock);
+    }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const e of index.cdg) {
+      if (region.has(e.controllerBlock) && !region.has(e.dependentBlock)) {
+        region.add(e.dependentBlock);
+        changed = true;
+      }
+    }
+  }
+  return region;
+}
+
+/** Optional `qual.qual.` prefix before a callee leaf. */
+const QUALIFIED_PREFIX = '(?:[A-Za-z_$][\\w$]*\\.)*';
+
+/**
+ * True when the condition is ONLY the validator call (optional parens / !,
+ * optional `qual.` chain). Rejects compounds like `isValid(x) || debugMode`
+ * that can take the true branch without the validator accepting.
+ */
+/** True when the call argument is a bare ident or member path (not `a+b`). */
+function isSimpleValidatorArg(arg: string): boolean {
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(arg);
+}
+
+export function isSimpleValidatorCondition(blockText: string, callee: string): boolean {
+  const leaf = calleeLeaf(callee);
+  if (!leaf || !blockText.includes(leaf)) return false;
+  if (blockText.includes('||') || blockText.includes('&&') || blockText.includes('??'))
+    return false;
+  let s = blockText.replace(/\s+/g, '');
+  while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // [!][qual.]*leaf(simpleArg) — supports `!validators.isValidHostName(x)`.
+  const m = s.match(new RegExp(`^!*${QUALIFIED_PREFIX}${escaped}\\(([^)]*)\\)$`));
+  if (!m) return false;
+  return isSimpleValidatorArg(m[1]);
+}
+
+/**
+ * Which CDG label means "predicate accepted / validated" for a condition
+ * block whose text wraps `callee`. Odd leading `!` before the (possibly
+ * qualified) call flips true→F. Returns undefined when the condition is not
+ * a simple validator expression.
+ */
+export function validatedLabelForCondition(
+  blockText: string,
+  callee: string,
+): CdgLabel | undefined {
+  if (!isSimpleValidatorCondition(blockText, callee)) return undefined;
+  const leaf = calleeLeaf(callee);
+  let s = blockText.replace(/\s+/g, '');
+  while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Capture leading bangs before any `qual.` chain + leaf.
+  const m = s.match(new RegExp(`^(!*)${QUALIFIED_PREFIX}${escaped}\\(`));
+  if (!m) return undefined;
+  return m[1].length % 2 === 0 ? 'T' : 'F';
+}
+
+/** Direct binding indices in argument position `pos` only (not thisArg etc.). */
+function argPositionBindings(site: SiteRecord, pos: number): number[] {
+  const out: number[] = [];
+  const entries = site.args?.[pos];
+  if (!entries) return out;
+  for (const e of entries) {
+    if (typeof e === 'number') out.push(e);
+  }
+  return out;
+}
+
+function isFilterCallee(callee: string | undefined): boolean {
+  if (!callee) return false;
+  return callee === 'filter' || callee.endsWith('.filter');
+}
+
+/** Subject(s) of validator arg 0: prefer member-read property when present. */
+function primaryArgSubjects(
+  sites: readonly SiteRecord[],
+  callSiteIndex: number,
+  callSite: SiteRecord,
+): readonly { binding: number; property?: string }[] {
+  const memberSubjects: { binding: number; property?: string }[] = [];
+  for (const s of sites) {
+    if (s.kind !== 'member-read' || s.object === undefined) continue;
+    if (s.parent?.[0] !== callSiteIndex || s.parent?.[1] !== 0) continue;
+    memberSubjects.push({ binding: s.object, property: s.property });
+  }
+  // Compound args do not vouch for any operand individually.
+  if (memberSubjects.length > 1) return [];
+  // Count occurrences (not unique names) so `isValid(command + command)`
+  // is not mistaken for a plain single-binding validator.
+  const plainOccs = argPositionBindings(callSite, 0);
+  if (memberSubjects.length === 1) {
+    // `isValid(req.body + suffix)` lists object + other bindings in arg 0.
+    if (plainOccs.length > 1) return [];
+    return memberSubjects;
+  }
+  // Plain bindings: require exactly one occurrence (`isValid(x)`).
+  if (plainOccs.length !== 1) return [];
+  return [{ binding: plainOccs[0] }];
+}
+
+/**
+ * Distinct member-read properties feeding call `siteIndex` arg `argPos`.
+ * Empty when the arg is a plain binding. Multiple properties (e.g.
+ * `exec(p.body + p.query)`) means barrier suppression must under-kill —
+ * a single validated property must not clear the whole argument.
+ */
+export function memberPropertiesAtArg(
+  sites: readonly SiteRecord[],
+  siteIndex: number,
+  argPos: number,
+): readonly string[] {
+  const props = new Set<string>();
+  for (const s of sites) {
+    if (s.kind !== 'member-read' || s.property === undefined) continue;
+    if (s.parent?.[0] === siteIndex && s.parent?.[1] === argPos) props.add(s.property);
+  }
+  return [...props];
+}
+
+/** Collect validating-predicate controllers from CFG call sites. */
+export function collectBarrierControllers(
+  cfg: FunctionCfg,
+  excludeBarrierCallees: ReadonlySet<string> = new Set(),
+): BarrierController[] {
+  const out: BarrierController[] = [];
+  for (const block of cfg.blocks) {
+    const statements = block.statements;
+    if (!statements) continue;
+    for (let statementIndex = 0; statementIndex < statements.length; statementIndex++) {
+      const stmt = statements[statementIndex];
+      const sites = stmt.sites;
+      if (!sites) continue;
+      for (let siteIndex = 0; siteIndex < sites.length; siteIndex++) {
+        const site = sites[siteIndex];
+        if (site.kind !== 'call' || !site.callee) continue;
+        // Name-heuristic validators only. Proto-reject helpers are excluded by
+        // bare leaf (local / named import) or exact qualified form (namespace
+        // import `guards.isValidKey`).
+        if (!isBarrierCalleeName(site.callee)) continue;
+        if (calleeIsExcludedBarrier(site.callee, excludeBarrierCallees)) continue;
+        // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
+        if (isFilterCallee(site.callee)) continue;
+        const subjects = primaryArgSubjects(sites, siteIndex, site);
+        if (subjects.length === 0) continue;
+        const validatedLabel = validatedLabelForCondition(block.text, site.callee);
+        if (validatedLabel === undefined) continue; // compound / non-simple condition
+        for (const subject of subjects) {
+          out.push({
+            controllerBlock: block.index,
+            subjectBinding: subject.binding,
+            ...(subject.property !== undefined ? { subjectProperty: subject.property } : {}),
+            validatedLabel,
+            siteIndex,
+            statementIndex,
+            callee: site.callee,
+          });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Build a per-function barrier index (CDG + name-heuristic controllers). */
+export function buildBarrierGuardIndex(
+  cfg: FunctionCfg,
+  options?: BarrierGuardOptions,
+): BarrierGuardIndex {
+  const controllers = collectBarrierControllers(cfg, options?.excludeBarrierCallees ?? new Set());
+  const bySubject = new Map<number, BarrierController[]>();
+  for (const c of controllers) {
+    const list = bySubject.get(c.subjectBinding);
+    if (list) list.push(c);
+    else bySubject.set(c.subjectBinding, [c]);
+  }
+  const needsCdg = controllers.length > 0;
+  const cdg =
+    options?.cdgEdges ??
+    (needsCdg ? computeControlDependence(cfg).edges : ([] as ControlDepEdge[]));
+  return { bySubject, cdg };
+}
+
+/** True when statement `stmt` defines binding `b`. */
+function statementDefines(
+  stmt: { defs: readonly number[]; mayDefs?: readonly number[] },
+  b: number,
+): boolean {
+  if (stmt.defs.includes(b)) return true;
+  return stmt.mayDefs?.includes(b) === true;
+}
+
+/**
+ * Index of the *sink* call in `block.text` (not merely the first call).
+ * Prefers `call.at` when present; otherwise the nth same-callee occurrence
+ * matching `sinkSiteIndex` among this statement's call sites.
+ */
+function sinkCallTextIndex(
+  block: FunctionCfg['blocks'][number],
+  sinkPoint: ProgramPoint,
+  sinkSiteIndex: number,
+): number {
+  const stmt = block.statements?.[sinkPoint.stmtIndex];
+  const sites = stmt?.sites ?? [];
+  const call = sites[sinkSiteIndex];
+  if (!call || call.kind !== 'call' || !call.callee) return -1;
+
+  // Harvester `at` is the call-expression start — most precise when present.
+  if (call.at) {
+    const [line, col] = call.at;
+    const lines = block.text.split('\n');
+    let offset = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = block.startLine + i;
+      if (lineNo === line) return offset + Math.min(col, lines[i].length);
+      offset += lines[i].length + 1;
+    }
+  }
+
+  const leaf = call.callee.includes('.')
+    ? (call.callee.split('.').pop() ?? call.callee)
+    : call.callee;
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${escaped}\\s*\\(`, 'g');
+  // How many same-leaf calls appear at or before this site in the statement?
+  let ordinal = 0;
+  for (let i = 0; i < sinkSiteIndex; i++) {
+    const prev = sites[i];
+    if (prev?.kind !== 'call' || !prev.callee) continue;
+    const prevLeaf = prev.callee.includes('.')
+      ? (prev.callee.split('.').pop() ?? prev.callee)
+      : prev.callee;
+    if (prevLeaf === leaf) ordinal++;
+  }
+  let match: RegExpExecArray | null;
+  let seen = 0;
+  while ((match = re.exec(block.text)) !== null) {
+    if (seen === ordinal) return match.index;
+    seen++;
+  }
+  return -1;
+}
+
+/**
+ * True when the subject object binding is redefined on the validated branch
+ * before the sink (`req = other` after validating `req.body`).
+ *
+ * Same-statement comma / sequence forms (`(req = other, exec(req.body))`)
+ * share one program point — compare bare-binding assign vs sink-call text
+ * order (mirrors {@link memberPropertyAssignedOnValidatedPath}).
+ */
+export function subjectBindingAssignedOnValidatedPath(
+  cfg: FunctionCfg,
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+  sinkPoint: ProgramPoint,
+  sinkSiteIndex?: number,
+): boolean {
+  const b = controller.subjectBinding;
+  const receiver = cfg.bindings?.[b]?.name;
+  const escapedRecv = receiver?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Bare binding assign only — `req.body =` / `req[k] =` are member writes.
+  const assignOp = '(?:\\+|-|\\*|\\/|%|\\*\\*|<<|>>>|>>|&|\\||\\^|&&|\\|\\||\\?\\?)?=(?!=)';
+  const assignRe =
+    escapedRecv !== undefined
+      ? new RegExp(`(?<![A-Za-z0-9_$])${escapedRecv}\\s*${assignOp}`)
+      : null;
+
+  for (const blockIndex of validatedRegionBlocks(index, controller)) {
+    const block = cfg.blocks[blockIndex];
+    const stmts = block?.statements;
+    if (!stmts) continue;
+    if (block.index === sinkPoint.blockIndex) {
+      for (let i = 0; i < sinkPoint.stmtIndex && i < stmts.length; i++) {
+        if (statementDefines(stmts[i], b)) return true;
+      }
+      // Same statement: rebind and sink share one point (comma / sequence).
+      if (sinkSiteIndex !== undefined && assignRe && block.text) {
+        const assignIdx = block.text.search(assignRe);
+        if (assignIdx >= 0) {
+          const sinkIdx = sinkCallTextIndex(block, sinkPoint, sinkSiteIndex);
+          if (sinkIdx < 0 || assignIdx < sinkIdx) return true;
+        }
+      }
+      continue;
+    }
+    if (blockMayPrecedeSink(block, sinkPoint)) {
+      for (const stmt of stmts) {
+        if (statementDefines(stmt, b)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True when a validated member property is assigned on the controller's
+ * validated branch *before* the sink (`req.body = …` then `exec(req.body)`).
+ * Matches the *receiver binding* plus property (`req.body =`), not a bare
+ * `.body =` on a different object. In the sink block, compares assign vs
+ * *this* sink-call position in `block.text` (not the first call).
+ */
+export function memberPropertyAssignedOnValidatedPath(
+  cfg: FunctionCfg,
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+  sinkPoint: ProgramPoint,
+  sinkSiteIndex: number,
+): boolean {
+  const prop = controller.subjectProperty;
+  if (!prop) return false;
+  const receiver = cfg.bindings?.[controller.subjectBinding]?.name;
+  if (!receiver) return false;
+  const escapedProp = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedRecv = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Identifier start boundary — not `\b`, which fails before `$`-prefixed
+  // names (`$req.body =` has no word boundary before `$`). Include compound
+  // assignments (`+=`, `||=`, …): `req.body += req.query` reintroduces taint.
+  const memberAccess = `(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])`;
+  const assignOp = '(?:\\+|-|\\*|\\/|%|\\*\\*|<<|>>>|>>|&|\\||\\^|&&|\\|\\||\\?\\?)?=(?!=)';
+  const assignRe = new RegExp(`(?<![A-Za-z0-9_$])${escapedRecv}\\s*${memberAccess}\\s*${assignOp}`);
+  // Destructuring target: `({body: req.body} = …)` writes `req.body` but the
+  // member is followed by `}` / `,`, not `=`.
+  const destructureRe = new RegExp(`\\{[^}]*:\\s*${escapedRecv}\\s*${memberAccess}[^}]*\\}\\s*=`);
+  const writeIdx = (text: string): number => {
+    const a = text.search(assignRe);
+    const d = text.search(destructureRe);
+    if (a < 0) return d;
+    if (d < 0) return a;
+    return Math.min(a, d);
+  };
+  const hasWrite = (text: string): boolean => writeIdx(text) >= 0;
+  for (const blockIndex of validatedRegionBlocks(index, controller)) {
+    const block = cfg.blocks[blockIndex];
+    if (!block?.text) continue;
+    if (block.index === sinkPoint.blockIndex) {
+      const assignIdx = writeIdx(block.text);
+      if (assignIdx < 0) continue;
+      const sinkIdx = sinkCallTextIndex(block, sinkPoint, sinkSiteIndex);
+      // Assign before sink call in source text (same-line / multiline safe).
+      if (sinkIdx < 0 || assignIdx < sinkIdx) return true;
+      continue;
+    }
+    if (blockMayPrecedeSink(block, sinkPoint)) {
+      if (hasWrite(block.text)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when `sinkBlock` is on a validating predicate's validated branch over
+ * `bindingIdx` — including sinks nested under further conditions inside that
+ * branch (transitive CDG via {@link validatedRegionBlocks}).
+ *
+ * `sinkProperty` must match the controller's `subjectProperty` (both absent
+ * for plain bindings) so validating `req.body` cannot suppress `req.query`.
+ *
+ * When `taintDefPoint` is provided, refuse the barrier if that def was itself
+ * assigned on the validated branch (value reassigned after the check).
+ */
+export function isBarrierGuarded(
+  index: BarrierGuardIndex,
+  bindingIdx: number,
+  sinkBlock: number,
+  taintDefPoint?: ProgramPoint,
+  sinkProperty?: string,
+): BarrierController | undefined {
+  const controllers = index.bySubject.get(bindingIdx);
+  if (!controllers || controllers.length === 0) return undefined;
+  for (const c of controllers) {
+    if ((c.subjectProperty ?? undefined) !== (sinkProperty ?? undefined)) continue;
+    const region = validatedRegionBlocks(index, c);
+    if (!region.has(sinkBlock)) continue;
+    // Reassignment after validation: def lives on the validated path
+    // (direct or nested under a further condition on that path).
+    if (taintDefPoint !== undefined && region.has(taintDefPoint.blockIndex)) continue;
+    return c;
+  }
+  return undefined;
+}
+
+/** Program point of a barrier controller (for SANITIZES / kill records). */
+export function barrierControllerPoint(
+  cfg: FunctionCfg,
+  controller: BarrierController,
+): ProgramPoint {
+  const line =
+    cfg.blocks[controller.controllerBlock]?.statements?.[controller.statementIndex]?.line ?? 0;
+  return {
+    blockIndex: controller.controllerBlock,
+    stmtIndex: controller.statementIndex,
+    line,
+  };
+}

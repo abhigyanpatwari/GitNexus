@@ -116,14 +116,29 @@ some FP from merging; the bigger FN sources are unmodeled features (below).
 The largest is **closures/callbacks** (`arr.forEach(() => sink(y))`) — taint
 into a callback is dropped without per-library models (true of CodeQL's JS libs
 too). Also deferred: field/property flows (`obj.x = taint; sink(obj.y)`),
-field-sensitive access paths, guard-style sanitizers, implicit/control-dependence
-flows, promise/async-await threading, and **destructured/rest params before a
+field-sensitive access paths, promise/async-await threading, and **destructured/rest params before a
 tainted simple param** (the summary port index is the binding ordinal, not the
 formal arg position — needs a formal-param index threaded from the worker
 `BindingEntry`). The interprocedural join is also context-insensitive: when one
 caller invokes two distinct **same-named callees**, a flow into one
 over-attributes to both (sound — over-report, never a missed flow). Absence of a
 finding is NOT proof of safety.
+
+**Barrier guards (#3913):** CDG-aware validating predicates (`isValid*` /
+`validate*` / `validX`, excluding `invalid`) suppress findings when the sink
+use is control-dependent on a *simple* (non-`||`/`&&`) validator condition on
+the validated branch, and the reaching def was not assigned after the check.
+Same-file functions whose body *rejects* `__proto__` (inequality / deny-list,
+or equality + `return false`) are discovered as barrier callees, including
+`const safeKey = …` arrows via inferred `functionName`. Qualified calls like
+`!validators.isValidHostName(x)` keep bang polarity. Proto-key discovery requires
+an affirming reject (`return key !== "__proto__"`, not inverted acceptors).
+Only name-heuristic validators (`isValid*` / `validate*` / `validX`) enter the
+CDG barrier set and KIND_ORDER-suppress. Proto discovery is tooling-only;
+proto-only names and `.filter(protoKey)` do not suppress. Validator controllers
+bind the first argument only. Direct sink uses like `exec(req.body)` after a
+validator are statement-local and still suppress. See `taint/barrier-guards.ts`
+and `bench/taint-barrier-guards/`.
 
 ## GitNexus-specific gotchas
 
