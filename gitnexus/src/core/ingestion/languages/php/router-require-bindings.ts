@@ -118,7 +118,10 @@ const MUST_RUN_CONTAINER_TYPES = new Set([
   'namespace_definition',
   'do_statement',
   'finally_clause',
+  'assignment_expression',
 ]);
+
+const SHORT_CIRCUIT_OPERATORS = new Set(['&&', '||', 'and', 'or']);
 
 function catchTypeText(catchClause: SyntaxNode): string {
   const chunks: string[] = [];
@@ -454,6 +457,11 @@ export function extractPhpRouterRequireBindings(
     const isTry = node.type === 'try_statement';
     let childMustRun = mustRun && (isTry || MUST_RUN_CONTAINER_TYPES.has(node.type));
     const finallyRuns = mustRun && !(isTry && exitSkipsFinally(node));
+    const shortCircuitLeft =
+      node.type === 'binary_expression' &&
+      SHORT_CIRCUIT_OPERATORS.has((node.children ?? []).find((child) => !child.isNamed)?.text ?? '')
+        ? (node.children ?? []).find((child) => child.isNamed)
+        : undefined;
     const ordered: WalkFrame[] = [];
     for (const child of children) {
       // Try/catch bodies may skip. `finally` runs once the try is reached,
@@ -468,7 +476,9 @@ export function extractPhpRouterRequireBindings(
             ? false
             : node.type === 'if_statement' && child.type === 'parenthesized_expression'
               ? mustRun
-              : childMustRun;
+              : child === shortCircuitLeft
+                ? mustRun
+                : childMustRun;
       ordered.push({ node: child, group, mustRun: runs, deferred: frame.deferred });
       if (SEQUENTIAL_BLOCK_TYPES.has(node.type) && statementExitsUnconditionally(child)) break;
       if (!isTry || child.type !== 'finally_clause') {

@@ -757,6 +757,30 @@ function later() {
     expect(map.get('routes/b.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
+  it('a require on the left of && counts as already run', () => {
+    const source = `<?php
+$x = (require_once __DIR__ . '/../routes/web.php') && $on;
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('a require assigned to a variable counts as already run', () => {
+    const source = `<?php
+$x = require_once __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
   it('a require on the right of && does not count as already run', () => {
     expect(
       webContexts(`<?php
