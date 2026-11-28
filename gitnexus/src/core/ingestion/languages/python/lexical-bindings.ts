@@ -25,6 +25,9 @@ const CONDITIONAL = new Set([
   'try_statement',
   'match_statement',
 ]);
+/** Every identifier written in an annotation: `Optional["Node"]` gives Optional, Node. */
+const ANNOTATION_NAME = /[A-Za-z_][A-Za-z0-9_]*/g;
+
 interface Environment {
   node: SyntaxNode;
   kind: ScopeKind;
@@ -372,6 +375,23 @@ export function applyPythonLexicalBindings(
     }
     return module;
   };
+  /** Is `name` claimed by the nearest environment that binds it, but only at
+   *  positions after `at`? A forward reference: nothing binds it yet there. */
+  const boundOnlyAfter = (from: Environment, name: string, at: Range): boolean => {
+    for (let env: Environment | undefined = from; env; env = env.parent) {
+      const claims = env.claims.filter((claim) => claim.name === name);
+      if (claims.length === 0) continue;
+      return claims.every(
+        (claim) =>
+          claim.hoisted !== true &&
+          claim.availableFrom !== undefined &&
+          (claim.availableFrom.startLine > at.startLine ||
+            (claim.availableFrom.startLine === at.startLine &&
+              claim.availableFrom.startCol > at.startCol)),
+      );
+    }
+    return false;
+  };
   const policyFor = (env: Environment) => ({
     allowImplicitReceiver: false,
     callerScopeIsAuthoritative: true,
@@ -486,6 +506,21 @@ export function applyPythonLexicalBindings(
             ? env.parent
             : env;
         extra['@type.lookup-scope'] = syntheticCapture('@type.lookup-scope', node, id(lookupEnv));
+        // A parameter or return annotation types the value at CALL time, when
+        // the module has run to its end. It may name a class bound later in
+        // the file, including the class the method belongs to
+        // (`def from_config(cls) -> "UserService"`). Such a name is read with
+        // no position. One already bound at the `def` keeps its position, so
+        // a later rebinding of the same name does not make it ambiguous.
+        const written = match['@type-binding.type']?.text;
+        if (
+          written !== undefined &&
+          (match['@type-binding.parameter'] || match['@type-binding.return']) &&
+          (written.match(ANNOTATION_NAME) ?? []).some((name) =>
+            boundOnlyAfter(lookupEnv, name, mapRange(range(node))),
+          )
+        )
+          extra['@type.lookup-deferred'] = syntheticCapture('@type.lookup-deferred', node, '');
       }
       return { ...referenceMatch, ...extra };
     });

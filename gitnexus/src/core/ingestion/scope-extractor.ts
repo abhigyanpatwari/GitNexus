@@ -1238,6 +1238,14 @@ function pass4CollectTypeBindings(
     // The binding holds the AWAITED result of the callee it names — a generic
     // sub-tag any emitter may set; see `TypeRef.awaited`.
     const awaited = match['@type-binding.awaited'] !== undefined;
+    // Where the written type is looked up. A provider marks a type whose
+    // evaluation is deferred past its declaration (`@type.lookup-deferred`),
+    // and that one is read with no position: a name bound later in the file
+    // is as visible to it as to a call inside a function body.
+    const lookupPosition =
+      match['@type.lookup-deferred'] === undefined
+        ? { lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol } }
+        : {};
     const typeRef: TypeRef =
       declaredSpelling === undefined
         ? {
@@ -1245,7 +1253,7 @@ function pass4CollectTypeBindings(
             ...(awaited ? { awaited: true as const } : {}),
             bindingRange: anchor.range,
             declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
-            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            ...lookupPosition,
             lookupPurpose:
               parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
                 ? 'value'
@@ -1258,7 +1266,7 @@ function pass4CollectTypeBindings(
             ...(awaited ? { awaited: true as const } : {}),
             bindingRange: anchor.range,
             declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
-            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            ...lookupPosition,
             lookupPurpose:
               parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
                 ? 'value'
