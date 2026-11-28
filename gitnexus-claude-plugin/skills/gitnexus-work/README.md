@@ -31,8 +31,9 @@ argument-hint: <plan path, or blank for the newest plan>
 
 Use the gitnexus-work skill for: $ARGUMENTS
 
-Read `~/.agents/skills/gitnexus-work/SKILL.md` (prefer the repo copy at
-`.claude/skills/gitnexus-work/SKILL.md` when present) and follow its phases in
+Read `~/.agents/skills/gitnexus-work/SKILL.md` (prefer the standards-first repo
+copy at `.agents/skills/gitnexus-work/SKILL.md` when present, else
+`.claude/skills/gitnexus-work/SKILL.md`) and follow its phases in
 order. This skill edits code; honor its impact-before-edit and
 detect_changes-before-commit rules without exception.
 ```

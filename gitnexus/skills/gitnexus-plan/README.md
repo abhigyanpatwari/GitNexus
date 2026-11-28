@@ -10,7 +10,7 @@ and the agent's native targeted source verification.
 | ----------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
 | **Claude Code**               | `/gitnexus-plan <task>`                                                                                | `.claude/skills/gitnexus-plan/SKILL.md`        |
 | **Codex CLI**                 | Ask: "run gitnexus-plan for <task>" (Codex reads `AGENTS.md`) — or install the user-level prompt below | `AGENTS.md` § Engineering planning & execution |
-| **Any AGENTS.md-aware agent** | Ask it to "read `.claude/skills/gitnexus-plan/SKILL.md` and follow it for <task>"                      | `AGENTS.md` § Engineering planning & execution |
+| **Any AGENTS.md-aware agent** | Read `.agents/skills/gitnexus-plan/SKILL.md` (else `.claude/skills/…`) and follow it for `<task>`     | `AGENTS.md` § Engineering planning & execution |
 
 ```
 /gitnexus-plan Add retry support to the ingestion pipeline
@@ -58,8 +58,9 @@ argument-hint: <task description>
 
 Use the gitnexus-plan skill for: $ARGUMENTS
 
-Read `~/.agents/skills/gitnexus-plan/SKILL.md` (if this repo has its own copy at
-`.claude/skills/gitnexus-plan/SKILL.md`, prefer that one) and follow its phases in
+Read `~/.agents/skills/gitnexus-plan/SKILL.md` (prefer the standards-first repo
+copy at `.agents/skills/gitnexus-plan/SKILL.md` when present, else
+`.claude/skills/gitnexus-plan/SKILL.md`) and follow its phases in
 order, loading its `references/` files at the phases that call for them. Planning
 only — never edit code; the only repo file you write is the plan document.
 ```
