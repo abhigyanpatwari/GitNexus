@@ -685,6 +685,21 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toBeUndefined();
   });
 
+  it('matches an imported group controller alias case-insensitively', () => {
+    const bindings = extractBindings(
+      `<?php
+namespace Two {
+  use App\\Two\\Foo;
+  $app->router->group(['controller' => foo::class], function ($router) {
+    require __DIR__ . '/../routes/web.php';
+  });
+}
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings[0]?.controller).toBe('App\\Two\\Foo');
+  });
+
   it('qualifies a group controller from the namespace that contains the group', () => {
     const bindings = extractBindings(
       `<?php

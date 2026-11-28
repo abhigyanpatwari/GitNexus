@@ -146,10 +146,11 @@ export function resolvePhpRouterRequireBindings(
    * Each entry file has its own include set. A `require_once` is skipped only
    * for that walk, after an earlier unguarded load of the same target.
    * Unguarded requires inline the target's bindings before later siblings.
-   * A target context already recorded is not expanded again, so a diamond of
-   * requires stays proportional to distinct contexts rather than paths. The
-   * first walk still remembers which files that context loads, so a later
-   * unguarded require of the same target updates the caller's include set.
+   * A context past the per-file cap is not expanded. A context already kept
+   * is expanded again only when the incoming loaded-file set differs, so a
+   * later entry walk still records a nested require_once the first walk
+   * skipped. The same loaded set reuses the remembered files and does not
+   * rewalk.
    */
   const rememberLoads = (key: string, before: Set<string>, after: Set<string>) => {
     const extra = new Set<string>();

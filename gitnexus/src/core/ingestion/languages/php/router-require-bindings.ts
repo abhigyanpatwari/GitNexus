@@ -258,7 +258,7 @@ function importedClassName(at: SyntaxNode, localName: string): string | null {
     for (const match of splitNamespaceUseDeclaration(useNode)) {
       if (match['@import.symbol-kind']?.text !== 'type') continue;
       const local = match['@import.alias']?.text ?? match['@import.name']?.text;
-      if (local !== localName) continue;
+      if (!local || local.toLowerCase() !== localName.toLowerCase()) continue;
       const source = (match['@import.source']?.text ?? '').replace(/^\\+/, '');
       if (source) return source;
     }
@@ -525,7 +525,10 @@ export function extractPhpRouterRequireBindings(
   const pushChildren = (frame: WalkFrame, children: readonly SyntaxNode[]) => {
     const { node, group, mustRun } = frame;
     const isTry = node.type === 'try_statement';
-    let childMustRun = mustRun && (isTry || MUST_RUN_CONTAINER_TYPES.has(node.type));
+    const insideForInitializer =
+      node.parent?.type === 'for_statement' && node.parent.childForFieldName('initialize') === node;
+    let childMustRun =
+      mustRun && (isTry || insideForInitializer || MUST_RUN_CONTAINER_TYPES.has(node.type));
     const finallyNeverRuns = isTry && straightLineEndsRequest(node);
     const finallyCertain = mustRun && isTry && !exitSkipsFinally(node);
     const shortCircuitLeft =
@@ -534,9 +537,7 @@ export function extractPhpRouterRequireBindings(
         ? (node.children ?? []).find((child) => child.isNamed)
         : undefined;
     const forInitializer =
-      node.type === 'for_statement'
-        ? (node.children ?? []).find((child) => child.isNamed && child.type !== 'for')
-        : undefined;
+      node.type === 'for_statement' ? node.childForFieldName('initialize') : undefined;
     const alwaysEvaluated =
       node.type === 'conditional_expression'
         ? (node.children ?? []).find((child) => child.isNamed)
