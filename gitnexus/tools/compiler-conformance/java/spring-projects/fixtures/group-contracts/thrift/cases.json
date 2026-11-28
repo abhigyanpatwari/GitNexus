@@ -532,5 +532,49 @@
     "name": "test_extract_java_thrift_direct_service_consumer_without_idl_returns_empty",
     "project": "java-thrift-direct-service-consumer-without",
     "expected": []
+  },
+  {
+    "name": "test_extract_java_thrift_consumers_from_annotated_client_fields",
+    "project": "java-thrift-consumers-from-annotated-client-fields",
+    "expected": [
+      {
+        "contractId": "thrift::billing.v1.OrderService/PlaceOrder",
+        "type": "thrift",
+        "role": "provider",
+        "symbolUid": "source-scan::thrift::provider::billing.v1.OrderService/PlaceOrder::idl/order.thrift::OrderService.PlaceOrder",
+        "symbolRef": {
+          "filePath": "idl/order.thrift",
+          "name": "OrderService.PlaceOrder"
+        },
+        "symbolName": "OrderService.PlaceOrder",
+        "confidence": 0.85,
+        "meta": {
+          "namespace": "billing.v1",
+          "service": "OrderService",
+          "method": "PlaceOrder",
+          "source": "thrift_idl",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "thrift::billing.v1.OrderService/PlaceOrder",
+        "type": "thrift",
+        "role": "consumer",
+        "symbolUid": "source-scan::thrift::consumer::billing.v1.OrderService/PlaceOrder::src/main/java/example/BillingWorkflow.java::orderClient.PlaceOrder",
+        "symbolRef": {
+          "filePath": "src/main/java/example/BillingWorkflow.java",
+          "name": "orderClient.PlaceOrder"
+        },
+        "symbolName": "orderClient.PlaceOrder",
+        "confidence": 0.75,
+        "meta": {
+          "namespace": "billing.v1",
+          "service": "OrderService",
+          "method": "PlaceOrder",
+          "source": "java_thrift_consumer",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
   }
 ]
