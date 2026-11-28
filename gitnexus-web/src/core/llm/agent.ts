@@ -170,6 +170,9 @@ BAD:  A[User's Data] --> B(Process & Save)
 GOOD: A["User Data"] --> B["Process and Save"]
 `;
 
+// These Claude models reject a non-default temperature, and saved settings carry 0.1.
+const CLAUDE_WITHOUT_TEMPERATURE = /^claude-(opus-4-[78]|opus-5|sonnet-5|haiku-5|fable-5|mythos)/;
+
 export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
     case 'openai': {
@@ -220,7 +223,9 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
       return new ChatAnthropic({
         anthropicApiKey: anthropicConfig.apiKey,
         model: anthropicConfig.model,
-        temperature: anthropicConfig.temperature ?? 0.1,
+        ...(CLAUDE_WITHOUT_TEMPERATURE.test(anthropicConfig.model)
+          ? {}
+          : { temperature: anthropicConfig.temperature ?? 0.1 }),
         maxTokens: anthropicConfig.maxTokens ?? 8192,
         streaming: true,
       });

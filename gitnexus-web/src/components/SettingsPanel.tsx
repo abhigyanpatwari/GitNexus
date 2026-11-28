@@ -568,7 +568,7 @@ export const SettingsPanel = ({
                 onToggleVisibility: () => toggleApiKeyVisibility('gemini'),
               }}
               model={{
-                value: settings.gemini?.model ?? 'gemini-2.0-flash',
+                value: settings.gemini?.model ?? 'gemini-3.6-flash',
                 placeholder: t('settings:providers.gemini.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
@@ -598,7 +598,7 @@ export const SettingsPanel = ({
                 onToggleVisibility: () => toggleApiKeyVisibility('anthropic'),
               }}
               model={{
-                value: settings.anthropic?.model ?? 'claude-sonnet-4-20250514',
+                value: settings.anthropic?.model ?? 'claude-sonnet-5-5',
                 placeholder: t('settings:providers.anthropic.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
