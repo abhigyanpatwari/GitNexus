@@ -17,7 +17,9 @@
  */
 
 import { isBladeTemplateFilename } from 'gitnexus-shared';
-import { BLADE_VIEW_REFERENCE_REASON } from '../graph/edge-reasons.js';
+import { BLADE_VIEW_REFERENCE_REASON, BLADE_VIEW_RENDER_REASON } from '../graph/edge-reasons.js';
+import { EnclosingCallableIndex } from './enclosing-callable.js';
+import type { ExtractedViewRenderCall } from './workers/parse-worker.js';
 import { generateId } from '../../lib/utils.js';
 import type { KnowledgeGraph } from '../graph/types.js';
 
@@ -226,4 +228,73 @@ export const processBlade = (
   }
 
   return { links: totalLinks };
+};
+
+/**
+ * View roots for PHP code that renders a view, nearest first: the
+ * `resources/views/` folder of each enclosing directory (so a controller in an
+ * app subfolder resolves to that app's views), ending at the top-level one.
+ */
+const viewRootsForCaller = (filePath: string): string[] => {
+  const roots: string[] = [];
+  let dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
+  for (;;) {
+    roots.push(dir === '' ? VIEWS_DIR : `${dir}/${VIEWS_DIR}`);
+    if (dir === '') return roots;
+    dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '';
+  }
+};
+
+/**
+ * Link PHP files to the Blade views they render. One IMPORTS edge per
+ * (calling file, view file); its reason names each callable that holds a call
+ * with a `|via:<id>` field, under the same attribution as FETCHES edges (the
+ * parser's enclosing callable, else the innermost span). A call outside any
+ * callable (a route file's `Route::view`) adds no field. An id containing the
+ * field separator cannot be carried and is left out rather than split.
+ */
+export const processBladeViewRenders = (
+  graph: KnowledgeGraph,
+  calls: readonly ExtractedViewRenderCall[],
+  allPathSet: ReadonlySet<string>,
+): { links: number } => {
+  if (calls.length === 0) return { links: 0 };
+  const callables = new EnclosingCallableIndex(graph, new Set(calls.map((c) => c.filePath)));
+  const edges = new Map<string, { sourceId: string; targetId: string; via: Set<string> }>();
+
+  for (const call of calls) {
+    if (!STATIC_VIEW_NAME_RE.test(call.viewName)) continue;
+    const targetPath = resolveView(call.viewName, viewRootsForCaller(call.filePath), allPathSet);
+    if (targetPath === null || targetPath === call.filePath) continue;
+
+    const sourceId = generateId('File', call.filePath);
+    const targetId = generateId('File', targetPath);
+    if (!graph.getNode(sourceId) || !graph.getNode(targetId)) continue;
+
+    const id = generateId('IMPORTS', `${sourceId}->${targetId}`);
+    let edge = edges.get(id);
+    if (edge === undefined) {
+      edge = { sourceId, targetId, via: new Set<string>() };
+      edges.set(id, edge);
+    }
+    const callable = callables.of(call);
+    if (callable !== undefined && !callable.includes('|')) edge.via.add(callable);
+  }
+
+  for (const [id, edge] of edges) {
+    let reason = BLADE_VIEW_RENDER_REASON;
+    for (const via of edge.via) reason = `${reason}|via:${via}`;
+    graph.addRelationship({
+      id,
+      type: 'IMPORTS',
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+      // Below 1.0 for the same reason as view-to-view links: `config/view.php`
+      // can add view paths this scan does not read.
+      confidence: 0.9,
+      reason,
+    });
+  }
+
+  return { links: edges.size };
 };

@@ -63,6 +63,10 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
     appendAll(target.springTypes, src.springTypes);
   }
   appendAll(target.toolDefs, src.toolDefs);
+  if (src.viewRenderCalls) {
+    target.viewRenderCalls ??= [];
+    appendAll(target.viewRenderCalls, src.viewRenderCalls);
+  }
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
   appendAll(target.fileScopeBindings, src.fileScopeBindings);

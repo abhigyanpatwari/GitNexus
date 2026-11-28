@@ -26,6 +26,7 @@ import type {
   ExtractedRoute,
   ExtractedDecoratorRoute,
   ExtractedToolDef,
+  ExtractedViewRenderCall,
   ExtractedORMQuery,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
@@ -55,6 +56,8 @@ export interface ParseOutput {
   /** Exact admitted declarations that own Route nodes and handler attribution. */
   readonly selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
   readonly allToolDefs: readonly ExtractedToolDef[];
+  /** View-render call sites (e.g. Laravel `view('x')`), consumed by the blade phase. */
+  readonly allViewRenderCalls: readonly ExtractedViewRenderCall[];
   readonly allORMQueries: readonly ExtractedORMQuery[];
   /** Route URL → resolved handler symbol UID (Part 2, #2138). Consumed by the
    *  routes phase to stamp `handlerSymbolId` on Route nodes. */
