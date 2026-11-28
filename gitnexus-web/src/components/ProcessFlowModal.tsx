@@ -11,6 +11,10 @@ import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
 
+/** What the modal draws and copies: a diagram from chat keeps the AI's own code. */
+const mermaidSource = (process: ProcessData): string =>
+  process.rawMermaid || generateProcessMermaid(process);
+
 interface ProcessFlowModalProps {
   process: ProcessData | null;
   onClose: () => void;
@@ -152,10 +156,7 @@ export const ProcessFlowModal = ({
 
     const renderDiagram = async () => {
       try {
-        // Check if we have raw mermaid code (from AI chat) or need to generate it
-        const mermaidCode = process.rawMermaid
-          ? process.rawMermaid
-          : generateProcessMermaid(process);
+        const mermaidCode = mermaidSource(process);
         const id = `mermaid-${Date.now()}`;
 
         // Clear previous content
@@ -214,8 +215,7 @@ export const ProcessFlowModal = ({
   // Copy mermaid code to clipboard
   const handleCopyMermaid = useCallback(async () => {
     if (!process) return;
-    const mermaidCode = generateProcessMermaid(process);
-    await navigator.clipboard.writeText(mermaidCode);
+    await navigator.clipboard.writeText(mermaidSource(process));
   }, [process]);
 
   // Focus in graph
