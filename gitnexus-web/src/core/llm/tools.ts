@@ -461,15 +461,55 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
   // ============================================================================
 
   const readTool = tool(
-    async ({ filePath }: { filePath: string }) => {
+    async ({
+      filePath,
+      startLine,
+      endLine,
+    }: {
+      filePath: string;
+      startLine?: number | null;
+      endLine?: number | null;
+    }) => {
       try {
         const content = await readFile(filePath);
+        const MAX_CONTENT = 50000;
+
+        // Optional 1-indexed, inclusive line range (#439). Sliced here so the
+        // range also reaches content beyond the whole-file truncation point.
+        const hasStart = typeof startLine === 'number';
+        const hasEnd = typeof endLine === 'number';
+        if (hasStart || hasEnd) {
+          const allLines = content.split('\n');
+          const total = allLines.length;
+          // Reject rather than round: a silently floored 1.9 would report line 1
+          // as if it were the requested range.
+          const isLineNumber = (n: number) => Number.isInteger(n) && n >= 1;
+          if (
+            (hasStart && !isLineNumber(startLine as number)) ||
+            (hasEnd && !isLineNumber(endLine as number))
+          ) {
+            return `Invalid line range for ${filePath}: startLine and endLine must be whole 1-indexed line numbers (got startLine=${startLine ?? 'unset'}, endLine=${endLine ?? 'unset'}).`;
+          }
+          const start = hasStart ? (startLine as number) : 1;
+          const requestedEnd = hasEnd ? (endLine as number) : total;
+          if (hasEnd && requestedEnd < start) {
+            return `Invalid line range for ${filePath}: endLine (${requestedEnd}) is before startLine (${start}).`;
+          }
+          if (start > total) {
+            return `File: ${filePath} has ${total} lines; startLine ${start} is past the end of the file.`;
+          }
+          const end = Math.min(requestedEnd, total);
+          const slice = allLines.slice(start - 1, end).join('\n');
+          if (slice.length > MAX_CONTENT) {
+            return `File: ${filePath} (lines ${start}-${end} of ${total}, truncated)\n\n${slice.slice(0, MAX_CONTENT)}\n\n... [truncated — request a narrower startLine/endLine range]`;
+          }
+          return `File: ${filePath} (lines ${start}-${end} of ${total})\n\n${slice}`;
+        }
 
         // Truncate large files
-        const MAX_CONTENT = 50000;
         if (content.length > MAX_CONTENT) {
           const lines = content.split('\n').length;
-          return `File: ${filePath} (${lines} lines, truncated)\n\n${content.slice(0, MAX_CONTENT)}\n\n... [truncated]`;
+          return `File: ${filePath} (${lines} lines, truncated)\n\n${content.slice(0, MAX_CONTENT)}\n\n... [truncated — pass startLine/endLine to read a specific range]`;
         }
 
         const lines = content.split('\n').length;
@@ -485,9 +525,19 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     {
       name: 'read',
       description:
-        'Read the full content of a file. Use to see source code after finding files via search or grep.',
+        'Read the content of a file. Use to see source code after finding files via search or grep. Pass startLine/endLine (1-indexed, inclusive) to read only the lines you need, e.g. around a grep hit or a [[file:line]] citation.',
       schema: z.object({
         filePath: z.string().describe('File path to read (can be partial like "src/utils.ts")'),
+        startLine: z
+          .number()
+          .optional()
+          .nullable()
+          .describe('First line to read, 1-indexed (default: 1)'),
+        endLine: z
+          .number()
+          .optional()
+          .nullable()
+          .describe('Last line to read, inclusive (default: end of file)'),
       }),
     },
   );

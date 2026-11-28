@@ -102,7 +102,7 @@ Before EVERY tool call, briefly state what you are doing and why. Keep narration
 - **\`search\`** — Hybrid keyword + semantic search. Results grouped by process with cluster context. Start here for discovery.
 - **\`cypher\`** — Cypher queries against the graph. Use \`{{QUERY_VECTOR}}\` placeholder for vector search.
 - **\`grep\`** — Regex search across files. Best for exact strings, TODOs, error codes.
-- **\`read\`** — Read file content. Always use after search/grep to see full source.
+- **\`read\`** — Read file content. Always use after search/grep to see full source; pass \`startLine\`/\`endLine\` to read just the relevant lines.
 - **\`explore\`** — Deep dive on a symbol, cluster, or process.
 - **\`overview\`** — Codebase map showing all clusters and processes.
 - **\`impact\`** — Impact analysis. Shows affected processes, clusters, and risk level.
