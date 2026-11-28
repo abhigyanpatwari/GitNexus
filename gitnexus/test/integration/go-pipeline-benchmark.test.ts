@@ -463,16 +463,46 @@ describe('Go scope-capture O(n^2) regression tripwire', () => {
 // Go structural interface detection benchmarks
 // ---------------------------------------------------------------------------
 
+/** Receiver-kind sidecar `populateGoOwners` stamps on real Go methods. */
+type GoReceiverKind = 'value' | 'pointer';
+type SyntheticGoMethod = SymbolDefinition & { goReceiverKind?: GoReceiverKind };
+
+/**
+ * Receiver kinds for the `Find` / `Save` pair of synthetic struct `s`.
+ *
+ * Detection builds two method sets per struct, MS(T) and MS(*T), and only a
+ * stamped `goReceiverKind` tells them apart: an unset kind reads as a value
+ * receiver, so data that never stamps one drives MS(T) === MS(*T) and cannot
+ * see a change to either (#2835). The cycle below reaches all three shapes
+ * that produce a distinct answer, weighted towards pointer receivers because
+ * that is what idiomatic Go writes:
+ *
+ *   s % 4 === 0  func (T) Find,  func (T) Save   -> implements by value
+ *   s % 4 === 1  func (T) Find,  func (*T) Save  -> implements by pointer only
+ *   otherwise    func (*T) Find, func (*T) Save  -> implements by pointer only
+ */
+function syntheticReceiverKinds(s: number): readonly [GoReceiverKind, GoReceiverKind] {
+  if (s % 4 === 0) return ['value', 'value'];
+  if (s % 4 === 1) return ['value', 'pointer'];
+  return ['pointer', 'pointer'];
+}
+
+/** How many of `structCount` synthetic structs implement by VALUE. */
+function syntheticValueImplementorCount(structCount: number): number {
+  return Math.ceil(structCount / 4);
+}
+
 /**
  * Build synthetic ParsedFile data for detectGoInterfaceImplementations.
  *
  * Creates `interfaceCount` interfaces (each with Find + Save methods) and
- * `structCount` structs that implement all of them (matching signatures).
+ * `structCount` structs that implement all of them (matching signatures),
+ * with receiver kinds assigned by {@link syntheticReceiverKinds}.
  * Also generates a few BadStruct entries with mismatched signatures to
  * verify they are correctly excluded (non-vacuous guard).
  */
 function generateSyntheticInterfaceData(interfaceCount: number, structCount: number): ParsedFile[] {
-  const defs: SymbolDefinition[] = [];
+  const defs: SyntheticGoMethod[] = [];
 
   // Interfaces
   for (let i = 0; i < interfaceCount; i++) {
@@ -512,6 +542,7 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
   // Structs — each implements all interfaces
   for (let s = 0; s < structCount; s++) {
     const structId = `struct:Impl${s}`;
+    const [findReceiver, saveReceiver] = syntheticReceiverKinds(s);
     defs.push({
       nodeId: structId,
       filePath: 'repo.go',
@@ -528,6 +559,7 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       requiredParameterCount: 1,
       parameterTypes: ['string'],
       returnType: 'User',
+      goReceiverKind: findReceiver,
     });
     defs.push({
       nodeId: `struct:Impl${s}.Save`,
@@ -539,6 +571,7 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       requiredParameterCount: 1,
       parameterTypes: ['User'],
       returnType: 'error',
+      goReceiverKind: saveReceiver,
     });
   }
 
@@ -561,6 +594,7 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       requiredParameterCount: 1,
       parameterTypes: ['string'],
       returnType: 'User',
+      goReceiverKind: 'pointer',
     });
     // Mismatched Save: string param instead of User
     defs.push({
@@ -573,6 +607,7 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       requiredParameterCount: 1,
       parameterTypes: ['string'],
       returnType: 'error',
+      goReceiverKind: 'pointer',
     });
   }
 
@@ -607,6 +642,53 @@ describe('Go structural interface detection O(n²) regression tripwire', () => {
     expect(methods).toHaveLength(18);
   });
 
+  it('stamps a receiver kind on every struct method, in both kinds', () => {
+    const [parsed] = generateSyntheticInterfaceData(3, 8);
+    const structMethods = (parsed.localDefs as SyntheticGoMethod[]).filter(
+      (def) => def.type === 'Method' && def.ownerId?.startsWith('struct:'),
+    );
+    const kinds = structMethods.map((def) => def.goReceiverKind);
+    // An unset kind reads as a value receiver, which is the blindness #2835
+    // describes — so none may be left unset, and both kinds must be present.
+    expect(kinds).not.toContain(undefined);
+    expect(new Set(kinds)).toEqual(new Set(['value', 'pointer']));
+    // Interface methods have no receiver and must stay unstamped.
+    const interfaceMethods = (parsed.localDefs as SyntheticGoMethod[]).filter(
+      (def) => def.type === 'Method' && def.ownerId?.startsWith('iface:'),
+    );
+    expect(interfaceMethods.every((def) => def.goReceiverKind === undefined)).toBe(true);
+  });
+
+  it('reports the receiver form each synthetic struct implements in', () => {
+    const STRUCT_COUNT = 8;
+    const result = detectGoInterfaceImplementations(
+      generateSyntheticInterfaceData(2, STRUCT_COUNT),
+      // Empty stand-ins, as in the suites below: detection only reads the
+      // indexes through `indexes.imports?.edgesAt(...)`, which tolerates an
+      // empty object, and never uses the model. `never` keeps the cast
+      // lint-clean.
+      {} as never,
+      {} as never,
+    );
+
+    expect(result.implementations.size).toBe(2);
+    for (const [, impls] of result.implementations) {
+      const formByStruct = new Map(impls.map((impl) => [impl.structDefId, impl.receiverForm]));
+      // Every matching struct still implements: MS(*T) holds all its methods.
+      expect(formByStruct.size).toBe(STRUCT_COUNT);
+      for (let s = 0; s < STRUCT_COUNT; s++) {
+        const [findReceiver, saveReceiver] = syntheticReceiverKinds(s);
+        // One pointer-receiver method is enough to take the struct out of
+        // MS(T), so only the all-value shape implements by value.
+        const expected = findReceiver === 'value' && saveReceiver === 'value' ? 'value' : 'pointer';
+        expect(formByStruct.get(`struct:Impl${s}`)).toBe(expected);
+      }
+      expect(impls.filter((impl) => impl.receiverForm === 'value')).toHaveLength(
+        syntheticValueImplementorCount(STRUCT_COUNT),
+      );
+    }
+  });
+
   it('detects implementations for 100 interfaces × 100 structs within budget', () => {
     const IFACE_COUNT = 100;
     const STRUCT_COUNT = 100;
@@ -631,6 +713,11 @@ describe('Go structural interface detection O(n²) regression tripwire', () => {
     expect(result.implementations.size).toBe(IFACE_COUNT);
     for (const [, impls] of result.implementations) {
       expect(impls).toHaveLength(STRUCT_COUNT);
+      // Non-vacuous for receiver kind: a detector that stopped reading
+      // `goReceiverKind` would report every struct as a value implementor.
+      expect(impls.filter((impl) => impl.receiverForm === 'value')).toHaveLength(
+        syntheticValueImplementorCount(STRUCT_COUNT),
+      );
     }
     // Regression guard
     expect(elapsedMs).toBeLessThan(BUDGET_MS);
@@ -677,9 +764,12 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
       const parsed = generateSyntheticInterfaceData(n, n);
 
       for (let r = 0; r < REPS; r++) {
-        const start = Date.now();
+        // `performance.now()`, not `Date.now()`: the smallest scale finishes in
+        // a few milliseconds, where a 1ms clock is a ~25% error on the
+        // denominator of the first scaling ratio.
+        const start = performance.now();
         const result = detectGoInterfaceImplementations(parsed, emptyIndexes, emptyModel);
-        const elapsed = Date.now() - start;
+        const elapsed = performance.now() - start;
         if (elapsed < bestMs) {
           bestMs = elapsed;
           implEdges = 0;
@@ -694,7 +784,9 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         elapsedMs: bestMs,
         implEdges,
       });
-      console.log(`  ${n}×${n} = ${n * n} pairs: ${bestMs}ms (${implEdges} IMPLEMENTS edges)`);
+      console.log(
+        `  ${n}×${n} = ${n * n} pairs: ${bestMs.toFixed(1)}ms (${implEdges} IMPLEMENTS edges)`,
+      );
     }
 
     // Print scaling table
@@ -704,7 +796,7 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
     console.log('├──────────┼──────────┼───────────┼───────────┤');
     for (const r of results) {
       console.log(
-        `│ ${String(`${r.ifaceCount}×${r.structCount}`).padStart(8)} │ ${String(r.totalPairs).padStart(8)} │ ${String(r.elapsedMs).padStart(9)} │ ${String(r.implEdges).padStart(9)} │`,
+        `│ ${String(`${r.ifaceCount}×${r.structCount}`).padStart(8)} │ ${String(r.totalPairs).padStart(8)} │ ${r.elapsedMs.toFixed(1).padStart(9)} │ ${String(r.implEdges).padStart(9)} │`,
       );
     }
     console.log('└──────────┴──────────┴───────────┴───────────┘');
@@ -719,7 +811,9 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         console.log(
           `  ${results[i - 1].totalPairs} → ${results[i].totalPairs}: ${scaling.toFixed(2)}x (${scaling < 1.5 ? 'linear' : scaling < 3 ? 'superlinear' : 'WARNING: quadratic'})`,
         );
-        expect(scaling).toBeLessThan(1.5);
+        // #2835 records healthy per-pair ratios up to 1.95 across hosts.
+        // An added scan per pair measured 3.45 on the same fourfold size step (#4242).
+        expect(scaling).toBeLessThan(2.5);
       }
     }
   }, 300_000);
