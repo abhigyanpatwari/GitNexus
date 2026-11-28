@@ -40,11 +40,55 @@ before replacing any committed output. Compiler changes can change the binary
 hashes; review the updated binaries and provenance together. This is a bounded
 npm-package overlay rebuild, separate from the source-vendored grammar matrix.
 
+## tree-sitter runtime
+
+The upstream `tree-sitter@0.25.1` `linux-x64` and `linux-arm64` runtime
+prebuilds were built with GCC 13 and require `GLIBCXX_3.4.31`. Ubuntu 22.04 and
+Debian 12 provide up to `GLIBCXX_3.4.30`, so loading fails there and
+`node-gyp-build` falls back to a source build, which fails without Python, make
+and a C++ compiler. See GitNexus issue #4165.
+
+`tree-sitter@0.25.1/linux-{x64,arm64}/tree-sitter.node` are rebuilt from the
+unchanged npm tarball inside the Ubuntu 22.04 image pinned in
+`runtime-manifest.json` (GCC/G++ 11.4.0, binutils 2.38, glibc 2.35), using
+node-gyp 11.5.0, node-addon-api 8.9.2 and Node 22.23.1 headers. `readelf`
+confirms they require at most GLIBC 2.17, GLIBCXX 3.4.29 and CXXABI 1.3.9, with
+a non-executable stack. Each was built and validated natively (x86-64 and
+AArch64): the script loads the new runtime and parses JavaScript with it. A
+packed tarball installed without a compiler on Ubuntu 22.04 and Debian 12, on
+both architectures, loaded and parsed all 21 grammars, and `gitnexus analyze`
+completed. CI repeats that install on Ubuntu 22.04 for both Linux runners.
+
+To regenerate one architecture, run on a native Linux host of that
+architecture with Docker, from the repository root:
+
+```sh
+docker run --rm -v "$PWD/gitnexus:/src/gitnexus" \
+  "$(node -p "require('./gitnexus/prebuilds/bundled/runtime-manifest.json').build.image")" \
+  bash -euc '
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils python3 make g++ binutils
+    arch=$(uname -m | sed "s/aarch64/arm64/;s/x86_64/x64/")
+    manifest=/src/gitnexus/prebuilds/bundled/runtime-manifest.json
+    read -r v sum < <(python3 -c "import json;b=json.load(open(\"$manifest\"))[\"build\"][\"node\"];print(b[\"version\"],b[\"sha256\"][\"linux-$arch\"])")
+    curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v$v/node-v$v-linux-$arch.tar.xz"
+    echo "$sum  /tmp/node.tar.xz" | sha256sum -c -
+    tar -xJf /tmp/node.tar.xz -C /opt
+    PATH="/opt/node-v$v-linux-$arch/bin:$PATH" node /src/gitnexus/scripts/rebuild-runtime-prebuild.cjs
+  '
+```
+
+The script verifies the tarball, headers and build helper hashes, rejects a
+binary for the wrong architecture or above the libstdc++ ceiling, and only
+then replaces that architecture's binary and manifest entry. Update the audit
+hash in `test/unit/prebuild-coverage.test.ts` after reviewing the changes.
+
 ## Packaging behavior
 
 Bundle preparation validates every repair before writing peer manifests or
 binary files. `prepack` supplies `--for-publication` to remove local
-`build/Release/*.node` and `build/Debug/*.node` outputs from repaired packages,
+`build/Release/*.node` and `build/Debug/*.node` outputs from repaired packages
+and the runtime,
 which would otherwise shadow their platform prebuilds. Normal consumer
 postinstall keeps legitimate source-built fallbacks intact. Repair assets are
 included in the npm package so postinstall remains self-contained.

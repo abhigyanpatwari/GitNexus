@@ -35,16 +35,21 @@ const grammarRoot = (root: string, name: string) =>
       ? 'tree-sitter-typescript/node_modules/tree-sitter-javascript'
       : name,
   );
-const replacement = () => {
-  const bytes = Buffer.alloc(96);
+const replacement = (machine = 183, tag = '') => {
+  const bytes = Buffer.alloc(128);
   bytes.write('\x7fELF');
   bytes[4] = 2;
   bytes[5] = 1;
   bytes.writeUInt16LE(3, 16);
-  bytes.writeUInt16LE(183, 18);
+  bytes.writeUInt16LE(machine, 18);
   bytes.write('napi_register_module_v1', 64);
+  bytes.write(tag, 96);
   return bytes;
 };
+const runtimeTuples: Record<string, number> = { 'linux-arm64': 183, 'linux-x64': 62 };
+const runtimeReplacement = (tuple: string) => replacement(runtimeTuples[tuple], `runtime ${tuple}`);
+const runtimePrebuild = (root: string, tuple: string) =>
+  path.join(root, 'node_modules/tree-sitter/prebuilds', tuple, 'tree-sitter.node');
 
 const directVersions: Record<string, string> = {
   '@eagleoutice/tree-sitter-r': '1.1.2',
@@ -121,6 +126,23 @@ function fixture() {
     schemaVersion: 1,
     tuple: 'linux-arm64',
     packages: overlays,
+  });
+  for (const tuple of tuples) {
+    mkdirSync(path.dirname(runtimePrebuild(root, tuple)), { recursive: true });
+    writeFileSync(runtimePrebuild(root, tuple), `original runtime ${tuple}`);
+  }
+  const binaries = Object.keys(runtimeTuples).map((tuple) => {
+    const file = `tree-sitter@0.25.1/${tuple}/tree-sitter.node`;
+    const bytes = runtimeReplacement(tuple);
+    mkdirSync(path.dirname(path.join(repairRoot(root), file)), { recursive: true });
+    writeFileSync(path.join(repairRoot(root), file), bytes);
+    return { tuple, file, sha256: sha256(bytes) };
+  });
+  write(path.join(repairRoot(root), 'runtime-manifest.json'), {
+    schemaVersion: 1,
+    name: 'tree-sitter',
+    version: '0.25.1',
+    binaries,
   });
   return root;
 }
@@ -393,6 +415,93 @@ describe('audited Linux ARM64 bundle repairs', () => {
         return file;
       }),
     );
+    prepareTreeSitterBundle(root);
+    expect(shadows.every(existsSync)).toBe(true);
+    prepareTreeSitterBundle(root, { forPublication: true });
+    expect(shadows.some(existsSync)).toBe(false);
+  });
+});
+
+describe('audited Linux tree-sitter runtime repairs', () => {
+  it('replaces the linux-x64 and linux-arm64 runtime prebuilds and preserves every other tuple', () => {
+    const root = fixture();
+    prepareTreeSitterBundle(root);
+    for (const tuple of tuples) {
+      expect(readFileSync(runtimePrebuild(root, tuple))).toEqual(
+        tuple in runtimeTuples
+          ? runtimeReplacement(tuple)
+          : Buffer.from(`original runtime ${tuple}`),
+      );
+    }
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
+  });
+
+  it('replaces the runtime behind a pnpm symlink', () => {
+    const { root } = pnpmFixture();
+    prepareTreeSitterBundle(root);
+    expect(readFileSync(runtimePrebuild(root, 'linux-x64'))).toEqual(
+      runtimeReplacement('linux-x64'),
+    );
+  });
+
+  it.each(['missing', 'corrupt', 'architecture', 'tuple', 'version', 'layout'])(
+    'rejects %s runtime repair input before any manifest or binary writes',
+    (failure) => {
+      const root = fixture();
+      const manifestFile = path.join(repairRoot(root), 'runtime-manifest.json');
+      const manifest = read(manifestFile);
+      const x64 = manifest.binaries.find((entry: { tuple: string }) => entry.tuple === 'linux-x64');
+      const file = path.join(repairRoot(root), x64.file);
+      if (failure === 'missing') rmSync(file);
+      if (failure === 'corrupt') writeFileSync(file, 'corrupt binary');
+      if (failure === 'architecture') {
+        // An AArch64 binary in the x64 slot is the defect #3599 shipped for grammars.
+        const bytes = runtimeReplacement('linux-arm64');
+        writeFileSync(file, bytes);
+        x64.sha256 = sha256(bytes);
+      }
+      if (failure === 'tuple') x64.tuple = 'linux-x64-musl';
+      if (failure === 'version') manifest.version = '0.26.0';
+      if (failure === 'layout') {
+        writeFileSync(
+          path.join(path.dirname(runtimePrebuild(root, 'linux-x64')), 'tree-sitter.musl.node'),
+          'second candidate',
+        );
+      }
+      write(manifestFile, manifest);
+      const peer = path.join(root, 'node_modules/tree-sitter-c/package.json');
+      const before = readFileSync(peer);
+      expect(() => prepareTreeSitterBundle(root)).toThrow();
+      expect(readFileSync(peer)).toEqual(before);
+      for (const tuple of Object.keys(runtimeTuples)) {
+        expect(readFileSync(runtimePrebuild(root, tuple), 'utf8')).toBe(
+          `original runtime ${tuple}`,
+        );
+      }
+      for (const [name] of repairs) {
+        expect(
+          readFileSync(
+            path.join(grammarRoot(root, name), 'prebuilds/linux-arm64', `${name}.node`),
+            'utf8',
+          ),
+        ).toBe(`original ${name} linux-arm64`);
+      }
+    },
+  );
+
+  it('removes shadowing runtime builds only for publication', () => {
+    const root = fixture();
+    const shadows = ['Release', 'Debug'].map((mode) => {
+      const file = path.join(
+        root,
+        'node_modules/tree-sitter/build',
+        mode,
+        'tree_sitter_runtime_binding.node',
+      );
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, 'source-built fallback');
+      return file;
+    });
     prepareTreeSitterBundle(root);
     expect(shadows.every(existsSync)).toBe(true);
     prepareTreeSitterBundle(root, { forPublication: true });
