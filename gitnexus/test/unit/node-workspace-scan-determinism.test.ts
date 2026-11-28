@@ -5,8 +5,8 @@
  * 50,000-directory cap that warns instead of silently truncating.
  *
  * Real disk I/O can't cheaply exercise a 50,000-directory tree, so `readdir` /
- * `readFile` are intercepted for one virtual root and everything else falls
- * through to the real `fs/promises` (same Proxy-over-`importOriginal` shape as
+ * `readFile` supply virtual children under a real temporary root. Everything
+ * else falls through to `fs/promises` (same Proxy-over-`importOriginal` shape as
  * `node-workspace-repo-root-race.test.ts`), so unrelated code (the logger's
  * own init, etc.) is unaffected.
  *
@@ -27,10 +27,13 @@
  *     shuffled — the capped/warned branch does not corrupt or drop unrelated,
  *     already-resolvable results.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { _captureLogger } from '../../src/core/logger.js';
 
-const ROOT = '/virtual-gn-m7-repo';
+let root: string;
 const FILLER_COUNT = 50_010; // > WORKSPACE_ROOT_SCAN_MAX_DIRS (50_000)
 // The wide subtree is named to sort AFTER `members`: both scans now read directories in
 // sorted order (deterministic), so a capped scan drops whatever sorts last — the
@@ -81,8 +84,11 @@ vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
   const d = (actual as unknown as { default: typeof actual }).default ?? actual;
 
-  const relOf = (p: string): string | null =>
-    p === ROOT ? '' : p.startsWith(`${ROOT}/`) ? p.slice(ROOT.length + 1) : null;
+  const relOf = (p: string): string | null => {
+    if (p === root) return '';
+    if (!p.startsWith(root + path.sep)) return null;
+    return path.relative(root, p).split(path.sep).join('/');
+  };
 
   const fakeReaddir = async (dir: string) => {
     const rel = relOf(dir);
@@ -126,6 +132,11 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 describe('M7 — workspace-root scan: sorted readdir + a cap that warns (50,010-directory synthetic tree)', () => {
+  beforeAll(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'gn-m7-'));
+  });
+  afterAll(() => rmdirSync(root));
+
   it('trips the cap and warns, and the run still completes deterministically for a result outside the capped subtree', async () => {
     const { loadNodeWorkspacePackages, invalidateNodeWorkspacePackages } =
       await import('../../src/core/ingestion/languages/typescript/workspace-packages.js');
@@ -138,12 +149,12 @@ describe('M7 — workspace-root scan: sorted readdir + a cap that warns (50,010-
 
     for (const seed of [1, 2]) {
       box.fillerOrder = shuffled(fillerNames, seed);
-      invalidateNodeWorkspacePackages(ROOT);
+      invalidateNodeWorkspacePackages(root);
 
       const cap = _captureLogger();
       let pkgs;
       try {
-        pkgs = await loadNodeWorkspacePackages(ROOT);
+        pkgs = await loadNodeWorkspacePackages(root);
       } finally {
         cap.restore();
       }
@@ -152,7 +163,7 @@ describe('M7 — workspace-root scan: sorted readdir + a cap that warns (50,010-
       const warned =
         text.includes('workspace-root scan') &&
         text.includes('50000-directory cap') &&
-        text.includes(ROOT);
+        text.includes(root);
       const only = pkgs?.byName.get('@repo/only');
       results.push({ warned, onlyDir: only?.dir, onlyEntries: only?.entries });
     }

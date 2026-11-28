@@ -52,6 +52,7 @@
 
 import Parser from 'tree-sitter';
 import { unboundCallableQuery } from './unbound-callables.js';
+import { literalPropertyKeyQuery } from './identifiers.js';
 import TS from 'tree-sitter-typescript';
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
@@ -78,6 +79,44 @@ const TSX_GRAMMAR = (TS as any).tsx as Parameters<Parser['setLanguage']>[0];
 function isTsxFile(filePath: string): boolean {
   return filePath.endsWith('.tsx');
 }
+
+// Keep the terminal name for symbol lookup and the full spelling and range for
+// namespace qualification, including when a local type has the same name.
+const namedTypeReference = `[
+  (type_identifier) @reference.name
+  (nested_type_identifier name: (type_identifier) @reference.name) @reference.qualified-name
+] @reference.type_reference`;
+const typeReferencePatterns = [
+  'type_annotation',
+  'type_arguments',
+  'constraint',
+  'default_type',
+  'array_type',
+  'union_type',
+  'intersection_type',
+  'index_type_query',
+  'tuple_type',
+  'parenthesized_type',
+  'satisfies_expression',
+  'as_expression',
+]
+  .map(
+    (context) => `(${context} ${namedTypeReference})
+(${context} (generic_type name: ${namedTypeReference}))`,
+  )
+  .join('\n');
+
+// Quoted and identifier object keys name the same callable. Sharing their
+// pattern avoids compiling the whole enclosing call once for each key form.
+const callablePairName = `[
+    (property_identifier) @declaration.name
+    (string (string_fragment) @declaration.name)
+  ]`;
+
+const methodNamePatterns = `(property_identifier) (string) (number)
+  (computed_property_name ${literalPropertyKeyQuery})`;
+const returnTypePatterns = `(type_identifier) (nested_type_identifier) (generic_type)
+  (array_type) (readonly_type) (union_type)`;
 
 export const TYPESCRIPT_SCOPE_QUERY = `
 ${unboundCallableQuery('declaration.function')}
@@ -108,14 +147,18 @@ ${unboundCallableQuery('declaration.function')}
 (function_declaration) @scope.function @receiver-owner.this
 (generator_function_declaration) @scope.function @receiver-owner.this
 (function_signature) @scope.function @receiver-owner.this
-(method_definition) @scope.function @receiver-owner.this
-(method_signature) @scope.function @receiver-owner.this
-(abstract_method_signature) @scope.function @receiver-owner.this
-(arrow_function) @scope.function
-(function_expression) @scope.function @receiver-owner.this
+(method_definition type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
+(method_signature type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
+(abstract_method_signature type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
+(function_type type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(constructor_type type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(call_signature type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(construct_signature type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(arrow_function type_parameters: (type_parameters)? @scope.type-parameters) @scope.function
+(function_expression type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
 ;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
 ;; was not a scope at all and \`this\` inside one read as the enclosing method's.
-(generator_function) @scope.function @receiver-owner.this
+(generator_function type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
 
 ;; Object literals (the { ... } value expression, NOT object_type or
 ;; object_pattern) get their own scope boundary. Without it, a
@@ -141,15 +184,11 @@ ${unboundCallableQuery('declaration.function')}
 ;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
 ;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
 ;; take the innermost scope, which is now the block.
-(statement_block) @scope.block
+[(statement_block) (switch_body)] @scope.block
 
 
-;; Type aliases that contain an object_type are structurally class-like —
-;; they define a shape with named members. Emit @scope.class so the
-;; field-extractor's type-alias-with-object-type handling (in
-;; field-extractors/typescript.ts) finds a scope for its members.
-(type_alias_declaration
-  value: (object_type)) @scope.class
+;; The alias owns its type parameters, members and references on its right-hand side.
+(type_alias_declaration) @scope.class
 
 ;; Declarations — types
 ;; The type-parameter list is captured with \`?\` rather than as a second
@@ -164,6 +203,12 @@ ${unboundCallableQuery('declaration.function')}
 (class
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class @class.expression
+
+(export_statement "default" @declaration.name
+  value: (class !name
+    type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class)
+(parenthesized_expression (class !name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class)
 
 (abstract_class_declaration
   name: (type_identifier) @declaration.name
@@ -190,7 +235,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; Declarations — methods / functions / constructors
 (function_declaration
   name: (identifier) @declaration.name
-  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.function
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.function
 
 (generator_function_declaration
   name: (identifier) @declaration.name
@@ -199,7 +245,9 @@ ${unboundCallableQuery('declaration.function')}
 ;; Function overload signatures (declaration-only; body in a separate
 ;; function_declaration). Extractors dedup by (name, parameterTypes).
 (function_signature
-  name: (identifier) @declaration.name) @declaration.function
+  name: (identifier) @declaration.name @declaration.overload-signature
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.function
 
 ;; Arrow/function-expression assigned to a const/let/var — named by the
 ;; variable_declarator. Covers \`const fn = () => {}\` and its export
@@ -323,20 +371,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; the name in the object's surrounding scope). Each pair-arrow becomes
 ;; an independent caller anchor in the walk.
 (pair
-  key: (property_identifier) @declaration.name
-  value: (arrow_function) @declaration.function)
-
-(pair
-  key: (property_identifier) @declaration.name
-  value: (function_expression) @declaration.function)
-
-(pair
-  key: (string (string_fragment) @declaration.name)
-  value: (arrow_function) @declaration.function)
-
-(pair
-  key: (string (string_fragment) @declaration.name)
-  value: (function_expression) @declaration.function)
+  key: ${callablePairName}
+  value: [(arrow_function) (function_expression)] @declaration.function)
 
 ;; HOC-wrapped pair values: create: procedure.mutation(async ({ input }) => { ... }).
 ;; tRPC, Express route definitions, and similar frameworks use this pattern where
@@ -357,7 +393,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; the outer call_expression. The arrow's range matches its @scope.function range,
 ;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
 ((pair
-  key: (property_identifier) @declaration.name
+  key: ${callablePairName}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
@@ -368,31 +404,7 @@ ${unboundCallableQuery('declaration.function')}
 ; '{ visible: items.filter(item => item.active) }' is a value holding an
 ; array, not a Function — same exclusion as the HOC variable rules below.
 ((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      [(arrow_function) (function_expression)] @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
-;; Quoted object keys are identical shapes to the identifier-key pairs above —
-;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
-;; otherwise leave its procedures anonymous and file-level attributed.
-;; Quoted-key identifier callees ({ 'handler': wrap(() => {}) }) match these
-;; string-key rules, not the identifier-key block above; member-expression
-;; callees keep the array-method exclusion.
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      [(arrow_function) (function_expression)] @declaration.function)))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
+  key: ${callablePairName}
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
@@ -418,7 +430,7 @@ ${unboundCallableQuery('declaration.function')}
 ;;           arguments: arguments
 ;;             arrow_function | function_expression
 ((pair
-  key: (property_identifier) @declaration.name
+  key: ${callablePairName}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
@@ -429,30 +441,7 @@ ${unboundCallableQuery('declaration.function')}
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          [(arrow_function) (function_expression)] @declaration.function)))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          [(arrow_function) (function_expression)] @declaration.function)))))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
+  key: ${callablePairName}
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
@@ -591,18 +580,21 @@ ${unboundCallableQuery('declaration.function')}
 ;; bodies. The @scope.class for class expressions (see (class) above)
 ;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
-  name: (property_identifier) @declaration.name) @declaration.method
-
-(method_definition
-  name: (private_property_identifier) @declaration.name) @declaration.method
+  name: [${methodNamePatterns} (private_property_identifier)] @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Abstract method signatures in abstract classes.
 (abstract_method_signature
-  name: (property_identifier) @declaration.name) @declaration.method
+  name: [${methodNamePatterns}] @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Interface method signatures.
 (method_signature
-  name: (property_identifier) @declaration.name) @declaration.method
+  name: [${methodNamePatterns}] @declaration.name @declaration.overload-signature
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Members of a declared SHAPE — interface bodies and object-type aliases both
 ;; spell them as property_signature (A4). The sibling method_signature rule
@@ -618,6 +610,12 @@ ${unboundCallableQuery('declaration.function')}
 (interface_body
   (property_signature
     name: (property_identifier) @declaration.name) @declaration.property)
+
+;; Resolve the next member in a chain from the interface field's own type.
+(interface_body
+  (property_signature
+    name: (property_identifier) @type-binding.name
+    type: (type_annotation [(type_identifier) (nested_type_identifier)] @type-binding.type)) @type-binding.annotation)
 
 ;; Object-literal keys of a NAMED object — the scope-resolution half of the
 ;; matching rule in TYPESCRIPT_QUERIES. The parse query mints the Property NODE;
@@ -657,7 +655,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; Bare members (no value): Red, Blue — property_identifier inside enum_body.
 ;; Members with value: Green = 1 — enum_assignment with name field.
 (enum_body
-  (property_identifier) @declaration.name) @declaration.property
+  (property_identifier) @declaration.name @declaration.property)
 
 (enum_assignment
   name: (_) @declaration.name) @declaration.property
@@ -697,6 +695,16 @@ ${unboundCallableQuery('declaration.function')}
   function: (import)) @import.dynamic
 
 ;; Type bindings — parameter annotations: \`function f(u: User)\`
+${['function_signature', 'method_signature', 'abstract_method_signature']
+  .map(
+    (kind) => `(${kind} parameters: (formal_parameters
+    (required_parameter
+      pattern: (rest_pattern (identifier) @type-binding.name)
+      type: (type_annotation [(array_type) (tuple_type) (readonly_type)] @type-binding.type))
+      @type-binding.parameter))`,
+  )
+  .join('\n')}
+
 (required_parameter
   pattern: (identifier) @type-binding.name
   type: (type_annotation
@@ -707,8 +715,9 @@ ${unboundCallableQuery('declaration.function')}
   type: (type_annotation
     (generic_type) @type-binding.type)) @type-binding.parameter
 
+;; In a parameter binding the TypeScript grammar names the legal spelling undefined separately.
 (required_parameter
-  pattern: (identifier) @type-binding.name
+  pattern: [(identifier) (undefined)] @type-binding.name
   type: (type_annotation
     (predefined_type) @type-binding.type)) @type-binding.parameter
 
@@ -723,7 +732,7 @@ ${unboundCallableQuery('declaration.function')}
 (required_parameter
   pattern: (identifier) @type-binding.name
   type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.parameter
+    [(array_type) (tuple_type)] @type-binding.type)) @type-binding.parameter
 
 (required_parameter
   pattern: (identifier) @type-binding.name
@@ -751,7 +760,7 @@ ${unboundCallableQuery('declaration.function')}
 
 (required_parameter
   (accessibility_modifier)
-  pattern: (identifier) @type-binding.name
+  pattern: [(identifier) (undefined)] @type-binding.name
   type: (type_annotation
     (predefined_type) @type-binding.type)) @type-binding.parameter-property
 
@@ -783,6 +792,8 @@ ${unboundCallableQuery('declaration.function')}
   type: (type_annotation
     (generic_type) @type-binding.type)) @type-binding.parameter
 
+;; A parameter named undefined can itself be omitted. Its bare annotation does
+;; not establish the type at a use of that identifier.
 (optional_parameter
   pattern: (identifier) @type-binding.name
   type: (type_annotation
@@ -830,7 +841,7 @@ ${unboundCallableQuery('declaration.function')}
 (variable_declarator
   name: (identifier) @type-binding.name
   type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.annotation
+    [(array_type) (tuple_type)] @type-binding.type)) @type-binding.annotation
 
 (variable_declarator
   name: (identifier) @type-binding.name
@@ -847,6 +858,15 @@ ${unboundCallableQuery('declaration.function')}
   name: (identifier) @type-binding.name
   value: (new_expression
     constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+;; The returned type belongs to the selected overload. A constant cannot be
+;; reassigned between the initializer and its use as an argument.
+(lexical_declaration
+  kind: "const"
+  (variable_declarator
+    name: (identifier) @call-result-assignment.lhs
+    !type
+    value: (call_expression) @call-result-assignment.call))
 
 ;; Qualified constructor: \`const u = new models.User()\`. Captures the
 ;; member_expression's text as the type — resolver's QualifiedNameIndex
@@ -1126,64 +1146,17 @@ ${unboundCallableQuery('declaration.function')}
     (union_type) @type-binding.type)) @type-binding.return
 
 (method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    [(type_identifier) (nested_type_identifier)] @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (generic_type) @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (readonly_type) @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (union_type) @type-binding.type)) @type-binding.return
+  name: [${methodNamePatterns} (private_property_identifier)] @type-binding.name
+  return_type: (type_annotation [${returnTypePatterns}] @type-binding.type)) @type-binding.return
 
 (method_signature
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    [(type_identifier) (nested_type_identifier)] @type-binding.type)) @type-binding.return
-
-(method_signature
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (generic_type) @type-binding.type)) @type-binding.return
-
-(method_signature
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.return
-
-(method_signature
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (readonly_type) @type-binding.type)) @type-binding.return
-
-(method_signature
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (union_type) @type-binding.type)) @type-binding.return
+  name: [${methodNamePatterns}] @type-binding.name
+  return_type: (type_annotation [${returnTypePatterns}] @type-binding.type)) @type-binding.return
 
 (abstract_method_signature
-  name: (property_identifier) @type-binding.name
+  name: [${methodNamePatterns}] @type-binding.name
   return_type: (type_annotation
-    [(type_identifier) (nested_type_identifier)] @type-binding.type)) @type-binding.return
-
-(abstract_method_signature
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (generic_type) @type-binding.type)) @type-binding.return
+    [(type_identifier) (nested_type_identifier) (generic_type)] @type-binding.type)) @type-binding.return
 
 ;; Type bindings — assignment rebind: \`u = new User()\` (no \`const\`).
 (assignment_expression
@@ -1249,19 +1222,7 @@ ${unboundCallableQuery('declaration.function')}
             object: (this) @type-binding.this-field
             property: (property_identifier) @type-binding.name)
           right: (new_expression
-            constructor: (identifier) @type-binding.type)) @type-binding.constructor))))
-
-;; Qualified form: \`this.p = new models.Outer()\`.
-(class_body
-  (method_definition
-    body: (statement_block
-      (expression_statement
-        (assignment_expression
-          left: (member_expression
-            object: (this) @type-binding.this-field
-            property: (property_identifier) @type-binding.name)
-          right: (new_expression
-            constructor: (member_expression) @type-binding.type)) @type-binding.constructor))))
+            constructor: [(identifier) (member_expression)] @type-binding.type)) @type-binding.constructor))))
 
 (assignment_expression
   left: (identifier) @type-binding.name
@@ -1308,6 +1269,12 @@ ${unboundCallableQuery('declaration.function')}
       object: (_) @reference.receiver
       property: (property_identifier) @reference.name))) @reference.call.member
 
+;; Literal bracket calls use the evaluated property key.
+(call_expression
+  function: (subscript_expression
+    object: (_) @reference.receiver
+    index: ${literalPropertyKeyQuery} @reference.name)) @reference.call.member
+
 ;; Private member call: \`this.#m()\`, and \`await this.#m<T>()\`.
 (call_expression
   function: (member_expression
@@ -1326,7 +1293,7 @@ ${unboundCallableQuery('declaration.function')}
 
 (new_expression
   constructor: (member_expression
-    property: (property_identifier) @reference.name) @reference.call.constructor.qualified) @reference.call.constructor
+    property: (property_identifier) @reference.name) @reference.call.constructor.qualified @reference.qualified-name) @reference.call.constructor
 
 ;; References — write access: \`obj.field = value\`.
 (assignment_expression
@@ -1428,20 +1395,13 @@ ${unboundCallableQuery('declaration.function')}
 ;; and heritage \`implements\` — never a bare \`(type_identifier)\`. A blanket rule
 ;; would also match the identifier in \`type X = …\` and \`interface X\`, making
 ;; every declaration a consumer of itself.
-(type_annotation
-  (type_identifier) @reference.name @reference.type_reference)
-
-(type_annotation
-  (generic_type
-    name: (type_identifier) @reference.name @reference.type_reference))
-
-(type_arguments
-  (type_identifier) @reference.name @reference.type_reference)
-
-;; \`x as SomeType\` / \`satisfies SomeType\` — an assertion is a claim ABOUT a
-;; declared type, so the code making it depends on that declaration.
-(as_expression
-  (type_identifier) @reference.name @reference.type_reference)
+${typeReferencePatterns}
+(function_type return_type: ${namedTypeReference})
+(constructor_type type: ${namedTypeReference})
+(function_type return_type: (generic_type name: ${namedTypeReference}))
+(constructor_type type: (generic_type name: ${namedTypeReference}))
+(type_alias_declaration value: ${namedTypeReference})
+(type_alias_declaration value: (generic_type name: ${namedTypeReference}))
 `;
 
 /**

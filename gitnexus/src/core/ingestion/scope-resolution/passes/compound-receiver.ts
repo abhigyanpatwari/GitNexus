@@ -20,6 +20,7 @@
  * either don't trigger the call branch or skip this pass entirely.
  */
 
+import { declaredNamespaceValue } from '../scope/published-namespace-member.js';
 import type { Range, Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -64,7 +65,7 @@ import {
  *  pathological recursion. */
 const COMPOUND_RECEIVER_MAX_DEPTH = 8;
 
-const MAP_TUPLE_SENTINEL_RE = /^__MAP_TUPLE_(\d+)__:(.+)$/;
+const MAP_TUPLE_SENTINEL_RE = /^__(ASYNC_)?MAP_TUPLE_(\d+)__:(.+)$/;
 
 /** Cast type the resolver can look up directly: a simple identifier. */
 const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
@@ -82,12 +83,14 @@ const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
 const UNPARSEABLE_CAST_TYPE_RE =
   /^[a-zA-Z_]\w*(?:\s*\.\s*[a-zA-Z_]\w*)*(?:\s*<[^()]*>)?(?:\s*\[\s*\])*$/;
 
-function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
+export function parseMapTupleSentinel(
+  text: string,
+): { tupleIdx: number; rhs: string; asynchronous: boolean } | null {
   const match = MAP_TUPLE_SENTINEL_RE.exec(text);
   if (match === null) return null;
-  const [, idxStr, rhs] = match;
+  const [, asyncPrefix, idxStr, rhs] = match;
   if (idxStr === undefined || rhs === undefined) return null;
-  return { tupleIdx: Number(idxStr), rhs };
+  return { tupleIdx: Number(idxStr), rhs, asynchronous: asyncPrefix !== undefined };
 }
 
 /**
@@ -358,6 +361,17 @@ function resolveConstructionExpressionClass(
         )
         .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
       return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;
+    }
+    const published = declaredNamespaceValue(
+      namespaceName,
+      exportedName,
+      inScope,
+      scopes,
+      options.lookupPosition,
+    );
+    if (published !== undefined) {
+      const def = published?.size === 1 ? published.values().next().value?.def : undefined;
+      return def && isClassLike(def.type) ? def : undefined;
     }
   }
 

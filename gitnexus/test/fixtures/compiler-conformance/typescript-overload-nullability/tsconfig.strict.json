@@ -1,0 +1,5 @@
+{
+  "extends": "./base.json",
+  "compilerOptions": { "strict": false, "strictNullChecks": true },
+  "files": ["strict.ts"]
+}
