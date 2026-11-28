@@ -8,7 +8,8 @@
  *  - `true`  — the declaration sits under an `export_statement` (`export
  *              function f`, `export const x`, `export default class`), or the
  *              file names it in an `export { f }` / `export { f as g }` clause
- *              or an `export default f` / `export = f` statement.
+ *              or an `export default f` / `export = f` statement, or wraps a
+ *              local function or class in `export default memo(f)`.
  *  - `false` — an ESM-shaped file (no CommonJS export assignment) that does
  *              neither. The declaration is module-private: `export *` cannot
  *              republish it and it must not be counted as a wildcard provider.
@@ -37,6 +38,7 @@
 import type { Capture } from 'gitnexus-shared';
 import { canonicalModuleExportName, decodeIdentifierEscapes } from './utils/ecmascript-literals.js';
 import { syntheticCapture, type SyntaxNode } from './utils/ast-helpers.js';
+import { unwrapTransparentExpression, wrappedDefaultLocal } from './ts-js-hoc-utils.js';
 
 interface LocalExportSpecifier {
   readonly publicName: SyntaxNode;
@@ -51,9 +53,13 @@ export interface EsmExportEvidence {
   /** The file exports through a CommonJS assignment: a plain "not under
    *  `export`" is no verdict there. */
   readonly commonJs: boolean;
-  /** Local published as the default export by `export default <id>` or
-   *  `export { <id> as default }`. */
+  /** Local published as the default export by `export default <id>`,
+   *  `export default wrapper(<id>)` or `export { <id> as default }`. */
   readonly defaultLocal: string | undefined;
+  /** Top-level function or class published as the default only through a
+   *  wrapper call (`export default memo(<id>)`): exported as a runtime value,
+   *  so a type of the same name stays private. */
+  readonly wrappedDefaultLocal?: string;
 }
 
 /** Read binding patterns, never initializer expressions or property keys. */
@@ -235,6 +241,12 @@ function hasTopLevelThisExportAssignment(stmt: SyntaxNode): boolean {
   return stmt.namedChildren.some(hasTopLevelThisExportAssignment);
 }
 
+/** Type-only declarations: no runtime value a wrapper call could export. */
+const ERASED_DECLARATIONS: ReadonlySet<string> = new Set([
+  'interface_declaration',
+  'type_alias_declaration',
+]);
+
 /** Node types below which a declaration is nested, not module-level. */
 const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
   'class_body',
@@ -271,6 +283,7 @@ export function collectEsmExportEvidence(
   let localSpecifiers: Map<string, LocalExportSpecifier[]> | undefined;
   // Every local named as the default; two different ones (invalid input) name none.
   const defaultLocals = new Set<string>();
+  let wrappedLocal: string | undefined;
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
   // = …`, an alias (`const m = module.exports; m.x = …`), an `exports.x` — means
   // "not under `export`" says nothing.
@@ -308,6 +321,15 @@ export function collectEsmExportEvidence(
           namedLocals.add(decodeIdentifierEscapes(child.text));
           if (isDefaultExportStatement(stmt))
             defaultLocals.add(decodeIdentifierEscapes(child.text));
+        } else if (isDefaultExportStatement(stmt)) {
+          // `export default memo(Card)`, also under `as` / `satisfies` / parentheses.
+          const value = unwrapTransparentExpression(child);
+          const wrapped =
+            value.type === 'call_expression' ? wrappedDefaultLocal(value, root) : undefined;
+          if (wrapped !== undefined) {
+            defaultLocals.add(wrapped);
+            wrappedLocal = wrapped;
+          }
         }
       }
     } else if (hasTopLevelThisExportAssignment(stmt)) {
@@ -315,7 +337,16 @@ export function collectEsmExportEvidence(
     }
   }
   const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
-  return { namedLocals, localSpecifiers, commonJs, defaultLocal };
+  return {
+    namedLocals,
+    localSpecifiers,
+    commonJs,
+    defaultLocal,
+    // Conflicting defaults name none, and then nothing is exported through a wrapper.
+    ...(wrappedLocal !== undefined && wrappedLocal === defaultLocal
+      ? { wrappedDefaultLocal: wrappedLocal }
+      : {}),
+  };
 }
 
 function isDefaultExportStatement(stmt: SyntaxNode): boolean {
@@ -450,6 +481,11 @@ export function esmExportVerdict(
   }
   if (underExport) return true;
   if (evidence.commonJs) return undefined;
+  if (
+    evidence.wrappedDefaultLocal === decodeIdentifierEscapes(nameNode.text) &&
+    !ERASED_DECLARATIONS.has(nameNode.parent?.type ?? '')
+  )
+    return true;
   return (
     evidence.namedLocals.size > 0 &&
     evidence.namedLocals.has(decodeIdentifierEscapes(nameNode.text))

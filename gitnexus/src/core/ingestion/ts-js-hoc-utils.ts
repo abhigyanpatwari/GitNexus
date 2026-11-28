@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import type { SyntaxNode } from './utils/ast-helpers.js';
+import { decodeIdentifierEscapes } from './utils/ecmascript-literals.js';
 
 // Member-expression callees that should never classify a callback-wrapped
 // binding as a top-level Function. This covers callback-taking Array methods
@@ -97,6 +98,74 @@ export const ARRAY_METHOD_NOT_ANY_OF_PREDICATE = buildNotAnyOfPredicate(
 export const DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE =
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST.map((value) => `(#not-eq? @hoc "${value}")`).join('\n  ');
 
+/**
+ * Wrapper chains (outermost first) a callable initializer may sit under and
+ * still bind the declared name: `const F = (fn)`, `fn as T`, `fn satisfies T`,
+ * the parenthesized arrow an `as` / `satisfies` needs (`((p) => …) as FC`),
+ * and each assertion inside one more pair of parentheses
+ * (`(fn as T)`, `(((p) => …) as FC)`). A query has a fixed depth, so further
+ * redundant parentheses, which formatters remove, are not followed.
+ * JavaScript has only the parentheses.
+ */
+export const TS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
+  ['parenthesized_expression'],
+  ['as_expression'],
+  ['satisfies_expression'],
+  ['as_expression', 'parenthesized_expression'],
+  ['satisfies_expression', 'parenthesized_expression'],
+  ['parenthesized_expression', 'as_expression'],
+  ['parenthesized_expression', 'satisfies_expression'],
+  ['parenthesized_expression', 'as_expression', 'parenthesized_expression'],
+  ['parenthesized_expression', 'satisfies_expression', 'parenthesized_expression'],
+  ['non_null_expression'],
+  ['non_null_expression', 'parenthesized_expression'],
+  ['parenthesized_expression', 'non_null_expression'],
+];
+export const JS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
+  ['parenthesized_expression'],
+];
+
+/**
+ * Declaration patterns for a callable initializer under one wrapper chain: a
+ * function / arrow / generator expression, or one HOC call around an inline
+ * function (`forwardRef((p, r) => …) as FC`). The same shapes the plain
+ * `variable_declarator` rules declare as Functions; nested HOCs stay out,
+ * as there. `name` / `fn` / `definition` are the query's own capture names
+ * (`fn` and `definition` may be empty). `exportVariants` adds the
+ * `export_statement` forms the definition queries use so an exported binding's
+ * `@definition.const` twin is claimed by the Function (#2687).
+ */
+export function wrappedCallableDeclarationQueries(
+  chains: readonly (readonly string[])[],
+  captures: {
+    readonly name: string;
+    readonly fn: string;
+    readonly definition: string;
+    readonly exportVariants?: boolean;
+  },
+): string {
+  const fn = `[(arrow_function) (function_expression)]${captures.fn}`;
+  const values: { value: string; predicate?: string }[] = [
+    { value: `[(arrow_function) (function_expression) (generator_function)]${captures.fn}` },
+    { value: `(call_expression function: (identifier) arguments: (arguments ${fn}))` },
+    {
+      value: `(call_expression function: (member_expression property: (property_identifier) @callee) arguments: (arguments ${fn}))`,
+      predicate: ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+    },
+  ];
+  const patterns: string[] = [];
+  for (const chain of chains)
+    for (const { value, predicate } of values)
+      for (const declaration of ['lexical_declaration', 'variable_declaration']) {
+        const wrapped = chain.reduceRight((inner, wrapper) => `(${wrapper} ${inner})`, value);
+        const pattern = `(${declaration}\n  (variable_declarator\n    name: (identifier) ${captures.name}\n    value: ${wrapped})${predicate ? `\n  ${predicate}` : ''})`;
+        patterns.push(`${pattern}${captures.definition}`);
+        if (captures.exportVariants)
+          patterns.push(`(export_statement\n  declaration: ${pattern})${captures.definition}`);
+      }
+  return patterns.join('\n\n');
+}
+
 export function deriveDefaultExportHocName(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
   // Use individual path.posix helpers instead of path.posix.parse() to avoid
@@ -131,7 +200,150 @@ export function isBlockedDefaultExportHoc(node: SyntaxNode): boolean {
   if (callExpr === null || callExpr?.type !== 'call_expression') return false;
 
   const callee = callExpr.childForFieldName?.('function');
-  return callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text);
+  if (callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text))
+    return true;
+  // A component wrapper's first argument is the component; an inline function
+  // after it is a helper (a comparator), not the export: `memo(Card, cmp)`,
+  // `memo((p) => …, cmp)`, `memo(forwardRef((p, r) => …), cmp)`. Other calls
+  // (`hoc(options, () => …)`) keep the inline function as the default.
+  const [first] = callArguments(callExpr) ?? [];
+  return first !== undefined && first.id !== node.id && isComponentWrapperCallee(callee);
+}
+
+/** Expression wrappers that leave the exported value unchanged. */
+const TRANSPARENT_EXPRESSIONS: ReadonlySet<string> = new Set([
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'non_null_expression',
+]);
+
+/** `(x)`, `x as T`, `x satisfies T`, `x!` → `x`. */
+export function unwrapTransparentExpression(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  while (TRANSPARENT_EXPRESSIONS.has(current.type) && current.namedChildren[0] !== undefined)
+    current = current.namedChildren[0];
+  return current;
+}
+
+/** Wrappers that return a component standing in for their first argument. */
+const COMPONENT_WRAPPERS: ReadonlySet<string> = new Set(['memo', 'forwardRef', 'observer']);
+/** Factories whose result is such a wrapper: `connect(mapState)(Card)`. */
+const HOC_FACTORIES: ReadonlySet<string> = new Set(['connect', 'compose', 'inject']);
+const HOC_NAME = /^with[A-Z]/;
+
+/** `memo`, `React.memo` → `memo`; anything else has no static name. */
+function calleeName(callee: SyntaxNode | null): string | undefined {
+  const node = callee?.type === 'member_expression' ? callee.childForFieldName('property') : callee;
+  return node?.type === 'identifier' || node?.type === 'property_identifier'
+    ? decodeIdentifierEscapes(node.text)
+    : undefined;
+}
+
+/**
+ * Does this callee return a wrapped version of its first argument? Known
+ * wrappers (`memo`, `React.memo`, `forwardRef`, `observer`), `withX` HOCs, and
+ * the HOC a known factory returns (`connect(m)(Card)`, `withStyles(s)(Card)`).
+ * Any other call may build a value from the argument (`createElement(Card)`,
+ * `createApp(config)(App)`), which is not the argument itself.
+ */
+function isComponentWrapperCallee(callee: SyntaxNode | null): boolean {
+  if (callee?.type === 'call_expression') {
+    const factory = calleeName(callee.childForFieldName('function'));
+    return factory !== undefined && (HOC_FACTORIES.has(factory) || HOC_NAME.test(factory));
+  }
+  const name = calleeName(callee);
+  return name !== undefined && (COMPONENT_WRAPPERS.has(name) || HOC_NAME.test(name));
+}
+
+function callArguments(call: SyntaxNode): SyntaxNode[] | undefined {
+  const args = call.childForFieldName('arguments');
+  if (args?.type !== 'arguments') return undefined;
+  return args.namedChildren.filter((arg) => arg.type !== 'comment');
+}
+
+/**
+ * Follow first arguments through component wrappers and `as` / `satisfies` /
+ * parentheses / `!`: `(memo(forwardRef(x)) as T)` → `x`. Undefined at any
+ * other call, which may build a different value.
+ */
+function unwrapComponentWrappers(node: SyntaxNode): SyntaxNode | undefined {
+  let current = unwrapTransparentExpression(node);
+  while (current.type === 'call_expression') {
+    if (!isComponentWrapperCallee(current.childForFieldName('function'))) return undefined;
+    const [first] = callArguments(current) ?? [];
+    if (first === undefined) return undefined;
+    current = unwrapTransparentExpression(first);
+  }
+  return current;
+}
+
+const CALLABLE_DECLARATIONS: ReadonlySet<string> = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'class_declaration',
+  'abstract_class_declaration',
+]);
+const CALLABLE_VALUES: ReadonlySet<string> = new Set([
+  'arrow_function',
+  'function_expression',
+  'class',
+]);
+
+/**
+ * The top-level function or class `name` stands for: one declared directly,
+ * bound to a function or class expression (bare or inside component wrappers:
+ * `const Field = forwardRef((p, r) => …)`), or reached through a local alias
+ * (`const Card = memo(Bar)`, `const Card = Bar` → `Bar`). Any other
+ * initializer (`createStore(() => …)`, `{ … }`, an import) is not a local
+ * component; an alias cycle resolves to nothing.
+ */
+function resolveLocalComponent(
+  root: SyntaxNode,
+  name: string,
+  seen: Set<string> = new Set(),
+): string | undefined {
+  if (seen.has(name)) return undefined;
+  seen.add(name);
+  for (const stmt of root.namedChildren) {
+    const declaration =
+      stmt.type === 'export_statement' ? stmt.childForFieldName('declaration') : stmt;
+    if (declaration === null) continue;
+    if (CALLABLE_DECLARATIONS.has(declaration.type)) {
+      if (decodeIdentifierEscapes(declaration.childForFieldName('name')?.text ?? '') === name)
+        return name;
+      continue;
+    }
+    if (declaration.type !== 'lexical_declaration' && declaration.type !== 'variable_declaration')
+      continue;
+    for (const declarator of declaration.namedChildren) {
+      const binding = declarator.childForFieldName('name');
+      const value = declarator.childForFieldName('value');
+      if (binding?.type !== 'identifier' || decodeIdentifierEscapes(binding.text) !== name)
+        continue;
+      const target = value === null ? undefined : unwrapComponentWrappers(value);
+      if (CALLABLE_VALUES.has(target?.type ?? '')) return name;
+      if (target?.type === 'identifier')
+        return resolveLocalComponent(root, decodeIdentifierEscapes(target.text), seen);
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The top-level function or class a wrapper call exports: `memo(Card)`,
+ * `React.memo(Card, areEqual)`, `memo(forwardRef(Card))` and
+ * `connect(mapState)(Card)` all name `Card`, the first argument unwrapped
+ * through nested component wrappers (`isComponentWrapperCallee`) and local
+ * aliases. An inline first argument is not a name: the synthesized HOC
+ * default above owns it.
+ */
+export function wrappedDefaultLocal(call: SyntaxNode, root: SyntaxNode): string | undefined {
+  const wrapped = unwrapComponentWrappers(call);
+  return wrapped?.type === 'identifier'
+    ? resolveLocalComponent(root, decodeIdentifierEscapes(wrapped.text))
+    : undefined;
 }
 
 // Core check on a call expression: does it register a callback with a built-in

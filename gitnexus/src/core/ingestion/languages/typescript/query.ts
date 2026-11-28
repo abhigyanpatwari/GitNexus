@@ -56,6 +56,8 @@ import TS from 'tree-sitter-typescript';
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+  TS_INITIALIZER_WRAPPERS,
+  wrappedCallableDeclarationQueries,
 } from '../../ts-js-hoc-utils.js';
 
 // tree-sitter-typescript exports both `typescript` and `tsx` grammars on
@@ -566,6 +568,12 @@ ${unboundCallableQuery('declaration.function')}
       arguments: (arguments
         [(arrow_function) (function_expression)] @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; Wrapped callable initializers (#323): \`const F = (fn)\`, \`fn as T\`,
+;; \`fn satisfies T\`, \`((p) => ...) as FC\`, \`forwardRef((p, r) => ...) as FC\`.
+;; The shapes of the plain and HOC-wrapped rules above under one wrapper
+;; chain (\`TS_INITIALIZER_WRAPPERS\`), with the same anchors.
+${wrappedCallableDeclarationQueries(TS_INITIALIZER_WRAPPERS, { name: '@declaration.name', fn: ' @declaration.function', definition: '' })}
 
 ;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
 ;; The emit phase rewrites @declaration.name to a file-derived name so
