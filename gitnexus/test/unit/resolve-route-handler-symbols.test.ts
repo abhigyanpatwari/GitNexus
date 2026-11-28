@@ -600,7 +600,7 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
   });
 
-  it('uses case-insensitive fallback when unrelated same-name methods make the exact lookup ambiguous', () => {
+  it('two same-name methods owned by another class do not block the case-insensitive fallback', () => {
     const model = createSemanticModel();
     model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
     model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {

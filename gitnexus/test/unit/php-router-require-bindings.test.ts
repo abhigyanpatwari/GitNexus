@@ -548,6 +548,50 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
+  it('does not treat a require in finally as definite when the try exits', () => {
+    const source = `<?php
+try {
+  exit;
+} finally {
+  require_once __DIR__ . '/../routes/web.php';
+}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(false);
+    expect(webContexts(source)).toEqual([null, 'api']);
+  });
+
+  it('a differently cased Throwable catch still handles the throw', () => {
+    const source = `<?php
+try { throw new Exception(); } catch (throwable $e) {}
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
+  it('an imported Throwable catch matches a differently cased type', () => {
+    const source = `<?php
+namespace App;
+use Throwable;
+try { throw new Exception(); } catch (throwable $e) {}
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
+  });
+
   it('does not treat a break inside a loop as guarding a later require in the same block', () => {
     const source = `<?php
 $app->router->group(['prefix' => 'api'], function ($router) {

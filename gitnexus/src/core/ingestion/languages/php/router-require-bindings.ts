@@ -176,12 +176,13 @@ function inNamedNamespace(node: SyntaxNode): boolean {
 
 function catchIsUniversalThrowable(catchClause: SyntaxNode): boolean {
   const raw = catchTypeText(catchClause);
-  if (raw.replace(/^\\+/, '') !== 'Throwable' && !importsGlobalThrowable(catchClause, raw)) {
-    return false;
+  const bare = raw.replace(/^\\+/, '');
+  // PHP class names are case-insensitive: `catch (throwable)` is `\Throwable`.
+  if (bare.toLowerCase() === 'throwable') {
+    if (raw.startsWith('\\') || !inNamedNamespace(catchClause)) return true;
+    return importsGlobalThrowable(catchClause, bare);
   }
-  if (raw.startsWith('\\')) return true;
-  if (raw === 'Throwable' && !inNamedNamespace(catchClause)) return true;
-  return importsGlobalThrowable(catchClause, raw);
+  return importsGlobalThrowable(catchClause, bare);
 }
 
 function namespaceIsBraced(node: SyntaxNode): boolean {
@@ -231,12 +232,43 @@ function importsGlobalThrowable(catchClause: SyntaxNode, localName: string): boo
     for (const match of splitNamespaceUseDeclaration(useNode)) {
       if (match['@import.symbol-kind']?.text !== 'type') continue;
       const local = match['@import.alias']?.text ?? match['@import.name']?.text;
-      if (local !== localName) continue;
+      if (local?.toLowerCase() !== localName.toLowerCase()) continue;
       const source = (match['@import.source']?.text ?? '').replace(/^\\+/, '');
-      if (source === 'Throwable') return true;
+      if (source.toLowerCase() === 'throwable') return true;
     }
   }
   return false;
+}
+
+/** `exit` and `die` end the request without running `finally`. `return` does not. */
+function nodeEndsRequest(node: SyntaxNode): boolean {
+  if (node.type === 'exit_statement') return true;
+  if (node.type === 'function_call_expression') {
+    const name = (node.children ?? []).find((child) => child.type === 'name')?.text;
+    return name?.toLowerCase() === 'die';
+  }
+  if (node.type === 'expression_statement') {
+    const named = (node.children ?? []).filter((child) => child.isNamed);
+    return named.length === 1 && named[0]?.type === 'name' && named[0].text.toLowerCase() === 'die';
+  }
+  return false;
+}
+
+function subtreeEndsRequest(root: SyntaxNode): boolean {
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (DEFERRED_SCOPE_TYPES.has(current.type)) continue;
+    if (nodeEndsRequest(current)) return true;
+    for (const child of current.children ?? []) stack.push(child);
+  }
+  return false;
+}
+
+function exitSkipsFinally(tryNode: SyntaxNode): boolean {
+  return (tryNode.children ?? []).some(
+    (child) => child.type !== 'finally_clause' && subtreeEndsRequest(child),
+  );
 }
 
 function tryCatchesAllThrows(tryNode: SyntaxNode): boolean {
@@ -419,13 +451,15 @@ export function extractPhpRouterRequireBindings(
     const { node, group, mustRun } = frame;
     const isTry = node.type === 'try_statement';
     let childMustRun = mustRun && (isTry || MUST_RUN_CONTAINER_TYPES.has(node.type));
+    const finallyRuns = mustRun && !(isTry && exitSkipsFinally(node));
     const ordered: WalkFrame[] = [];
     for (const child of children) {
-      // Try/catch bodies may skip; `finally` always runs once the try statement is reached.
+      // Try/catch bodies may skip. `finally` runs once the try is reached,
+      // except when `exit` or `die` in the try or catch ends the request first.
       const runs = skippedByForwardGoto(child, gotoSkips)
         ? false
         : isTry && child.type === 'finally_clause'
-          ? mustRun
+          ? finallyRuns
           : isTry && child.type === 'catch_clause'
             ? false
             : childMustRun;
