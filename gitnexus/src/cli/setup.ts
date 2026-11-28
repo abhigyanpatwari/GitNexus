@@ -152,17 +152,17 @@ function selectedCodingAgents(values: string[] | string | undefined): Set<Editor
 function hasWindowsNativeAddon(launcher: string): boolean {
   try {
     const resolved = fsSync.realpathSync(launcher);
+    const openFlags = fsSync.constants.O_RDONLY | fsSync.constants.O_NONBLOCK;
     let cliEntry = resolved;
 
     if (!resolved.endsWith(path.sep + path.join('dist', 'cli', 'index.js'))) {
       // Windows npm can expose a POSIX shell shim to WSL.
       // Inspect its target rather than rejecting mounted paths.
-      if (!fsSync.statSync(resolved).isFile()) return false;
-
-      const fd = fsSync.openSync(resolved, 'r');
+      const fd = fsSync.openSync(resolved, openFlags);
       let script: string;
 
       try {
+        if (!fsSync.fstatSync(fd).isFile()) return false;
         const buffer = Buffer.alloc(8192);
         const length = fsSync.readSync(fd, buffer, 0, buffer.length, 0);
         script = buffer.subarray(0, length).toString('utf8');
@@ -190,11 +190,10 @@ function hasWindowsNativeAddon(launcher: string): boolean {
     const coreEntry = createRequire(cliEntry).resolve('@ladybugdb/core');
     const binaryPath = path.join(path.dirname(coreEntry), 'lbugjs.node');
 
-    if (!fsSync.statSync(binaryPath).isFile()) return false;
-
-    const fd = fsSync.openSync(binaryPath, 'r');
+    const fd = fsSync.openSync(binaryPath, openFlags);
 
     try {
+      if (!fsSync.fstatSync(fd).isFile()) return false;
       const header = Buffer.alloc(64);
 
       if (fsSync.readSync(fd, header, 0, header.length, 0) !== header.length) {

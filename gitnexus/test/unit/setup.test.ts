@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fsSync from 'node:fs';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -31,6 +32,15 @@ vi.mock('child_process', () => ({
   execFile: execFileMock,
   execFileSync: execFileSyncMock,
 }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    openSync: vi.fn(actual.openSync),
+    fstatSync: vi.fn(actual.fstatSync),
+  };
+});
 
 describe('setupClaudeCode', () => {
   let tempHome: string;
@@ -344,6 +354,17 @@ describe('setupClaudeCode', () => {
         }
 
         await setupCommand({ codingAgent: 'claude' });
+
+        const opens = vi.mocked(fsSync.openSync).mock.calls;
+        const windowsInputs = opens.filter(
+          ([file]) =>
+            typeof file === 'string' &&
+            file.includes('windows-npm') &&
+            (file.endsWith(path.sep + 'gitnexus') || file.endsWith(path.sep + 'lbugjs.node')),
+        );
+        const flags = fsSync.constants.O_RDONLY | fsSync.constants.O_NONBLOCK;
+        expect(windowsInputs.map(([, openFlags]) => openFlags)).toEqual([flags, flags]);
+        expect(fsSync.fstatSync).toHaveBeenCalledTimes(onlyWindows ? 2 : 4);
 
         if (onlyWindows) {
           expect(console.log).toHaveBeenCalledWith(
