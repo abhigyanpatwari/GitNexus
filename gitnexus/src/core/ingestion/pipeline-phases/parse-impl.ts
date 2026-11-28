@@ -95,6 +95,7 @@ import type {
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
+  ExtractedViewRenderCall,
   FetchWrapperDef,
 } from '../workers/parse-worker.js';
 import type {
@@ -459,6 +460,7 @@ export async function runChunkedParseAndResolve(
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
   allToolDefs: ExtractedToolDef[];
+  allViewRenderCalls: ExtractedViewRenderCall[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
   /** Route URL → resolved handler symbol UID (Part 2, #2138). Lets the routes
@@ -799,6 +801,7 @@ export async function runChunkedParseAndResolve(
   const allModuleConstants: ExtractedModuleConstants[] = [];
   const allSpringTypes: SharedSpringType[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
+  const allViewRenderCalls: ExtractedViewRenderCall[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   // Aggregated per-file ParsedFile artifacts produced by workers' calls
   // to `extractParsedFile`. Threaded through to the scope-resolution
@@ -1026,6 +1029,7 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.toolDefs?.length) {
           for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
         }
+        for (const item of chunkWorkerData.viewRenderCalls ?? []) allViewRenderCalls.push(item);
         if (chunkWorkerData.ormQueries?.length) {
           for (const item of chunkWorkerData.ormQueries) allORMQueries.push(item);
         }
@@ -1996,6 +2000,7 @@ export async function runChunkedParseAndResolve(
     allDecoratorRoutes,
     selectedRoutes,
     allToolDefs,
+    allViewRenderCalls,
     allORMQueries,
     bindingAccumulator,
     routeHandlerSymbols,

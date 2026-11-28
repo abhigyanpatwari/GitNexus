@@ -32,6 +32,7 @@ import {
   type ScanOutput,
   structurePhase,
   markdownPhase,
+  bladePhase,
   cobolPhase,
   parsePhase,
   routesPhase,
@@ -333,7 +334,7 @@ export interface PipelineOptions {
  *
  * Phase dependency graph:
  *
- *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
+ *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm, blade]
  *     → crossFile → scopeResolution → [springAutoConfiguration, springAop,
  *       springDestinations] → pruneLocalSymbols
  *     → mro → springAopInheritance → di → communities → processes
@@ -355,6 +356,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(structurePhase)
       .register(springConfigPhase)
       .register(markdownPhase)
+      .register(bladePhase)
       .register(cobolPhase)
       .register(parsePhase)
       .register(routesPhase)

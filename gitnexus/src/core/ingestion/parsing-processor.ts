@@ -20,6 +20,7 @@ import type {
   ExtractedDecoratorRoute,
   ExtractedModuleConstants,
   ExtractedToolDef,
+  ExtractedViewRenderCall,
   FileScopeBindings,
   ExtractedORMQuery,
   FetchWrapperDef,
@@ -49,6 +50,7 @@ export interface WorkerExtractedData {
   /** Per-file Python module constants for cross-file route-path resolution (#2391). */
   moduleConstants: ExtractedModuleConstants[];
   toolDefs: ExtractedToolDef[];
+  viewRenderCalls: ExtractedViewRenderCall[];
   ormQueries: ExtractedORMQuery[];
   /** Project-wide Spring class/interface views for the #2288 inheritance pass. */
   springTypes: SharedSpringType[];
@@ -206,6 +208,7 @@ export const mergeChunkResults = (
   const allModuleConstants: ExtractedModuleConstants[] = [];
   const allSpringTypes: SharedSpringType[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
+  const allViewRenderCalls: ExtractedViewRenderCall[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
   const allParsedFiles: ParsedFile[] = [];
@@ -284,6 +287,7 @@ export const mergeChunkResults = (
     for (const item of result.moduleConstants ?? []) allModuleConstants.push(item);
     for (const item of result.springTypes ?? []) allSpringTypes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
+    for (const item of result.viewRenderCalls ?? []) allViewRenderCalls.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
@@ -320,6 +324,7 @@ export const mergeChunkResults = (
     routerModuleAliases: byFilePath(allRouterModuleAliases),
     moduleConstants: byFilePath(allModuleConstants),
     toolDefs: byFilePath(allToolDefs),
+    viewRenderCalls: byFilePath(allViewRenderCalls),
     ormQueries: byFilePath(allORMQueries),
     springTypes: byFilePath(allSpringTypes),
     fileScopeBindings: byFilePath(fileScopeBindingsByFile),

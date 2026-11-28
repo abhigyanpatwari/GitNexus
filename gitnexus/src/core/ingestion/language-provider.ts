@@ -710,6 +710,11 @@ interface LanguageProviderConfig {
    */
   readonly extractTextRoutes?: (filePath: string, content: string) => ExtractedRoute[];
 
+  /** Calls that render a template by name (e.g. Laravel `view('posts.show')`).
+   *  The parse worker records each with its enclosing callable; the blade
+   *  phase links the calling file to the template. Default: undefined. */
+  readonly extractViewRenderCalls?: (tree: Parser.Tree) => ViewRenderSite[];
+
   /** Extract tool registrations after captures, using only emitted callable identities.
    * The map keys are declaration-name AST node IDs, local to this parsed tree. */
   readonly extractToolDefinitions?: (
@@ -1481,6 +1486,16 @@ interface LanguageProviderConfig {
     def: SymbolDefinition,
     callsite: Callsite,
   ) => 'compatible' | 'unknown' | 'incompatible';
+}
+
+/** A call that renders a named view template, found by a provider's AST scan. */
+export interface ViewRenderSite {
+  /** Template name as written, e.g. `posts.show`. */
+  viewName: string;
+  /** 0-based line of the call within the parsed tree. */
+  lineNumber: number;
+  /** The call node, so the worker can attribute it to its enclosing callable. */
+  node: SyntaxNode;
 }
 
 /** Runtime type — same as LanguageProviderConfig but with defaults guaranteed present. */

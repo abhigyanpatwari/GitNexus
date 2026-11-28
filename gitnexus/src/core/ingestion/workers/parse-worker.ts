@@ -296,6 +296,15 @@ export interface ExtractedFetchCall {
   enclosingId?: string | null;
 }
 
+/** A call that renders a view by name, e.g. Laravel `view('posts.show')`. */
+export interface ExtractedViewRenderCall {
+  filePath: string;
+  viewName: string;
+  lineNumber: number;
+  /** As for {@link ExtractedFetchCall.enclosingId}. */
+  enclosingId?: string | null;
+}
+
 export interface FetchWrapperDef extends FetchWrapperFacts {
   filePath: string;
   functionName: string;
@@ -508,6 +517,8 @@ export interface ParseWorkerResult {
    */
   moduleConstants?: ExtractedModuleConstants[];
   toolDefs: ExtractedToolDef[];
+  /** View-render call sites (optional for cache backward compatibility). */
+  viewRenderCalls?: ExtractedViewRenderCall[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
   /** All-scope type bindings from TypeEnv for BindingAccumulator (includes function-local). */
@@ -3139,6 +3150,17 @@ const processFileGroupFiles = (
       result.toolDefs.push(
         ...provider.extractToolDefinitions(tree, file.path, lineOffset, callableBindings),
       );
+    }
+
+    if (provider.extractViewRenderCalls) {
+      for (const site of provider.extractViewRenderCalls(tree)) {
+        (result.viewRenderCalls ??= []).push({
+          filePath: file.path,
+          viewName: site.viewName,
+          lineNumber: site.lineNumber + lineOffset,
+          enclosingId: requestEnclosingId(site.node),
+        });
+      }
     }
 
     // Extract framework routes via provider detection (e.g., Laravel routes.php)

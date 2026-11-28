@@ -1,4 +1,6 @@
 import {
+  BLADE_VIEW_REFERENCE_REASON,
+  BLADE_VIEW_RENDER_REASON,
   DEFERRED_IMPORT_REASON_SUFFIX,
   DOCUMENTATION_LINK_REASON,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
@@ -6,7 +8,11 @@ import {
 import { providerNonInitializingImportReasons } from '../ingestion/languages/query-providers.js';
 import { executeParameterized } from './pool-adapter.js';
 
-const nonInitializingReasons = [DOCUMENTATION_LINK_REASON, ...providerNonInitializingImportReasons];
+const nonInitializingReasons = [
+  DOCUMENTATION_LINK_REASON,
+  BLADE_VIEW_REFERENCE_REASON,
+  ...providerNonInitializingImportReasons,
+];
 
 /** Read only file dependencies that can constrain module initialization order. */
 export function readInitializationImports(repoId: string, limit: number) {
@@ -18,6 +24,7 @@ export function readInitializationImports(repoId: string, limit: number) {
     WHERE r.type = 'IMPORTS'
       AND (r.reason IS NULL OR (
         NOT list_contains($nonInitializingReasons, r.reason)
+        AND NOT r.reason STARTS WITH $bladeRender
         AND NOT r.reason ENDS WITH $deferred
         AND NOT r.reason ENDS WITH $erased
       ))
@@ -25,6 +32,7 @@ export function readInitializationImports(repoId: string, limit: number) {
     LIMIT $limit`,
     {
       nonInitializingReasons,
+      bladeRender: BLADE_VIEW_RENDER_REASON,
       deferred: DEFERRED_IMPORT_REASON_SUFFIX,
       erased: TYPE_ONLY_IMPORT_REASON_SUFFIX,
       limit,

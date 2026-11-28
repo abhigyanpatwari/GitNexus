@@ -53,5 +53,13 @@ export const MODULE_MEMBERSHIP_REASON = 'module-membership';
 
 /** Persisted IMPORTS reason values shared by emitters and initialization-cycle checks. */
 export const DOCUMENTATION_LINK_REASON = 'markdown-link';
+/** A Blade view naming another view (`@extends`, `@include`, `<x-…>`); rendering order, not module initialization. */
+export const BLADE_VIEW_REFERENCE_REASON = 'blade-view-reference';
+/**
+ * PHP code rendering a Blade view (`view('posts.show')`, `Route::view(...)`).
+ * The edge is file-level; `|via:<callable id>` fields name the callables that
+ * hold the calls, like FETCHES reasons. Rendering, not module initialization.
+ */
+export const BLADE_VIEW_RENDER_REASON = 'blade-view-render';
 export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
 export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
