@@ -17,6 +17,7 @@
  * generalization plan.
  */
 
+import { declaredNamespaceValue } from '../scope/published-namespace-member.js';
 import type {
   DefId,
   NameClaimResult,
@@ -32,7 +33,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import type { ReceiverMemberResolution, ScopeResolver } from '../contract/scope-resolver.js';
+import type { ScopeResolver, UnqualifiedCallResolution } from '../contract/scope-resolver.js';
 import {
   callSuppressionIdentities,
   providerCallOutcome,
@@ -281,8 +282,24 @@ export function emitFreeCallFallback(
       };
       const nameClaim = lookupNameClaim(site.inScope, site.name, scopes, lookupOptions);
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);
+      const qualifier =
+        site.callForm === 'constructor' ? site.rawQualifiedName?.split(/[.:]/, 1)[0] : undefined;
+      let qualifierClaim: NameClaimResult | undefined;
+      if (qualifier && qualifier !== site.rawQualifiedName) {
+        qualifierClaim =
+          qualifier === site.name
+            ? nameClaim
+            : lookupNameClaim(site.inScope, qualifier, scopes, lookupOptions);
+      }
+      // The first Widget in Widget.Widget is a namespace. Resolve its member
+      // from that import even when the simple-name lookup also found the namespace.
+      const namespaceConstructor =
+        qualifierClaim?.status === 'resolved' &&
+        qualifierClaim.imports.some((edge) => edge.kind === 'namespace') &&
+        (qualifierClaim.scope?.kind !== 'Module' || qualifier === site.name);
       const blocksCall =
         strictClaim &&
+        !namespaceConstructor &&
         (nameClaim.status === 'blocked' ||
           (nameClaim.status === 'resolved' &&
             !nameClaim.bindings.some(
@@ -365,7 +382,7 @@ export function emitFreeCallFallback(
       // Language visibility vetoes the constructed TYPE (Class/Struct), not a
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
-      let resolution: ReceiverMemberResolution | undefined;
+      let resolution: UnqualifiedCallResolution | undefined;
       if (site.callForm === 'constructor') {
         // `ns.Type{}` names its type through a namespace import: a type the
         // language will not let that qualifier reach is not found, rather than
@@ -381,18 +398,51 @@ export function emitFreeCallFallback(
         // was imported is precise — C++ `#include "user.h"` and Rust
         // `use`/`pub use` often mint no lexical class binding. An
         // imported sibling file of a different name is not evidence.
-        let classDef = resolveInheritanceBaseInScope(
-          site.inScope,
-          site.name,
-          scopes,
-          site.rawQualifiedName,
-          undefined,
-          {
-            ...classLookupOptions,
-            uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
-          },
-        );
-        if (classDef === undefined) {
+        // A local namespace import shadows a module import with the same name.
+        const separator = site.rawQualifiedName?.lastIndexOf('.') ?? -1;
+        const publications =
+          separator > 0 && site.rawQualifiedName
+            ? declaredNamespaceValue(
+                site.rawQualifiedName.slice(0, separator),
+                site.name,
+                site.inScope,
+                scopes,
+                site.atRange,
+              )
+            : undefined;
+        const declared =
+          publications?.size === 1 ? publications.values().next().value?.def : undefined;
+        if (publications !== undefined && declared?.type !== 'Class') {
+          options.recordSourceBinding?.(site, {
+            status: publications && publications.size > 1 ? 'ambiguous' : 'blocked',
+            targetDefIds: publications && publications.size > 1 ? [...publications.keys()] : [],
+            basis: 'namespace-member',
+          });
+          handledSites.add(siteKey(parsed.filePath, site));
+          continue;
+        }
+        let classDef =
+          declared ??
+          (namespaceConstructor && site.rawQualifiedName
+            ? findClassBindingInScope(
+                site.inScope,
+                site.rawQualifiedName,
+                scopes,
+                undefined,
+                classLookupOptions,
+              )
+            : resolveInheritanceBaseInScope(
+                site.inScope,
+                site.name,
+                scopes,
+                site.rawQualifiedName,
+                undefined,
+                {
+                  ...classLookupOptions,
+                  uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
+                },
+              ));
+        if (classDef === undefined && !namespaceConstructor) {
           classDef =
             findClassBindingInScope(site.inScope, site.name, scopes, undefined, {
               ...classLookupOptions,
@@ -435,7 +485,7 @@ export function emitFreeCallFallback(
       } else if (site.rawQualifiedName === undefined) {
         resolution = options.resolveUnqualifiedCall?.(site, scopes, model);
       }
-      if (resolution?.kind === 'resolved') {
+      if (resolution?.kind === 'resolved' || resolution?.kind === 'implementation') {
         fnDef = resolution.definition;
         fnDefFromProvider = true;
       } else if (resolution !== undefined) {
@@ -977,7 +1027,13 @@ export function emitFreeCallFallback(
       }
       // Observe the source declaration BEFORE constructor retargeting, caller
       // mapping and edge collapse can discard or change its identity.
-      if (options.recordSourceBinding !== undefined) {
+      if (resolution?.kind === 'implementation') {
+        options.recordSourceBinding?.(site, {
+          status: 'unresolved',
+          targetDefIds: resolution.candidateIds,
+          basis: 'overload-unknown',
+        });
+      } else if (options.recordSourceBinding !== undefined) {
         const sourceDef = writtenDefinition ?? fnDef;
         const candidateIds = [
           ...new Set(sourceCandidates?.map((candidate) => candidate.nodeId) ?? [sourceDef.nodeId]),
@@ -1029,8 +1085,13 @@ export function emitFreeCallFallback(
         site.atRange,
       );
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
-      options.selectedCalls?.set(selectedCallKey(parsed.filePath, site.atRange), fnDef);
-      options.onSelectedCall?.(selectedCallKey(parsed.filePath, site.atRange), fnDef);
+      if (options.selectedCalls || options.onSelectedCall) {
+        const returnSource =
+          resolution?.kind === 'implementation' ? (resolution.commonReturnSource ?? null) : fnDef;
+        const callKey = selectedCallKey(parsed.filePath, site.atRange);
+        options.selectedCalls?.set(callKey, returnSource);
+        options.onSelectedCall?.(callKey, returnSource);
+      }
       if (fnDefFromProvider) {
         handledSites.add(siteKey(parsed.filePath, site));
         options.recordResolutionOutcome?.(

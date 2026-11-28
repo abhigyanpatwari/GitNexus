@@ -459,6 +459,8 @@ export interface RepoMeta {
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /** Provider parse tags used by the last published graph, independent of source hashes. */
+  fileParseContexts?: Record<string, string>;
   /**
    * Digest of the graph rows the index holds for each file, recorded only for
    * repositories with an incremental resolution group. A group member whose

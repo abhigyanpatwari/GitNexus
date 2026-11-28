@@ -47,6 +47,7 @@
  */
 
 import Parser from 'tree-sitter';
+import { literalPropertyKeyQuery } from '../typescript/identifiers.js';
 import { unboundCallableQuery } from '../typescript/unbound-callables.js';
 import JS from 'tree-sitter-javascript';
 import {
@@ -104,12 +105,18 @@ ${unboundCallableQuery('declaration.function')}
 (class
   name: (identifier) @declaration.name) @declaration.class @class.expression
 
+(export_statement "default" @declaration.name value: (class !name) @declaration.class)
+(parenthesized_expression (class !name) @declaration.class)
+
 ;; Declarations — methods (inside class bodies), including private \`#name\` ones
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method
 
 (method_definition
   name: (private_property_identifier) @declaration.name) @declaration.method
+
+(method_definition
+  name: [(string) (number) (computed_property_name ${literalPropertyKeyQuery})] @declaration.name @literal.key) @declaration.method
 
 ;; Declarations — class fields (JS uses field_definition, not public_field_definition)
 (field_definition
@@ -768,6 +775,11 @@ ${unboundCallableQuery('declaration.function')}
   function: (member_expression
     object: (_) @reference.receiver
     property: (property_identifier) @reference.name)) @reference.call.member
+
+(call_expression
+  function: (subscript_expression
+    object: (_) @reference.receiver
+    index: ${literalPropertyKeyQuery} @reference.name @literal.key)) @reference.call.member
 
 ;; Awaited member call: await svc.m<T>(...)
 (call_expression

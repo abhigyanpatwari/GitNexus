@@ -3912,7 +3912,10 @@ async function runFullAnalysisInner(
   }
 
   const hashDiff = isIncremental
-    ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
+    ? diffFileHashes(newFileHashes, existingMeta!.fileHashes, {
+        current: pipelineResult.fileParseContexts,
+        stored: existingMeta!.fileParseContexts,
+      })
     : undefined;
 
   // #3016: `skipDerivedGraphPhases` was decided BEFORE the pipeline, from the
@@ -6211,6 +6214,9 @@ async function runFullAnalysisInner(
       // Embedding sync also needs snapshot identity for non-git checkouts.
       // Incremental DB eligibility still independently requires repoHasGit.
       fileHashes: newFileHashesRecord,
+      ...(pipelineResult.fileParseContexts?.size
+        ? { fileParseContexts: Object.fromEntries(pipelineResult.fileParseContexts) }
+        : {}),
       // Recorded only where a resolution group exists. A file's entry moves
       // to its new digest only when this run wrote that file's rows.
       fileRowDigests:

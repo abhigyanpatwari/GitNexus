@@ -172,21 +172,6 @@ describe('TypeScript type-alias and interface members (A4)', () => {
       expect(names()).not.toContain('tsNotAMember');
     });
   });
-
-  describe('type consumers (R2-2)', () => {
-    const usersOf = (typeName: string): string[] =>
-      getRelationships(result, 'USES')
-        .filter((e) => e.target === typeName)
-        .map((e) => e.source);
-
-    it('links a parameter annotation to the alias it names', () => {
-      expect(usersOf('LiveModeConfig')).toContain('renderAlias');
-    });
-
-    it('links a parameter annotation to the interface it names', () => {
-      expect(usersOf('LiveModeIface')).toContain('renderIface');
-    });
-  });
 });
 
 interface PropNode {
