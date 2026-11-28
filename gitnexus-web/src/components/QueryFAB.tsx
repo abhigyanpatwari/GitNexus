@@ -105,7 +105,10 @@ export const QueryFAB = () => {
     setError(null);
 
     try {
-      if (!(await isDatabaseReady())) return;
+      if (!(await isDatabaseReady())) {
+        setQueryResult(null);
+        return;
+      }
       const startTime = performance.now();
       const rows = await runQuery(query);
       const executionTime = performance.now() - startTime;

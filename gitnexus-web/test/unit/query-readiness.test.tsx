@@ -137,6 +137,23 @@ describe('query readiness', () => {
     expect(reopened.run).toBeEnabled();
   });
 
+  it('clears prior results when the next query fails its availability check', async () => {
+    vi.mocked(runQuery).mockResolvedValueOnce([{ message: 'previous query result' }]);
+    start();
+    expect(await screen.findByTestId('status-ready')).toBeInTheDocument();
+    const { input, run } = openQuery();
+    fireEvent.click(run);
+    expect(await screen.findByText('previous query result')).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'RETURN 2' } });
+    vi.mocked(probeBackendStatus).mockResolvedValueOnce('unreachable');
+    fireEvent.click(run);
+
+    expect(await screen.findByTestId('status-query-unavailable')).toBeInTheDocument();
+    expect(runQuery).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('previous query result')).not.toBeInTheDocument();
+  });
+
   it('checks again on a repo switch instead of displaying the previous repo as ready', async () => {
     start();
     expect(await screen.findByTestId('status-ready')).toBeInTheDocument();
