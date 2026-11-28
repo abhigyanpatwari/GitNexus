@@ -870,6 +870,10 @@ function typeParameterNamesInScope(
     const id = chain[i]!;
     const scope = scopes.scopeTree.getScope(id);
     let own: Set<string> | undefined;
+    if (scope?.typeParameters?.length) {
+      own = new Set(inherited);
+      for (const parameter of scope.typeParameters) own.add(parameter.name);
+    }
     for (const def of scope?.ownedDefs ?? []) {
       if (def.typeParameters === undefined) continue;
       if (scope === undefined || !declarationOpenedScope(def, scope)) continue;
@@ -937,6 +941,8 @@ function typeParameterAt(
   while (cursor !== null && !seen.has(cursor)) {
     seen.add(cursor);
     const scope = scopes.scopeTree.getScope(cursor);
+    const local = scope?.typeParameters?.find((parameter) => parameter.name === name);
+    if (local) return local;
     for (const def of scope?.ownedDefs ?? []) {
       const hit = def.typeParameters?.find((parameter) => parameter.name === name);
       if (hit !== undefined) return hit;
@@ -2252,7 +2258,7 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   const qualify = (def: SymbolDefinition, classDef: SymbolDefinition): void => {
     const q = def.qualifiedName;
     if (q === undefined || q.length === 0) return;
-    if (q.includes('.')) return; // already qualified (dotted)
+    if (q.includes('.') && q !== def.literalMemberName) return; // already qualified
     // A synthesized anonymous-class def (Java `$`-chain binary name,
     // #2550/#2555 — `M3$2`, `EnumWrap$Mode$1`) already carries its
     // COMPLETE name. Prefixing it (`M3.M3$2`) desyncs from the
