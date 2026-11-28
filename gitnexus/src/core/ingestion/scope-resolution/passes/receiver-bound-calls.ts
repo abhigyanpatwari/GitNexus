@@ -1271,6 +1271,27 @@ function emitReceiverBoundCallsInPass(
     ? isUnreachableByInstanceDispatch
     : provider.isStaticOnly;
   const excludeFromClass = (method: SymbolDefinition) => !isUnreachableByInstanceDispatch(method);
+  /**
+   * `findOwnedMember` for a read or write through a VALUE-typed receiver
+   * (Case 0 compound, Case 3b chain-typed). A language that separates static
+   * from instance members skips the ones a value does not carry, as Case 4
+   * does through `pickFirstNonStaticOnly` (#4216): `h.cfg.count` on a `Cfg`
+   * value is not `static count`, nor is `h.op.eq` the enum member. Other
+   * languages keep the plain lookup.
+   */
+  const findInstanceMember = (
+    ownerId: string,
+    memberName: string,
+  ): SymbolDefinition | typeof STATIC_ONLY_FILTERED | undefined => {
+    if (!separateReceiverKinds) return findOwnedMember(ownerId, memberName, model);
+    const methods = model.methods.lookupAllByOwner(ownerId, memberName);
+    const members =
+      methods.length > 0 ? methods : model.fields.lookupAllByOwner(ownerId, memberName);
+    if (members.length === 0) return undefined;
+    return (
+      members.find((member) => !isUnreachableByInstanceDispatch(member)) ?? STATIC_ONLY_FILTERED
+    );
+  };
 
   const missingReceiverSubtypeDecision = (
     typeRef: TypeRef,
@@ -2217,8 +2238,15 @@ function emitReceiverBoundCallsInPass(
           for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
-                ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
-                : findOwnedMember(ownerId, memberName, model);
+                ? pickFirstNonStaticOnly(
+                    ownerId,
+                    memberName,
+                    site,
+                    model,
+                    provider,
+                    excludeFromInstance,
+                  )
+                : findInstanceMember(ownerId, memberName);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguousOwnerId = ownerId;
               break;
@@ -3092,8 +3120,15 @@ function emitReceiverBoundCallsInPass(
           for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
-                ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
-                : findOwnedMember(ownerId, memberName, model);
+                ? pickFirstNonStaticOnly(
+                    ownerId,
+                    memberName,
+                    site,
+                    model,
+                    provider,
+                    excludeFromInstance,
+                  )
+                : findInstanceMember(ownerId, memberName);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguousOwnerId = ownerId;
               break;

@@ -36,3 +36,14 @@ Scope per maintainer comment on #4243: enum nodes/HAS_PROPERTY/ACCESSES are done
 - KNOWN LIMIT: Vue does not set `separateStaticAndInstanceMethods`, so a call on an enum-typed value inside a .vue file is not gated by this change.
 - UNIT: 12 failures in 8 files, identical with src changes reverted on main 0b6061a66 (pre-existing).
 - CLI repro (dist): ACCESSES isRed→Red, USES isRed→Color, USES isNeg→FilterOp, HAS_PROPERTY x3; no CALLS isNeg→startsWith.
+
+## PR #4258 review follow-up (2026-11-28)
+
+- Vercel check: "Authorization required to deploy" — fork PRs need a NexusCore team member to authorize the preview; not a code issue, nothing to fix here.
+- nexus-check finding (receiver-bound-calls.ts:4309): VALID IN PART. Case 4 (direct typed receiver) already filtered reads (tests prove it), but Case 0 (compound receiver) and Case 3b (chain-typed) used the default exclusion (undefined for TS) for calls and plain `findOwnedMember` for reads. Probe: `h.op.startsWith('x')`, `h.op.eq`, `h.cfg.count` (read/write), `h.cfg.load()` still linked.
+- FIX: both walks pass `excludeFromInstance` on the call path; reads/writes go through a new local `findInstanceMember`, which equals `findOwnedMember` unless the provider sets `separateStaticAndInstanceMethods` (TS only).
+- Probe diff: drops exactly the 5 wrong edges above. Namespace-qualified class access (`ns.Cfg.count`, `ns.Cfg.load()`, `ns.Op.eq`) still links — now via the class-name path (edge reason `read`/`write` instead of `import-resolved`).
+- Known gap kept: `Box.shared.count` (static holder through a static field) still links via Case 6.
+- Tests: new chained describe in typescript-enum-members.test.ts (2 cases); its negative case fails on a18b470ef, passes now. 10/10.
+- Validation: tsc src+tests, eslint 0 errors, prettier, boundary 26/26, resolvers 163 files / 5342 pass.
+- Unit: same 12 baseline failures; one extra in the full run (claude-hook-launcher.test.ts:676, SIGKILL/lock timing) passes 3/3 in isolation — flaky under load, unrelated.

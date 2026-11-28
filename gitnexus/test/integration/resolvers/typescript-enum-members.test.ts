@@ -92,6 +92,60 @@ describe('TypeScript enum members (#4216)', () => {
   });
 });
 
+describe('TypeScript static and enum members through a chained receiver (#4216)', () => {
+  const result = useFixture('typescript-enum-members-chained', {
+    'cfg.ts':
+      'export class Cfg { static count = 0; inst = 1; static load() { return 1; } run() { return 2; } }\n' +
+      "export enum Op { eq = 'eq', startsWith = 's' }\n",
+    'use.ts':
+      "import { Cfg, Op } from './cfg';\n" +
+      'export class Holder { cfg: Cfg = new Cfg(); op: Op = Op.eq; }\n' +
+      'export function chainStaticRead(h: Holder) { return h.cfg.count; }\n' +
+      'export function chainStaticWrite(h: Holder) { h.cfg.count = 1; }\n' +
+      'export function chainStaticCall(h: Holder) { return h.cfg.load(); }\n' +
+      'export function chainEnumRead(h: Holder) { return h.op.eq; }\n' +
+      "export function chainEnumCall(h: Holder) { return h.op.startsWith('x'); }\n" +
+      'export function chainInstanceRead(h: Holder) { return h.cfg.inst; }\n' +
+      'export function chainInstanceCall(h: Holder) { return h.cfg.run(); }\n',
+    'ns.ts':
+      "import * as ns from './cfg';\n" +
+      'export function nsStaticRead() { return ns.Cfg.count; }\n' +
+      'export function nsStaticWrite() { ns.Cfg.count = 4; }\n' +
+      'export function nsStaticCall() { return ns.Cfg.load(); }\n' +
+      'export function nsEnumRead() { return ns.Op.eq; }\n',
+  });
+
+  // Only edges into cfg.ts: a chained read also reads the holder field itself.
+  const into = (type: 'ACCESSES' | 'CALLS') =>
+    getRelationships(result(), type)
+      .filter((e) => e.targetFilePath === 'cfg.ts')
+      .map(edge);
+
+  it('keeps a value reached through a field off static and enum members', () => {
+    const fns = ['chainStaticRead', 'chainStaticWrite', 'chainEnumRead'];
+    expect(into('ACCESSES').filter((e) => fns.some((fn) => e.startsWith(`${fn} →`)))).toEqual([]);
+    expect(
+      into('CALLS').filter(
+        (e) => e.startsWith('chainStaticCall →') || e.startsWith('chainEnumCall →'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still links instance members through a field, and statics through a namespace', () => {
+    expect(into('ACCESSES')).toEqual(
+      expect.arrayContaining([
+        'chainInstanceRead → cfg.ts:inst',
+        'nsStaticRead → cfg.ts:count',
+        'nsStaticWrite → cfg.ts:count',
+        'nsEnumRead → cfg.ts:eq',
+      ]),
+    );
+    expect(into('CALLS')).toEqual(
+      expect.arrayContaining(['chainInstanceCall → cfg.ts:run', 'nsStaticCall → cfg.ts:load']),
+    );
+  });
+});
+
 describe('Vue enum members and the unique-name property fallback (#4216)', () => {
   const script = (body: string) => `<script lang="ts">\n${body}export default {};\n</script>\n`;
   const result = useFixture('vue-enum-members', {
