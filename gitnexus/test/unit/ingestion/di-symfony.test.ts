@@ -282,7 +282,7 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     expect(output.injectsEdges).toBe(0);
   });
 
-  it('prefers the services.yaml-aliased implementer when multiple exist', async () => {
+  it.each(['App\\Log\\Logger', 'Logger'])('applies %s to an unqualified type', async (alias) => {
     const graph = createKnowledgeGraph();
     const orderId = addNode(graph, 'Class', 'OrderService');
     const loggerId = addNode(graph, 'Interface', 'Logger', {
@@ -298,8 +298,7 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     addImplements(graph, syslogId, loggerId);
     stampSymfonyProvider(graph, syslogId);
     stampSymfonyProvider(graph, fileLoggerId, {
-      'App\\Log\\Logger':
-        'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      [alias]: `Symfony services.yaml alias ${alias} → App\\Log\\FileLogger`,
     });
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
@@ -357,7 +356,7 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     expect(injects.some((e) => e.targetId === otherImplId && e.confidence >= 0.9)).toBe(false);
   });
 
-  it('does not let App\\Log\\Logger preference win Other\\Logger injections', async () => {
+  it.each(['App\\Log\\Logger', 'Logger'])('ignores %s for Other\\Logger', async (alias) => {
     const graph = createKnowledgeGraph();
     const orderId = addNode(graph, 'Class', 'OrderService');
     const otherLoggerId = addNode(graph, 'Interface', 'OtherLogger', {
@@ -381,8 +380,7 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     addImplements(graph, otherImplId, otherLoggerId);
     stampSymfonyProvider(graph, otherImplId);
     stampSymfonyProvider(graph, fileLoggerId, {
-      'App\\Log\\Logger':
-        'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      [alias]: `Symfony services.yaml alias ${alias} → App\\Log\\FileLogger`,
     });
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
@@ -564,8 +562,7 @@ services:
     stampSymfonyProvider(graph, systemClockId);
     stampSymfonyProvider(graph, otherClockId);
     stampSymfonyProvider(graph, fileLoggerId, {
-      'App\\Log\\Logger':
-        'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
+      'App\\Log\\Logger': 'Symfony services.yaml alias App\\Log\\Logger → App\\Log\\FileLogger',
     });
 
     const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
@@ -581,9 +578,7 @@ services:
     const injects = [...graph.iterRelationshipsByType('INJECTS')].filter(
       (e) => e.sourceId === orderId,
     );
-    const preferred = injects.filter(
-      (e) => e.targetId === fileLoggerId && e.confidence >= 0.9,
-    );
+    const preferred = injects.filter((e) => e.targetId === fileLoggerId && e.confidence >= 0.9);
     expect(preferred).toHaveLength(0);
   });
 });

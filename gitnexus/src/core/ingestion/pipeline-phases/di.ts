@@ -140,7 +140,7 @@ function preferenceReasonForType(
         keys.push(qualifiedName);
       }
       const name = resolvedTypeNode.properties.name;
-      if (typeof name === 'string' && name.length > 0) {
+      if (!isQualifiedTypeName(targetTypeName) && typeof name === 'string' && name.length > 0) {
         keys.push(name);
       }
     }
@@ -473,8 +473,7 @@ export const diPhase: PipelinePhase<DIOutput> = {
         continue;
       }
 
-      const resolvedTypeNode =
-        rootTypeId === undefined ? undefined : ctx.graph.getNode(rootTypeId);
+      const resolvedTypeNode = rootTypeId === undefined ? undefined : ctx.graph.getNode(rootTypeId);
       const preferred = viable.flatMap((id) => {
         const provider = providers.get(id);
         if (provider === undefined) return [];
