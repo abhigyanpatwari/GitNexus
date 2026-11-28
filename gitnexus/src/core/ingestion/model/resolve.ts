@@ -36,6 +36,28 @@ function gatherAncestors(classId: string, parentMap: Map<string, string[]>): str
   return order;
 }
 
+/** Visit the leftmost base and its inherited members before the next sibling. */
+export function depthFirstAncestors(
+  owner: string,
+  directParents: readonly string[],
+  parents: ReadonlyMap<string, readonly string[]>,
+): string[] {
+  const order: string[] = [];
+  const seen = new Set([owner]);
+  const stack = [...directParents].reverse();
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+    const bases = parents.get(id);
+    if (bases) {
+      for (let i = bases.length - 1; i >= 0; i--) stack.push(bases[i]!);
+    }
+  }
+  return order;
+}
+
 /**
  * Compute C3 linearization for a class given a parentMap.
  * Returns an array of ancestor IDs in C3 order (excluding the class itself),
