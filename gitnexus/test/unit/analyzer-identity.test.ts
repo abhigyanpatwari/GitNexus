@@ -29,6 +29,11 @@ import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 describe('analyzer runner identity', () => {
   it('ignores an unrelated root report created while computing identity', async () => {
     const fixture = await createTempDir();
@@ -278,14 +283,21 @@ describe('analyzer runner identity', () => {
     const originalEnvironment = {
       TMPDIR: process.env.TMPDIR,
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
     };
     try {
       const sourceRoot = path.join(fixture.dbPath, 'src');
       const modulePath = path.join(sourceRoot, 'core', 'analyzer.ts');
       const tempRoot = path.join(fixture.dbPath, 'tmp');
       const explicitCache = path.join(fixture.dbPath, 'operator-cache');
+      // Keep a Windows run's profile-default cache inside the fixture.
+      const profile = path.join(fixture.dbPath, 'profile');
       await mkdir(path.dirname(modulePath), { recursive: true });
       await mkdir(tempRoot, { mode: 0o700 });
+      await mkdir(profile);
+      process.env.HOME = profile;
+      process.env.USERPROFILE = profile;
       await writeFile(
         path.join(fixture.dbPath, 'package.json'),
         '{"name":"fixture-analyzer","version":"9.8.7"}\n',
@@ -328,6 +340,8 @@ describe('analyzer runner identity', () => {
       else process.env.TMPDIR = originalEnvironment.TMPDIR;
       if (originalEnvironment.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
       else process.env.XDG_RUNTIME_DIR = originalEnvironment.XDG_RUNTIME_DIR;
+      restoreEnv('HOME', originalEnvironment.HOME);
+      restoreEnv('USERPROFILE', originalEnvironment.USERPROFILE);
       await fixture.cleanup();
     }
   });
