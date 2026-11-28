@@ -450,18 +450,17 @@ export function windowsInstallShadowMessage(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   if (platform !== 'linux') return null;
-  // MZ alone is not enough: a truncated or corrupt file must keep the generic
-  // repair guidance, so also require `PE\0\0` at the e_lfanew offset (u32 LE at 0x3c).
-  // Read the signature where e_lfanew points, which a large DOS stub can put past 4 KB.
+  // Truncated headers keep the generic guidance. Read the PE signature and
+  // 20-byte COFF header where e_lfanew points, even if the DOS stub exceeds 4 KB.
   const head = Buffer.alloc(0x40);
-  const signature = Buffer.alloc(4);
+  const peHeader = Buffer.alloc(4 + 20);
   try {
     const fd = fs.openSync(binaryPath, 'r');
     try {
       if (fs.readSync(fd, head, 0, head.length, 0) < head.length) return null;
       if (head.toString('latin1', 0, 2) !== 'MZ') return null;
       const peOffset = head.readUInt32LE(0x3c);
-      if (fs.readSync(fd, signature, 0, signature.length, peOffset) < signature.length) {
+      if (fs.readSync(fd, peHeader, 0, peHeader.length, peOffset) < peHeader.length) {
         return null;
       }
     } finally {
@@ -470,7 +469,7 @@ export function windowsInstallShadowMessage(
   } catch {
     return null;
   }
-  if (signature.toString('latin1') !== 'PE\0\0') return null;
+  if (peHeader.toString('latin1', 0, 4) !== 'PE\0\0') return null;
   return [
     'This lbugjs.node is a Windows build, so Linux node cannot load it.',
     `  ${binaryPath}`,

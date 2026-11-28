@@ -309,9 +309,9 @@ describe('checkLbugNative', () => {
   // Under WSL, a non-interactive `wsl.exe bash -lc` inherits the Windows PATH, so a
   // Windows `npm i -g gitnexus` shim can win over the Linux install and Linux node
   // then loads the Windows lbugjs.node. The binary's PE header gives it away.
-  // Minimal PE layout: `MZ`, e_lfanew (u32 LE at 0x3c) pointing at `PE\0\0`.
+  // Minimal PE layout: `MZ`, e_lfanew at 0x3c, then the PE signature and COFF header.
   const peHeader = (signature: string, peOffset = 0x40): Buffer => {
-    const buf = Buffer.alloc(peOffset + 4);
+    const buf = Buffer.alloc(peOffset + 4 + 20);
     buf.write('MZ', 0, 'latin1');
     buf.writeUInt32LE(peOffset, 0x3c);
     buf.write(signature, peOffset, 'latin1');
@@ -334,6 +334,8 @@ describe('checkLbugNative', () => {
       peHeader('PE').subarray(0, 0x42),
       false,
     ],
+    ['a PE signature with no COFF header', 'linux', PE_BYTES.subarray(0, 0x44), false],
+    ['a truncated COFF header', 'linux', PE_BYTES.subarray(0, -1), false],
     ['a Linux (ELF) binary on Linux', 'linux', ELF_BYTES, false],
     ['a truncated MZ file with no PE header on Linux', 'linux', Buffer.from('MZ\x90\x00'), false],
     ['an MZ file whose e_lfanew misses the PE signature', 'linux', peHeader('XX\0\0'), false],
