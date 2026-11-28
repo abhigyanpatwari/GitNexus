@@ -1302,6 +1302,22 @@ describe('registerRepo branch nesting (#2106)', () => {
     },
   );
 
+  it('recovers a pinned branch stored in an owned graph generation', async () => {
+    const storage = path.join(tmpRepo.dbPath, '.gitnexus');
+    const branch = 'feature/generation';
+    const slot = path.join(storage, 'branches', branchSlug(branch));
+    const graphPath = `lbug.generation.${'a'.repeat(32)}`;
+    await saveMeta(slot, {
+      ...metaFor(branch, 'bbb2222'),
+      repoPath: tmpRepo.dbPath,
+      storagePath: storage,
+      graphPath,
+    });
+    await fs.writeFile(path.join(slot, graphPath), 'graph');
+
+    expect(await recover(storage)).toEqual([branch]);
+  });
+
   it.each(['directory', 'metadata', 'database'] as const)(
     'registers the flat index and warns when branch %s is unreadable',
     async (failure) => {

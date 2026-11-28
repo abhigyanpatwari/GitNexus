@@ -51,7 +51,6 @@ import {
   type RepoMeta,
 } from './repo-meta.js';
 import { resolveGraphPath } from './shared-store.js';
-import { LBUG_DIRECTORY } from './storage-constants.js';
 import {
   defaultStoragePath,
   ensureStoragePathWritable,
@@ -1011,7 +1010,7 @@ const recoverBranchSummaries = async (
       continue;
     }
     try {
-      await fs.access(path.join(slot, LBUG_DIRECTORY));
+      await fs.access(resolveGraphPath(slot, meta));
     } catch (err) {
       if (!isMissingFilesystemError(err)) {
         logger.warn({ dir: slot, err }, 'Skipping unreadable pinned branch database');
