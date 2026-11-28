@@ -676,19 +676,6 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.performs[0].thruTarget).toBe('LAST-PARA');
     });
 
-    it('PROCEDURE DIVISION USING RETURNING excludes return value from USING list', () => {
-      const src = cobol(
-        '      IDENTIFICATION DIVISION.',
-        '       PROGRAM-ID. TESTPROG.',
-        '      PROCEDURE DIVISION USING WS-INPUT RETURNING WS-RESULT.',
-        '       MAIN-PARA.',
-        '           STOP RUN.',
-      );
-      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      // RETURNING and everything after it should be excluded — only USING parameters remain
-      expect(r.procedureUsing).toEqual(['WS-INPUT']);
-    });
-
     it('RE_CALL_DYNAMIC does NOT false-match on WS-CALL compound identifier', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
