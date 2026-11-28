@@ -52,6 +52,32 @@ Response()->VIEW('a.four');
     ).toEqual(['a.one', 'a.two', 'a.three', 'a.four']);
   });
 
+  it('accepts the View and Route facades however they are imported', () => {
+    expect(
+      extract(`<?php
+namespace App\\Http\\Controllers;
+use Illuminate\\Support\\Facades\\View;
+use Illuminate\\Support\\Facades\\Route as R;
+View::make('a.one');
+R::view('/x', 'a.two');
+`).map((c) => c.viewName),
+    ).toEqual(['a.one', 'a.two']);
+  });
+
+  it('rejects other classes and functions that share the names', () => {
+    expect(
+      extract(`<?php
+namespace App\\Http\\Controllers;
+use App\\Support\\View;
+View::make('a.one');
+App\\View::make('a.two');
+\\App\\Routing\\Route::view('/x', 'a.three');
+App\\view('a.four');
+App\\response()->view('a.five');
+`),
+    ).toEqual([]);
+  });
+
   it('skips names built at runtime and package views', () => {
     expect(
       extract(`<?php

@@ -16,6 +16,8 @@
 
 import type Parser from 'tree-sitter';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { normalizeQualifiedName } from '../../utils/qualified-name.js';
+import { buildUseAliasMap } from '../../route-extractors/laravel.js';
 
 export type LaravelViewCallKind = 'helper' | 'facade' | 'response' | 'route';
 
@@ -34,12 +36,33 @@ export interface LaravelViewCall {
 const STATIC_VIEW_NAME_RE = /^[\w\-./]+$/;
 
 /**
- * `\Illuminate\Support\Facades\View` → `view`; `\VIEW` → `view`. Lowercased
- * because PHP function, class and method names are case-insensitive.
+ * A name in dot-joined, lowercase form: `\Illuminate\Support\Facades\View`
+ * → `illuminate.support.facades.view`. Lowercase because PHP function, class
+ * and method names are case-insensitive.
  */
-const lastSegment = (text: string): string => {
-  const index = text.lastIndexOf('\\');
-  return (index === -1 ? text : text.slice(index + 1)).toLowerCase();
+const normalize = (text: string): string => normalizeQualifiedName(text).toLowerCase();
+
+/** `view()` or `\view()`; a namespaced `App\view()` is some other function. */
+const isGlobalFunction = (node: SyntaxNode | null, name: string): boolean =>
+  node !== null && normalize(node.text) === name;
+
+/** Local class name (lowercase) → its imported class (normalized), from the file's `use` statements. */
+type UseAliases = ReadonlyMap<string, string>;
+
+/**
+ * Whether `scope` names Laravel's facade `name` (`view`, `route`): its full
+ * name `Illuminate\Support\Facades\View`, or a short name that the file
+ * imports from there (or from the global `View` alias Laravel registers). A
+ * short name with no import is taken as that global alias. Any other class,
+ * such as `App\View`, is not the facade.
+ */
+const isFacade = (scope: SyntaxNode, name: string, aliases: UseAliases): boolean => {
+  const facade = `illuminate.support.facades.${name}`;
+  const scopeName = normalize(scope.text);
+  if (scopeName.includes('.')) return scopeName === facade;
+  const imported = aliases.get(scopeName);
+  if (imported === undefined) return scopeName === name;
+  return imported === facade || imported === name;
 };
 
 /** The positional arguments of a call, or null when any argument is named or unpacked. */
@@ -71,19 +94,25 @@ const staticString = (node: SyntaxNode | undefined): string | null => {
 };
 
 /** Which argument names the view for this call, and what kind of call it is. */
-const classify = (node: SyntaxNode): { kind: LaravelViewCallKind; argIndex: number } | null => {
+const classify = (
+  node: SyntaxNode,
+  aliases: UseAliases,
+): { kind: LaravelViewCallKind; argIndex: number } | null => {
   switch (node.type) {
-    case 'function_call_expression': {
-      const fn = node.childForFieldName('function');
-      return fn && lastSegment(fn.text) === 'view' ? { kind: 'helper', argIndex: 0 } : null;
-    }
+    case 'function_call_expression':
+      return isGlobalFunction(node.childForFieldName('function'), 'view')
+        ? { kind: 'helper', argIndex: 0 }
+        : null;
     case 'scoped_call_expression': {
       const scope = node.childForFieldName('scope');
       const name = node.childForFieldName('name')?.text.toLowerCase();
       if (!scope) return null;
-      const owner = lastSegment(scope.text);
-      if (owner === 'view' && name === 'make') return { kind: 'facade', argIndex: 0 };
-      if (owner === 'route' && name === 'view') return { kind: 'route', argIndex: 1 };
+      if (name === 'make' && isFacade(scope, 'view', aliases)) {
+        return { kind: 'facade', argIndex: 0 };
+      }
+      if (name === 'view' && isFacade(scope, 'route', aliases)) {
+        return { kind: 'route', argIndex: 1 };
+      }
       return null;
     }
     case 'member_call_expression': {
@@ -92,8 +121,9 @@ const classify = (node: SyntaxNode): { kind: LaravelViewCallKind; argIndex: numb
       if (node.childForFieldName('name')?.text.toLowerCase() !== 'view') return null;
       const object = node.childForFieldName('object');
       if (object?.type !== 'function_call_expression') return null;
-      const fn = object.childForFieldName('function');
-      return fn && lastSegment(fn.text) === 'response' ? { kind: 'response', argIndex: 0 } : null;
+      return isGlobalFunction(object.childForFieldName('function'), 'response')
+        ? { kind: 'response', argIndex: 0 }
+        : null;
     }
     default:
       return null;
@@ -103,10 +133,16 @@ const classify = (node: SyntaxNode): { kind: LaravelViewCallKind; argIndex: numb
 /** Every view-render call in a PHP file, in source order. */
 export const extractLaravelViewCalls = (tree: Parser.Tree): LaravelViewCall[] => {
   const calls: LaravelViewCall[] = [];
+  const aliases: UseAliases = new Map(
+    [...buildUseAliasMap(tree.rootNode)].map(([local, target]) => [
+      local.toLowerCase(),
+      target.toLowerCase(),
+    ]),
+  );
   const stack: SyntaxNode[] = [tree.rootNode];
 
   for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
-    const match = classify(node);
+    const match = classify(node, aliases);
     if (match) {
       const viewName = staticString(positionalArguments(node)?.[match.argIndex]);
       if (viewName && STATIC_VIEW_NAME_RE.test(viewName)) {
