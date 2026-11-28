@@ -92,7 +92,7 @@ export function normalizeSymfonyInjectionType(raw: string): string | null {
  */
 export function matchSymfonyConstructorInjections(node: GraphNode): readonly DiInjectionMatch[] {
   if (node.label !== 'Method') return [];
-  if (node.properties.name !== '__construct') return [];
+  if (node.properties.name.toLowerCase() !== '__construct') return [];
   const parameterTypes = node.properties.parameterTypes;
   if (!Array.isArray(parameterTypes) || parameterTypes.length === 0) return [];
 

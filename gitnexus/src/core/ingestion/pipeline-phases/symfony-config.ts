@@ -77,8 +77,7 @@ export interface SymfonyServiceAlias {
   filePath: string;
 }
 
-const SERVICES_YAML_RE =
-  /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?(?:\/[^/]+)?\.ya?ml$/i;
+const SERVICES_YAML_RE = /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?(?:\/[^/]+)?\.ya?ml$/i;
 const SERVICES_PHP_RE = /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?\.php$/i;
 const SERVICES_XML_RE = /(?:^|\/)config\/services(?:_[a-zA-Z0-9]+)?\.xml$/i;
 
@@ -190,10 +189,7 @@ export interface SymfonyServicesParseResult {
   serviceIdToClass: Map<string, string>;
 }
 
-export function parseSymfonyServicesYaml(
-  content: string,
-  filePath: string,
-): SymfonyServiceAlias[] {
+export function parseSymfonyServicesYaml(content: string, filePath: string): SymfonyServiceAlias[] {
   return parseSymfonyServicesDocument(content, filePath).aliases;
 }
 
@@ -296,7 +292,7 @@ function stampPhpDiMetadata(ctx: PipelineContext): void {
       }
       return;
     }
-    if (node.label === 'Method' && node.properties.name === '__construct') {
+    if (node.label === 'Method' && node.properties.name.toLowerCase() === '__construct') {
       node.properties[SYMFONY_DI_CONSTRUCTOR_ENABLED_PROPERTY] = true;
     }
   });
@@ -311,7 +307,7 @@ function readPriorPreferenceByType(node: GraphNode): Record<string, string> {
     typeof (existing as { preferenceByType?: unknown }).preferenceByType === 'object' &&
     !Array.isArray((existing as { preferenceByType?: unknown }).preferenceByType)
   ) {
-    return { ...((existing as { preferenceByType: Record<string, string> }).preferenceByType) };
+    return { ...(existing as { preferenceByType: Record<string, string> }).preferenceByType };
   }
   return {};
 }
@@ -363,11 +359,7 @@ export const symfonyConfigPhase: PipelinePhase<SymfonyConfigOutput> = {
         if (node.label !== 'Class') return;
         if (node.properties.language !== 'php') return;
         if (
-          !classMatchesName(
-            node.properties.name,
-            node.properties.qualifiedName,
-            implementationName,
-          )
+          !classMatchesName(node.properties.name, node.properties.qualifiedName, implementationName)
         ) {
           return;
         }

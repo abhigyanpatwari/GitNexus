@@ -105,12 +105,12 @@ describe('normalizeSymfonyInjectionType', () => {
 });
 
 describe('matchSymfonyConstructorInjections', () => {
-  it('emits sites for typed __construct parameters', () => {
+  it.each(['__construct', '__CONSTRUCT'])('emits sites for typed %s parameters', (name) => {
     const node = {
       id: 'Method:__construct',
       label: 'Method',
       properties: {
-        name: '__construct',
+        name,
         language: 'php',
         filePath: 'src/OrderService.php',
         parameterTypes: ['Logger', 'string'],
@@ -452,7 +452,7 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
     expect(injects.some((e) => e.sourceId === orderId && e.targetId === fileLoggerId)).toBe(true);
   });
 
-  it('enables PHP DI when composer requires symfony without services.yaml', async () => {
+  it('enables PHP DI for an uppercase constructor without services.yaml', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'symfony-composer-'));
     await fs.writeFile(
       path.join(repoPath, 'composer.json'),
@@ -464,8 +464,8 @@ describe('di phase — Symfony constructor autowiring (#1857)', () => {
 
     const graph = createKnowledgeGraph();
     const orderId = addNode(graph, 'Class', 'OrderService');
-    const ctorId = addNode(graph, 'Method', 'OrderService.__construct', {
-      name: '__construct',
+    const ctorId = addNode(graph, 'Method', 'OrderService.__CONSTRUCT', {
+      name: '__CONSTRUCT',
       parameterTypes: ['Logger'],
       parameterCount: 1,
       filePath: 'src/OrderService.php',
