@@ -707,6 +707,10 @@
     "captureGroups": 11,
     "digest": "a087e73fdbaa76cb2336f1226f795db436a20fce29a5be66df24020f0a7ee255"
   },
+  "python-nested-tail-collision/models.py": {
+    "captureGroups": 19,
+    "digest": "17afadd8bc0d7630fd81fdee3e5412bdbbcf8f65a0db60bf73d1fa1d4b7a4c8c"
+  },
   "python-nullable-chain/app.py": {
     "captureGroups": 37,
     "digest": "ef7df5fa233520dd7cfa6549a0251147b57e574a4a6e7745ad95cf0c89e2dc18"

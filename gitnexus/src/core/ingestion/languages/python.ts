@@ -218,6 +218,15 @@ function normalizePythonStringLiteral(text: string): string | undefined {
   return raw.replace(/\s+/g, ' ');
 }
 
+const pythonClassExtractor = createClassExtractor(pythonClassConfig);
+
+const pythonResolveContainerTypeOwner = (
+  node: SyntaxNode,
+): { readonly name: string; readonly label: NodeLabel } | null => {
+  const owner = pythonClassExtractor.extract(node);
+  return owner === null ? null : { name: owner.qualifiedName, label: owner.type };
+};
+
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   rename: pythonRenameProvider,
@@ -248,7 +257,8 @@ export const pythonProvider = defineLanguage({
   synthesizeStructureMembers: synthesizePythonInstanceFields,
   methodExtractor: createMethodExtractor(pythonMethodConfig),
   variableExtractor: createVariableExtractor(pythonVariableConfig),
-  classExtractor: createClassExtractor(pythonClassConfig),
+  classExtractor: pythonClassExtractor,
+  resolveContainerTypeOwner: pythonResolveContainerTypeOwner,
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
   isExternalModuleSpecifier: isPythonStdlibModule,

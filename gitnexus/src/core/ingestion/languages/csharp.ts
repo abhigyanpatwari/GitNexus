@@ -9,7 +9,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { csharpTupleOverride } from './csharp/tuple-overrides.js';
 import { csharpRenameProvider } from './csharp/rename.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
+import { createCollisionQualifiedClassExtractor } from '../class-extractors/collision-qualified.js';
 import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
@@ -158,6 +158,8 @@ const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
   'string',
 ]);
 
+const csharpClassIdentity = createCollisionQualifiedClassExtractor(csharpClassConfig);
+
 export const csharpProvider = defineLanguage({
   overrideSignature: csharpTupleOverride,
   rename: csharpRenameProvider,
@@ -225,7 +227,8 @@ export const csharpProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
   methodExtractor: createMethodExtractor(csharpMethodConfig),
   variableExtractor: createVariableExtractor(csharpVariableConfig),
-  classExtractor: createClassExtractor(csharpClassConfig),
+  classExtractor: csharpClassIdentity.classExtractor,
+  resolveContainerTypeOwner: csharpClassIdentity.resolveContainerTypeOwner,
   // ── XML doc comments (`///`) → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
