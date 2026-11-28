@@ -685,6 +685,48 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toBeUndefined();
   });
 
+  it('qualifies a group controller from the namespace that contains the group', () => {
+    const bindings = extractBindings(
+      `<?php
+namespace One {
+  use App\\One\\Foo;
+}
+namespace Two {
+  use App\\Two\\Foo;
+  $app->router->group(['controller' => Foo::class], function ($router) {
+    require __DIR__ . '/../routes/web.php';
+  });
+}
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings[0]?.controller).toBe('App\\Two\\Foo');
+  });
+
+  it('a deferred require does not inherit the file load context', () => {
+    const host = extractBindings(
+      `<?php
+$router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/b.php';
+});
+`,
+      'routes/a.php',
+    );
+    const nested = extractBindings(
+      `<?php
+function later() {
+  require __DIR__ . '/web.php';
+}
+`,
+      'routes/b.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['routes/a.php', 'routes/b.php', 'routes/web.php']),
+      [...host, ...nested],
+    );
+    expect(map.get('routes/web.php')).toBeUndefined();
+  });
+
   it('qualifies a group controller through the host file use import', () => {
     const bindings = extractBindings(
       `<?php

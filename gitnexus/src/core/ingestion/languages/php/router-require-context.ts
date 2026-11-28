@@ -128,19 +128,19 @@ export function resolvePhpRouterRequireBindings(
   const seen = new Map<string, Set<string>>();
   /** Files an expansion of (target, context) loads beyond the set it was given. */
   const expansionLoads = new Map<string, Set<string>>();
-  const record = (file: string, ctx: PhpRouteRequireContext): boolean => {
+  const record = (file: string, ctx: PhpRouteRequireContext): 'new' | 'dup' | 'capped' => {
     let keys = seen.get(file);
     if (!keys) {
       keys = new Set();
       seen.set(file, keys);
       resolved.set(file, []);
     }
-    if (keys.size >= MAX_CONTEXTS_PER_FILE) return false;
     const key = contextKey(ctx);
-    if (keys.has(key)) return false;
+    if (keys.has(key)) return 'dup';
+    if (keys.size >= MAX_CONTEXTS_PER_FILE) return 'capped';
     keys.add(key);
     resolved.get(file)!.push(ctx);
-    return true;
+    return 'new';
   };
   /**
    * Each entry file has its own include set. A `require_once` is skipped only
@@ -168,8 +168,11 @@ export function resolvePhpRouterRequireBindings(
     for (const edge of outgoing.get(file) ?? []) {
       if (onChain(here, edge.target)) continue;
       if (edge.binding.once && current.has(edge.target)) continue;
-      const ctx = composeContext(incoming, edge.binding);
-      record(edge.target, ctx);
+      // A require inside a function does not run as the file loads, so it does
+      // not inherit the context that loaded this file.
+      const base = edge.binding.deferred ? IDENTITY_CONTEXT : incoming;
+      const ctx = composeContext(base, edge.binding);
+      if (record(edge.target, ctx) === 'capped') continue;
       const loadedKey = (files: Set<string>) => [...files].sort().join('\0');
       if (!edge.binding.unguarded) {
         const loadKey = `${edge.target}\0${contextKey(ctx)}\0${loadedKey(current)}`;

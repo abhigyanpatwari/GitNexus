@@ -11,7 +11,6 @@ import {
 import { splitNamespaceUseDeclaration } from './import-decomposer.js';
 import {
   findRouteGroupClosureBody,
-  buildUseAliasMap,
   foldPhpStringLiteral,
   getRouterCallArguments,
   getRouterCallMethodName,
@@ -251,6 +250,20 @@ function useDeclarationsForCatch(catchClause: SyntaxNode): SyntaxNode[] {
   };
   walk(root);
   return segment;
+}
+
+/** Class imported under this name in the namespace that contains `at`. */
+function importedClassName(at: SyntaxNode, localName: string): string | null {
+  for (const useNode of useDeclarationsForCatch(at)) {
+    for (const match of splitNamespaceUseDeclaration(useNode)) {
+      if (match['@import.symbol-kind']?.text !== 'type') continue;
+      const local = match['@import.alias']?.text ?? match['@import.name']?.text;
+      if (local !== localName) continue;
+      const source = (match['@import.source']?.text ?? '').replace(/^\\+/, '');
+      if (source) return source;
+    }
+  }
+  return null;
 }
 
 /** `use Throwable;` (or an alias of it) inside this namespace binds the catch type. */
@@ -508,7 +521,6 @@ export function extractPhpRouterRequireBindings(
   const relHost = hostFilePath.replace(/\\/g, '/');
   const mayExit = collectMayExit(tree.rootNode);
   const gotoSkips = forwardGotoSkipRanges(tree.rootNode);
-  const useAliases = buildUseAliasMap(tree.rootNode);
 
   const pushChildren = (frame: WalkFrame, children: readonly SyntaxNode[]) => {
     const { node, group, mustRun } = frame;
@@ -596,8 +608,8 @@ export function extractPhpRouterRequireBindings(
       if (body) {
         const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
         if (groupCtx.controller && !groupCtx.controller.includes('\\')) {
-          const imported = useAliases.get(groupCtx.controller);
-          if (imported) groupCtx.controller = imported.replace(/\./g, '\\');
+          const imported = importedClassName(node, groupCtx.controller);
+          if (imported) groupCtx.controller = imported;
         }
         const inner = extendRouteGroupContext(
           group ?? EMPTY_ROUTE_GROUP_CONTEXT,
