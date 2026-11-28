@@ -287,6 +287,62 @@ export class RootController {
     expect(ingestionPairs(src)).toEqual(expected);
   });
 
+  it('reports a route inherited from another file on the controller file', () => {
+    // One file at a time, neither file has this route: the base class has no
+    // prefix and the controller has no handler. The project scan joins them
+    // from the facts ingestion resolves, with the function ingestion uses. A
+    // detection names a symbol of its own file and the handler is declared in
+    // the other one, so it names none.
+    const files = {
+      'crud.ts': `
+import { Get } from '@nestjs/common';
+
+export abstract class Crud {
+  @Get(':id')
+  findOne() {}
+}
+`,
+      'users.controller.ts': `
+import { Controller } from '@nestjs/common';
+import { Crud } from './crud';
+
+@Controller('users')
+export class UsersController extends Crud {}
+`,
+    };
+    const scan = TS.plugin.projectScan;
+    if (!scan) throw new Error('the TypeScript plugin has no project scan');
+    const detections = scan.resolve(
+      Object.entries(files).map(([filePath, source]) =>
+        scan.collect({ filePath, tree: TS.parser.parse(source) }),
+      ),
+    );
+
+    expect(
+      detections.map(({ filePath, detections: found }) => ({
+        filePath,
+        found: found.filter((d) => d.framework === 'nest'),
+      })),
+    ).toEqual([
+      {
+        filePath: 'users.controller.ts',
+        found: [
+          {
+            role: 'provider',
+            framework: 'nest',
+            method: 'GET',
+            path: '/users/:id',
+            name: null,
+            line: 6,
+            confidence: 0.8,
+          },
+        ],
+      },
+    ]);
+    // The per-file scan stays what it was: nothing for either file.
+    for (const source of Object.values(files)) expect(groupPairs(source)).toEqual([]);
+  });
+
   it('carries the handler name, 1-based line and provider confidence onto the detection', () => {
     // The fields the contract extractor resolves a symbol from. `lineNumber` is
     // already 1-based at the ingestion layer, so the delegation must NOT add

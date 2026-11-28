@@ -30,6 +30,8 @@ const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'nest-route-app');
 const CONTROLLER_FILE = 'src/venues/venues.controller.ts';
 const HEALTH_FILE = 'src/health/health.controller.ts';
 const INVOICES_FILE = 'src/invoices/invoices.controller.ts';
+const MEMBERS_FILE = 'src/members/members.controller.ts';
+const CRUD_FILE = 'src/shared/crud.controller.ts';
 
 interface RouteView {
   /** `${method} ${url}` — the `routeNodeKey` identity, as a sortable string. */
@@ -136,6 +138,26 @@ describe('NestJS decorator route ingestion pipeline', () => {
         handlerLabel: 'Method',
         handlerFile: INVOICES_FILE,
       },
+      // Inherited from `CrudController`, which another file declares: the
+      // handler is the base method, in its own file.
+      {
+        identity: 'GET /members',
+        handler: 'findEvery',
+        handlerLabel: 'Method',
+        handlerFile: CRUD_FILE,
+      },
+      {
+        identity: 'GET /members/:id',
+        handler: 'findById',
+        handlerLabel: 'Method',
+        handlerFile: CRUD_FILE,
+      },
+      {
+        identity: 'GET /members/me',
+        handler: 'currentMember',
+        handlerLabel: 'Method',
+        handlerFile: MEMBERS_FILE,
+      },
       {
         identity: 'GET /venues',
         handler: 'findAll',
@@ -172,6 +194,50 @@ describe('NestJS decorator route ingestion pipeline', () => {
         .filter((rel) => rel.type === 'HAS_METHOD' && rel.targetId === handlerId)
         .map((rel) => String(result.graph.getNode(rel.sourceId)?.properties.name)),
     ).toEqual(['AuditedController']);
+  });
+
+  it('keeps a route inherited across files in the controller file, handled by the base method', () => {
+    // `MembersController` imports `CrudController` through the `shared` barrel.
+    // The routes carry the controller's prefix and belong to its file, the one
+    // whose rows are rewritten when the controller or its base class changes.
+    // The method that answers is the one `CrudController` declares.
+    const inherited = routeNodes().filter((node) =>
+      ['/members', '/members/:id'].includes(String(node.properties.name)),
+    );
+
+    expect(
+      inherited
+        .map((node) => ({
+          route: String(node.properties.name),
+          file: String(node.properties.filePath).replaceAll('\\', '/'),
+          handledBy: relationships()
+            .filter((rel) => rel.type === 'HANDLES_ROUTE' && rel.targetId === node.id)
+            .map((rel) => {
+              const source = result.graph.getNode(rel.sourceId);
+              const file = String(source?.properties.filePath).replaceAll('\\', '/');
+              return `${String(source?.label)} ${file}`;
+            })
+            .sort(),
+        }))
+        .sort((a, b) => a.route.localeCompare(b.route)),
+    ).toEqual([
+      {
+        route: '/members',
+        file: MEMBERS_FILE,
+        handledBy: [`File ${MEMBERS_FILE}`, `Method ${CRUD_FILE}`],
+      },
+      {
+        route: '/members/:id',
+        file: MEMBERS_FILE,
+        handledBy: [`File ${MEMBERS_FILE}`, `Method ${CRUD_FILE}`],
+      },
+    ]);
+  });
+
+  it('mounts nothing for a handler redeclared undecorated in another file', () => {
+    // `CrudController` declares `@Delete(':id') destroy()`, and
+    // `MembersController` redeclares `destroy` without a route decorator.
+    expect(identities().filter((id) => id.startsWith('DELETE /members'))).toEqual([]);
   });
 
   it('mounts nothing for an inherited handler the controller redeclares undecorated', () => {

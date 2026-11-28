@@ -130,7 +130,11 @@ import {
 } from './javascript/index.js';
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
-import { extractNestRoutes } from '../route-extractors/nest.js';
+import { extractNestInheritanceFacts, extractNestRoutes } from '../route-extractors/nest.js';
+import {
+  resolveNestInheritedRoutes,
+  type NestInheritanceFacts,
+} from '../route-extractors/nest-inherited-routes.js';
 import {
   createFetchWrapperContext,
   type FetchWrapperContext,
@@ -146,6 +150,25 @@ const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes
   ...extractDispatchGuardRoutes(...args),
   ...extractDataRouteTableRoutes(...args),
   ...extractNestRoutes(...args),
+];
+
+/**
+ * Routes only all files together establish: framework mounts, and the NestJS
+ * handlers a controller inherits from a base class in another file. Both
+ * providers share this one function, which is what groups their facts.
+ */
+const resolveJsTsRouteFacts: NonNullable<LanguageProvider['resolveRouteFacts']> = (
+  files,
+  context,
+) => [
+  ...resolveProjectFrameworkRouteFacts(files, context),
+  ...resolveNestInheritedRoutes(
+    files.flatMap(({ filePath, facts }) => {
+      const nest = (facts as { nest?: NestInheritanceFacts }).nest;
+      return nest === undefined ? [] : [{ filePath, facts: nest }];
+    }),
+    context.resolveImportTargets,
+  ),
 ];
 
 const extractJsTsTextRoutes = (path: string, content: string) =>
@@ -491,13 +514,22 @@ function httpContext(
   return context;
 }
 const httpExtraction = {
-  extractRouteFacts: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
-    extractFrameworkRouteFacts(
+  extractRouteFacts: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) => {
+    const facts = extractFrameworkRouteFacts(
       tree,
       parsedFile,
       lineOffset,
       httpContext(tree, parsedFile, lineOffset).bindings,
-    ),
+    );
+    const nest = extractNestInheritanceFacts(
+      tree,
+      parsedFile.filePath,
+      parsedFile.parsedImports,
+      lineOffset,
+    );
+    // One payload per file, so JS, TS and TSX stay one fact family.
+    return nest === undefined ? facts : { ...facts, nest };
+  },
   extractFetchWrapperCalls: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
     httpContext(tree, parsedFile, lineOffset).calls(),
   extractFetchWrapperReexports: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
@@ -613,7 +645,7 @@ export const typescriptProvider = defineLanguage({
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
   ...httpExtraction,
-  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
+  resolveRouteFacts: resolveJsTsRouteFacts,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
   extractTextRoutes: extractJsTsTextRoutes,
@@ -706,7 +738,7 @@ export const javascriptProvider = defineLanguage({
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
   ...httpExtraction,
-  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
+  resolveRouteFacts: resolveJsTsRouteFacts,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,
   extractToolDefinitions,
