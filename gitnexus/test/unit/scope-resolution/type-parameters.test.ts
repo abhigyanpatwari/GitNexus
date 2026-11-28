@@ -110,6 +110,8 @@ it('retains C++ template parameters around comparison operators in defaults', ()
   const source = `
 template<int N, bool Prior = true, bool B = N >= 1, class Lost = int> struct Compared { static constexpr bool value = B; };
 template<int N, bool B = N >= 1> constexpr bool compare() { return B; }
+template<int N, bool B=N>=1, class Tail=int> constexpr bool compareTail() { return B; }
+template<int N, bool B=N>=1, bool C=N>=3, class Tail=int> struct Twice { static constexpr bool value = B && C; };
 template<int N, bool B = (N >= 1), class Kept = int> struct Grouped {};
 template<int N, bool B = N <= 1, class Tail = int> struct AtMost { static constexpr bool value = B; };
 template<int N, bool B = N<=1, class Tail = int> constexpr bool atMost() { return B; }
@@ -117,6 +119,7 @@ struct Rank { int value; constexpr int operator<=>(Rank other) const { return va
 template<int N, int Order = Rank{N}<=>Rank{1}, class Tail = int> struct Ordered { static constexpr int value = Order; };
 static_assert(AtMost<0>::value && !atMost<2>() && Ordered<0>::value == -1);
 static_assert(!Compared<-1>::value && !compare<-1>() && static_cast<bool>(-1));
+static_assert(compareTail<1>() && !Twice<2>::value && Twice<3>::value);
 `;
   const parsed = extractParsedFile(cppProvider, source, 'defaults.cpp')!;
   const parameters = (name: string) => {
@@ -125,9 +128,31 @@ static_assert(!Compared<-1>::value && !compare<-1>() && static_cast<bool>(-1));
     return defs.map((def) => def.typeParameters);
   };
   for (const list of parameters('Compared')) {
-    expect(list).toEqual([{ name: 'N' }, { name: 'Prior', defaultType: 'true' }, { name: 'B' }]);
+    expect(list).toEqual([
+      { name: 'N' },
+      { name: 'Prior', defaultType: 'true' },
+      { name: 'B', defaultType: 'N >= 1' },
+      { name: 'Lost', defaultType: 'int' },
+    ]);
   }
-  for (const list of parameters('compare')) expect(list).toEqual([{ name: 'N' }, { name: 'B' }]);
+  for (const list of parameters('compare')) {
+    expect(list).toEqual([{ name: 'N' }, { name: 'B', defaultType: 'N >= 1' }]);
+  }
+  for (const list of parameters('compareTail')) {
+    expect(list).toEqual([
+      { name: 'N' },
+      { name: 'B', defaultType: 'N>=1' },
+      { name: 'Tail', defaultType: 'int' },
+    ]);
+  }
+  for (const list of parameters('Twice')) {
+    expect(list).toEqual([
+      { name: 'N' },
+      { name: 'B', defaultType: 'N>=1' },
+      { name: 'C', defaultType: 'N>=3' },
+      { name: 'Tail', defaultType: 'int' },
+    ]);
+  }
   for (const [name, formal, defaultType] of [
     ['AtMost', 'B', 'N <= 1'],
     ['atMost', 'B', 'N<=1'],
@@ -149,6 +174,19 @@ static_assert(!Compared<-1>::value && !compare<-1>() && static_cast<bool>(-1));
     ]);
   }
 });
+
+it.each(['N>=', 'N>=1+', 'N >= 1 class MissingComma'])(
+  'retains the verified prefix when the recovered default is invalid: %s',
+  (expression) => {
+    const source = `template<int N, bool B=${expression}, class T=int> struct Bad {};`;
+    const parsed = extractParsedFile(cppProvider, source, 'bad.cpp')!;
+    const declarations = parsed.localDefs.filter((def) => def.qualifiedName === 'Bad');
+    expect(declarations.length).toBeGreaterThan(0);
+    for (const declaration of declarations) {
+      expect(declaration.typeParameters).toEqual([{ name: 'N' }, { name: 'B' }]);
+    }
+  },
+);
 
 describe('C++ specialization discriminator (#2833 Gap A input)', () => {
   const SOURCE = `template <class T> struct Vec { T* data; };

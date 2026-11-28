@@ -61,3 +61,37 @@ class InstanceShadow extends StaticBase {
   draw = 2;
 }
 export function staticDispatch() { return InstanceShadow.draw(); }
+
+interface TextNumber {
+  take(value: string): string;
+  take(value: number): number;
+}
+interface NumberText {
+  take(value: number): number;
+  take(value: string): string;
+}
+interface NumberBool {
+  take(value: number): number;
+  take(value: boolean): boolean;
+}
+interface BoolOnlyOverloads {
+  take(value: boolean): boolean;
+  take(value: bigint): bigint;
+}
+class ConcreteTextNumber {
+  take(value: string): string;
+  take(value: number): number;
+  take(value: string | number) { return value; }
+}
+class AnotherTextNumber {
+  take(value: string): string;
+  take(value: number): number;
+  take(value: string | number) { return value; }
+}
+export function sameText(value: NumberText | TextNumber) { return value.take('ok'); }
+export function sameNumber(value: TextNumber | NumberText) { return value.take(1); }
+export function commonNumber(value: NumberBool | TextNumber) { return value.take(1); }
+export function concreteText(value: AnotherTextNumber | ConcreteTextNumber) { return value.take('ok'); }
+export function incompatibleOverloads(value: TextNumber | BoolOnlyOverloads) {
+  return value.take('invalid');
+}

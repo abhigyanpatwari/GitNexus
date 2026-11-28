@@ -56,62 +56,32 @@ const TRAILING_IDENTIFIER = /([A-Za-z_$][A-Za-z0-9_$]*)\s*$/;
  * risk reading `int[]` as a parameter list.
  */
 export function parseTypeParameterList(text: string): TypeParameter[] | undefined {
-  const inner = innerListText(text);
-  if (inner === undefined) return undefined;
-
-  const out: TypeParameter[] = [];
-  for (const entry of splitTopLevel(inner)) {
-    const parameter = parseEntry(entry);
-    if (parameter !== undefined) out.push(parameter);
-  }
-  return out.length > 0 ? out : undefined;
-}
-
-/** The text between the outermost `<` and its matching `>`, or `undefined` when
- *  there is no balanced pair or it is empty. */
-function innerListText(text: string): string | undefined {
   text = withoutTypeComments(text);
-  const start = text.indexOf('<');
-  if (start === -1) return undefined;
+  const open = text.indexOf('<');
+  if (open === -1) return undefined;
+  const finalCloser = text.lastIndexOf('>');
+  const out: TypeParameter[] = [];
+  let start = open + 1;
   let depth = 0;
+  let inDefault = false;
   for (const i of ungroupedOffsets(text, start)) {
     const ch = text[i];
-    if (ch === '<') depth += 1;
-    else if (ch === '>') {
-      depth -= 1;
-      if (depth === 0) {
-        const inner = text.slice(start + 1, i);
-        return inner.trim().length === 0 ? undefined : inner;
-      }
-      if (depth < 0) return undefined;
+    if (ch === '<') depth++;
+    else if (ch === '>' && depth > 0) depth--;
+    else if (depth === 0) {
+      // A comparison inside a default has its own closing angle later.
+      // In a bound like Box<U>=Default, the nested angle closes above.
+      if (ch === '=') inDefault = true;
+      if (ch === '>' && inDefault && text[i + 1] === '=' && i < finalCloser) continue;
+      if (ch !== ',' && ch !== '>') continue;
+      const parameter = parseEntry(text.slice(start, i));
+      if (parameter) out.push(parameter);
+      if (ch === '>') return out.length ? out : undefined;
+      start = i + 1;
+      inDefault = false;
     }
   }
   return undefined;
-}
-
-/**
- * Split on commas that no bracket encloses.
- *
- * All four bracket families are tracked together because a bound can carry any
- * of them and each hides commas that are NOT entry separators: `T extends
- * Map<K, V>` (angle), `T extends Fn<(a, b) => void>` (paren), `N: [usize; 2]`
- * (square), `T : suspend (Int, Int) -> Unit` (paren again).
- */
-function splitTopLevel(inner: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (const i of ungroupedOffsets(inner)) {
-    const ch = inner[i];
-    if (ch === '<') depth += 1;
-    else if (ch === '>') depth -= 1;
-    else if (ch === ',' && depth === 0) {
-      parts.push(inner.slice(start, i));
-      start = i + 1;
-    }
-  }
-  parts.push(inner.slice(start));
-  return parts;
 }
 
 /**

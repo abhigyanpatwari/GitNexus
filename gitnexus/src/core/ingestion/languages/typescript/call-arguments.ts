@@ -63,7 +63,7 @@ const freeOverloadNames = new WeakMap<ScopeResolutionIndexes['scopeTree'], Reado
 export function mayCallTsFunctionOverload(name: string, indexes: ScopeResolutionIndexes): boolean {
   return freeOverloadNames.get(indexes.scopeTree)?.has(name) ?? true;
 }
-const primitiveTypes = new Set([
+export const primitiveTypes: ReadonlySet<string> = new Set([
   'string',
   'number',
   'boolean',

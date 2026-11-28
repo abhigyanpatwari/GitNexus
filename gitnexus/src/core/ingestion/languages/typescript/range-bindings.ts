@@ -18,6 +18,7 @@ function iteratedTupleSlot(spelling: string, container: string, index: number): 
     // A map's iterator yields the pair [K, V], including when a slot is itself a tuple.
     return args?.length === 2 ? args[index] : undefined;
   }
+  if ((container === 'Set' || container === 'ReadonlySet') && args?.length !== 1) return undefined;
   const item = args?.[0]?.replace(/^readonly\s+/, '');
   if (!item?.startsWith('[')) return undefined;
   const elements = typeApplicationArguments(item);
@@ -40,7 +41,7 @@ export const populateTsRangeBindings: ScopeResolver['populateRangeBindings'] = (
         if (!source) continue;
         const spelling = source.declaredSpelling ?? source.rawName;
         const container =
-          /^(Map|ReadonlyMap|Iterable|ReadonlyArray|Array|AsyncIterable|AsyncIterableIterator|AsyncGenerator)\s*</u.exec(
+          /^(Map|ReadonlyMap|Set|ReadonlySet|Iterable|ReadonlyArray|Array|AsyncIterable|AsyncIterableIterator|AsyncGenerator)\s*</u.exec(
             spelling,
           )?.[1];
         if (!container || (container.startsWith('Async') && !slot.asynchronous)) continue;

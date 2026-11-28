@@ -7,7 +7,7 @@ import {
 } from '../../utils/ast-helpers.js';
 import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { ParseTimeoutError, parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { stripUeMacros } from '../../cpp-ue-preprocessor.js';
 import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
@@ -158,10 +158,8 @@ function cppCaptureBudgetMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : CPP_CAPTURE_BUDGET_DEFAULT_MS;
 }
 
-/** The grammar can close a template list on the first half of >= and put
- * the remaining initializer in an adjacent ERROR. Keep the formal and
- * earlier defaults, without turning a partial expression into its default. */
-function cppTypeParameterCapture(node: SyntaxNode, existing?: Capture): Capture {
+/** The grammar can split >= across its closing angle and an adjacent ERROR. */
+function cppTypeParameterCapture(node: SyntaxNode, source: string, existing?: Capture): Capture {
   const capture = existing ?? nodeToCapture('@declaration.type-parameters', node);
   const recovery = node.nextSibling;
   if (
@@ -174,6 +172,52 @@ function cppTypeParameterCapture(node: SyntaxNode, existing?: Capture): Capture 
   if (last?.type !== 'optional_parameter_declaration') return capture;
   const equals = last.children.find((child) => child.type === '=');
   if (!equals) return capture;
+
+  let closer = recovery.lastChild;
+  if (closer?.type !== '>') {
+    // A trailing formal may be parsed as the function's return type, with
+    // the closing angle in a separate error immediately after that type.
+    const next = recovery.nextNamedSibling;
+    const error = next?.type === 'function_definition' ? next.child(1) : null;
+    closer = error?.type === 'ERROR' && error.childCount === 1 ? error.firstChild : null;
+  }
+  if (node.lastChild?.type === '>' && closer?.type === '>') {
+    const header = source.slice(node.startIndex, closer.endIndex);
+    // Verify the recovered list with the grammar. >= and <= have the same
+    // precedence and length. Change only confirmed operator tokens in the probe.
+    const chars = header.split('');
+    chars[node.endIndex - node.startIndex - 1] = '<';
+    for (const comparison of recovery.descendantsOfType('>=')) {
+      chars[comparison.startIndex - node.startIndex] = '<';
+    }
+    const checkedHeader = chars.join('');
+    const probe = 'template' + checkedHeader + ' struct Probe {};';
+    try {
+      const root = parseSourceSafe(getCppParser(), probe, undefined, {
+        bufferSize: getTreeSitterBufferSize(probe),
+      }).rootNode;
+      const parameters = root.firstNamedChild?.childForFieldName('parameters');
+      if (
+        !root.hasError &&
+        header.startsWith(capture.text + '=') &&
+        parameters?.text === checkedHeader
+      ) {
+        return {
+          ...capture,
+          text: header,
+          range: {
+            ...capture.range,
+            endLine: closer.endPosition.row + 1,
+            endCol: closer.endPosition.column,
+          },
+        };
+      }
+    } catch (error) {
+      if (!(error instanceof ParseTimeoutError)) throw error;
+    }
+  }
+  // The grammar could not verify the remaining text. Keep all complete
+  // preceding formals and the last name without assigning it a partial default.
   return { ...capture, text: capture.text.slice(0, equals.startIndex - node.startIndex) + '>' };
 }
 
@@ -272,6 +316,7 @@ export function emitCppScopeCaptures(
     if (parameters) {
       grouped['@declaration.type-parameters'] = cppTypeParameterCapture(
         parameters,
+        sourceText,
         grouped['@declaration.type-parameters'],
       );
     }

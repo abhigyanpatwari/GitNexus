@@ -79,3 +79,20 @@ export function mapTupleArgument(entries: Map<string, [number, string]>) {
     owner.save();
   }
 }
+
+export function setEntries(entries: Set<[Key, Value]>) {
+  for (const [key, value] of entries) { key.save(); value.save(); }
+}
+export async function readonlySetEntries(entries: ReadonlySet<readonly [item: Value, id: Key]>) {
+  for await (const [first, second] of entries) { first.save(); second.save(); }
+}
+export function nonTupleSet(entries: Set<string>) {
+  for (const [, value] of entries) {
+    // @ts-expect-error An iterated string yields characters.
+    value.save();
+  }
+}
+// @ts-expect-error A Set has one element type argument.
+export function invalidSetArity(entries: Set<[Key, Value], Outside>) {
+  for (const [key] of entries) key.save();
+}
