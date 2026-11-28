@@ -31,8 +31,9 @@ argument-hint: <task description or plan path>
 ---
 Use the gitnexus-lfg skill for: $ARGUMENTS
 
-Read `~/.agents/skills/gitnexus-lfg/SKILL.md` (prefer the repo copy at
-`.claude/skills/gitnexus-lfg/SKILL.md` when present) and follow its lanes in
+Read `~/.agents/skills/gitnexus-lfg/SKILL.md` (prefer the standards-first repo
+copy at `.agents/skills/gitnexus-lfg/SKILL.md` when present, else
+`.claude/skills/gitnexus-lfg/SKILL.md`) and follow its lanes in
 order, invoking the real gitnexus-plan / gitnexus-work / gitnexus-review
 skills for each lane. Stop at the plan gate for the user's choice.
 ```
@@ -41,9 +42,9 @@ skills for each lane. Stop at the plan gate for the user's choice.
 
 | Lane | Skill | Gate |
 |------|-------|------|
-| Plan | `gitnexus-plan` (`.claude/skills/gitnexus-plan/`) | Depth asked up front; blocking gate: proceed / stop |
-| Work | `gitnexus-work` (`.claude/skills/gitnexus-work/`) | Structural drift routes back to the plan gate |
-| Review | `gitnexus-review` (`.claude/skills/gitnexus-review/`) | One fix cycle max, then report |
+| Plan | `gitnexus-plan` (`.agents/skills/gitnexus-plan/` when mirrored, else `.claude/skills/gitnexus-plan/`) | Depth asked up front; blocking gate: proceed / stop |
+| Work | `gitnexus-work` (`.agents/skills/gitnexus-work/` when mirrored, else `.claude/skills/gitnexus-work/`) | Structural drift routes back to the plan gate |
+| Review | `gitnexus-review` (`.agents/skills/gitnexus-review/` when mirrored, else `.claude/skills/gitnexus-review/`) | One fix cycle max, then report |
 
 ## Threshold governance (maintainers)
 
