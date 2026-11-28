@@ -550,9 +550,9 @@ Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates 
   {
     name: 'impact',
     description: `Assess the blast radius before changing a symbol. Use target_uid when known, or target with file_path/kind.
-For a hub, start with summaryOnly:true, then fetch needed callers with limit/offset. Leave includeTests:false unless test callers are needed. Risk is still computed. Review direct callers before editing; use context() for unresolved details.
+For a hub, start with summaryOnly:true, then fetch needed callers with limit/offset. Leave includeTests:false unless test callers are needed. Risk is still computed. Before editing, review the direct dependents from an upstream walk; use context() for unresolved details.
 
-CALLGRAPH MODE (default): CALLS/IMPORTS/EXTENDS/IMPLEMENTS. Add HAS_METHOD/HAS_PROPERTY for members or ACCESSES for field usage. Confidence 1.0 is certain; <0.8 is fuzzy. d=1 callers/importers WILL BREAK, d=2 are LIKELY AFFECTED, d=3 MAY NEED TESTING.
+CALLGRAPH MODE (default): CALLS/IMPORTS/EXTENDS/IMPLEMENTS. Add HAS_METHOD/HAS_PROPERTY for members or ACCESSES for field usage. Confidence 1.0 is certain; <0.8 is fuzzy. d=1 items (direct dependents upstream, direct dependencies downstream) are DIRECT — REVIEW FIRST, d=2 are LIKELY AFFECTED, d=3 MAY NEED TESTING. Depth is graph distance, not proof of failure; partial or truncated results and dynamic dispatch make the listing a lower bound.
 
 RISK: risk is the HIGH/CRITICAL edit-gate field: LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN. Upstream zero callers is UNKNOWN with riskNote, never proof of safety; corroborate by text search. Upstream direct dependants set the ranked thresholds: 5 for MEDIUM, 15 for HIGH, 200 for CRITICAL. Transitive processes and modules remain visible in the summary. Downstream empty results describe callees, not safety.
 - riskSharedAxes compares the shared reach counts (direct upstream, direct and total downstream); group mode adds the cross-repo crossing overlay. Never substitute it for \`risk\` when deciding whether to warn.

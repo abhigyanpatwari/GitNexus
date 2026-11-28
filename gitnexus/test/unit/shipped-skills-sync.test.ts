@@ -114,16 +114,19 @@ describe.each(STANDARD_SKILL_NAMES)('standard skill distribution for %s', (name)
 });
 
 describe('intended standard-skill improvements stay in every applicable copy', () => {
-  it('ships byte-identical refactoring guidance in every distribution', () => {
-    const canonical = fs.readFileSync(
-      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-refactoring', 'SKILL.md'),
-    );
-    const copies = standardSkillCopies('gitnexus-refactoring');
-    expect(copies).toHaveLength(4);
-    for (const file of copies) {
-      expect(fs.readFileSync(file).equals(canonical), file).toBe(true);
-    }
-  });
+  it.each(['gitnexus-refactoring', 'gitnexus-impact-analysis'] as const)(
+    'ships byte-identical %s guidance in every distribution',
+    (name) => {
+      const canonical = fs.readFileSync(
+        path.join(REPO_ROOT, '.claude', 'skills', name, 'SKILL.md'),
+      );
+      const copies = standardSkillCopies(name);
+      expect(copies).toHaveLength(4);
+      for (const file of copies) {
+        expect(fs.readFileSync(file).equals(canonical), file).toBe(true);
+      }
+    },
+  );
 
   it('documents the PDG analyze flag in every CLI copy', () => {
     for (const file of standardSkillCopies('gitnexus-cli')) {
@@ -169,8 +172,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // This assertion exists because its absence let real drift ship: the canonical
   // `.claude/` copy lost the UNKNOWN block while the plugin mirror kept it, and
   // this suite passed 54/54 with the two copies contradicting each other. The
-  // byte-identical checks do not cover impact-analysis, so a fragment
-  // that is not listed here is a fragment nothing protects.
+  // byte-identical check above preserves the guidance across distributions.
+  // Keep these assertions to pin the policy all copies must carry.
   it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
     const required = [
       '| UNKNOWN | Empty upstream walk',

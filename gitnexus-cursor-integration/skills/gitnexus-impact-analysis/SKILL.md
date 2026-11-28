@@ -61,7 +61,7 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 ```
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
 - [ ] impact({target, direction: "upstream"}) or CLI fallback to find dependents
-- [ ] Review d=1 items first (these WILL BREAK)
+- [ ] Review d=1 items first (direct dependents — most likely to need changes)
 - [ ] Check high-confidence (>0.8) dependencies
 - [ ] READ processes to check affected execution flows
 - [ ] detect_changes({scope: "all"}) or CLI fallback for pre-commit check
@@ -71,11 +71,21 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 
 ## Understanding Output
 
-| Depth | Risk Level       | Meaning                  |
-| ----- | ---------------- | ------------------------ |
-| d=1   | **WILL BREAK**   | Direct callers/importers |
-| d=2   | LIKELY AFFECTED  | Indirect dependencies    |
-| d=3   | MAY NEED TESTING | Transitive effects       |
+| Depth | Review priority           | Meaning                  |
+| ----- | ------------------------- | ------------------------ |
+| d=1   | **DIRECT — REVIEW FIRST** | Direct dependents        |
+| d=2   | LIKELY AFFECTED           | Indirect dependents      |
+| d=3   | MAY NEED TESTING          | Transitive effects       |
+
+Depth is graph distance, not proof of failure. A d=1 edge is a strong review
+lead: check whether the change alters what that dependent (a caller, importer,
+subclass or implementer) relies on. The listing is a lower bound when the
+result is `partial` or truncated, or when callers go through dynamic dispatch,
+dependency injection or cross-language calls, so an absent caller is not
+evidence that nothing breaks.
+
+The table describes an upstream walk. With `direction: "downstream"` the same
+depths list what the target depends on: d=1 holds its direct dependencies.
 
 ## Risk Assessment
 
@@ -118,7 +128,7 @@ impact({
   maxDepth: 3
 })
 
-→ d=1 (WILL BREAK):
+→ d=1 (DIRECT — REVIEW FIRST):
   - loginHandler (src/auth/login.ts:42) [CALLS, 100%]
   - apiMiddleware (src/api/middleware.ts:15) [CALLS, 100%]
 
@@ -156,7 +166,7 @@ before treating an empty change set as a passed check.
    → total: 2 (my-app, billing-api) — both define validateUser, so bind explicitly
 
 1. impact({target: "validateUser", repo: "my-app", direction: "upstream"}) or `node .gitnexus/run.cjs impact "validateUser" --direction upstream --repo .`
-   → d=1: loginHandler, apiMiddleware (WILL BREAK)
+   → d=1: loginHandler, apiMiddleware (DIRECT — REVIEW FIRST)
    → d=2: authRouter, sessionManager (LIKELY AFFECTED)
 
 2. READ gitnexus://repo/my-app/processes
