@@ -281,15 +281,18 @@ because RSS and footprint measure different things.
 To diagnose a repeat, set `GITNEXUS_QUERY_TRACE=1` in the query/server environment
 and retain stderr. It includes query text but not bound parameters. Review the
 output before sharing it with [issue #3696](https://github.com/abhigyanpatwari/GitNexus/issues/3696).
-Set `GITNEXUS_QUERY_MAX_RSS_MB=<MiB>` to change the limit; `0` disables it. The
-default is max(8 GiB, 25% of available RAM), capped at 75% of available RAM,
-including a reported container/runtime constraint.
+Set `GITNEXUS_QUERY_MAX_RSS_MB=<MiB>` to change the limit. A value of `0`
+disables RSS monitoring. The default budget is max(8 GiB, 25% of available
+RAM), capped at 75% of available RAM, including a reported container/runtime
+constraint.
 
-The default buffer pool of each read-only database is sized under this budget,
-leaving headroom for the rest of the process (a 1 GiB container gets a 384 MiB
-pool). The pool is per database, and each open database also holds fixed native
-memory outside the pool, so a small container should serve one repository per
-process. For MCP, including `gitnexus serve`'s `/api/mcp`, set
+The default buffer pool of each read-only database is sized from that budget.
+With RSS monitoring disabled, the pool still uses the default budget for
+sizing. A 1 GiB container gets a 384 MiB pool by default. If a large index
+cannot open with the default pool, set `GITNEXUS_LBUG_BUFFER_POOL_SIZE` to a
+larger value within the container's memory limit. Each database has its own
+pool and holds fixed native memory outside it. A small container should serve
+one repository per process. For MCP, including `gitnexus serve`'s `/api/mcp`, set
 [`GITNEXUS_MCP_ALLOWED_REPOS`](docs/mcp-reference.md) to one repository; this
 also disables the group tools. Direct REST graph reads use the same default
 pool without this guard. REST semantic and hybrid searches using the pooled
