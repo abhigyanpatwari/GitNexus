@@ -2,6 +2,421 @@
   "schemaVersion": 1,
   "graphExpectations": [
     {
+      "_note": "#4084. TypeScript 7.0.2 confirms that 26 timer bindings have type Timeout and zero call signatures. Across all five phases 21 calls and ten accesses retain their targets under enclosing callables. One caller-target pair already exists. The graph drops one value reference aimed at a former timer Function. A nested callback keeps its original source location under its anonymous enclosing callback.",
+      "baselineSourceTrees": [
+        "d074cc6b389fb3afba9334994b53437a450c2a30",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "84a88b877770161dec71a0bf2daf482fd7bf0f8f",
+        "33c1cf5f84853cda8908c56b68d7aafa97bc002d"
+      ],
+      "equivalentCandidateSourceTrees": [
+        ["3e560a02500b9597910b5b8ccd1b4feee4511944", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["428dc92dc0b71b3edb79cc8b8bc82bd8fc1b731a", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["16b55f2c940bb998f7acf7e9f0e9b4f892414e7e", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["0a76c02f9500ce6323dd224accde34052d67dda3", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["0502a809cbba63ef984643137b2c94bf288eb304", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["326bd49814f73aac42ed6af7cfe3435c674c724f", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["f3bfd95a5d41fd7946618d78977a3417f71cb908", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["351c8654fda89541627f28eb10f3c3229cee676c", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"]
+      ],
+      "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
+      "sourceFiles": 1205,
+      "baseline": {
+        "cold": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "warm": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "edit": ["fc7bf6b824e5d5b9305591085ce5aff197d212eb1ca4abde2761a053ea2690a0", 38044, 107998],
+        "two-edits": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ],
+        "repack": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ]
+      },
+      "candidate": {
+        "cold": ["e53bdcf74e7350d88e956fe20b626ea1ce55977fc92d77ef3eabdb6bf44cd9f0", 38024, 113557],
+        "warm": ["e53bdcf74e7350d88e956fe20b626ea1ce55977fc92d77ef3eabdb6bf44cd9f0", 38024, 113557],
+        "edit": ["0895d32de172c31b64e6b839279521a645abf3b8fece2873d278bbcb859d425c", 38025, 113558],
+        "two-edits": [
+          "b7897b7f823147bbaae7985fd7c36680d423fd4d428a6bb21351a4f604c928bb",
+          38027,
+          113560
+        ],
+        "repack": [
+          "b7897b7f823147bbaae7985fd7c36680d423fd4d428a6bb21351a4f604c928bb",
+          38027,
+          113560
+        ]
+      }
+    },
+    {
+      "_note": "#4084. TypeScript 7.0.2 confirms that 26 timer bindings have type Timeout and zero call signatures. Across all five phases 21 calls and ten accesses retain their targets under enclosing callables. One caller-target pair already exists. The graph drops one value reference aimed at a former timer Function. A nested callback keeps its original source location under its anonymous enclosing callback.",
+      "baselineSourceTrees": [
+        "4d44c393f50c0d1a71f2cda2381d769d59c19657",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "84a88b877770161dec71a0bf2daf482fd7bf0f8f",
+        "33c1cf5f84853cda8908c56b68d7aafa97bc002d"
+      ],
+      "equivalentCandidateSourceTrees": [
+        ["3e560a02500b9597910b5b8ccd1b4feee4511944", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["428dc92dc0b71b3edb79cc8b8bc82bd8fc1b731a", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["16b55f2c940bb998f7acf7e9f0e9b4f892414e7e", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["0a76c02f9500ce6323dd224accde34052d67dda3", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["0502a809cbba63ef984643137b2c94bf288eb304", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["326bd49814f73aac42ed6af7cfe3435c674c724f", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["f3bfd95a5d41fd7946618d78977a3417f71cb908", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"],
+        ["351c8654fda89541627f28eb10f3c3229cee676c", "33c1cf5f84853cda8908c56b68d7aafa97bc002d"]
+      ],
+      "sourceDigest": "f4c1b2e125f6ec2768dbd9b6ca44843e68d1caa4d09a141cc5c2abbd0e240f11",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "warm": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "edit": ["c5e175a112066981a3a5b0fb7f2cc65391df25dad7e63601ad7c4da1a3e1453a", 38025, 107954],
+        "two-edits": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ],
+        "repack": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ]
+      },
+      "candidate": {
+        "cold": ["bdd339d9c412c2bbbc9139796cf9014d3c774170a31fe4e6546b8c253138913b", 38005, 113511],
+        "warm": ["bdd339d9c412c2bbbc9139796cf9014d3c774170a31fe4e6546b8c253138913b", 38005, 113511],
+        "edit": ["b265c06bb04e72cda0b3f570fab5b449d663b2a043727b32d4228d8a5bca8c25", 38006, 113512],
+        "two-edits": [
+          "ff07899af3e8a7dd00a785036dd937c1cd8363a383fc1ea00b5d73e469ea5dc8",
+          38008,
+          113514
+        ],
+        "repack": [
+          "ff07899af3e8a7dd00a785036dd937c1cd8363a383fc1ea00b5d73e469ea5dc8",
+          38008,
+          113514
+        ]
+      }
+    },
+    {
+      "_note": "#4084. Relative to the preceding reviewed candidate graph, all five phases add nine type references. TypeScript confirms each keyof operand, its full identifier range, its enclosing function or type alias, and its resolved declaration.",
+      "baselineSourceTrees": [
+        "d074cc6b389fb3afba9334994b53437a450c2a30",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "b18cc998333834e114115f4fbc085f2da7c19439",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "equivalentCandidateSourceTrees": [
+        ["fd11ffbae4637070401d0ac7a4da1ceb0173d693", "e73a02d68515bff1d37b33702e889f311b18c535"],
+        ["196a9d40f93e891555e73fbf6cb74fc834944584", "e73a02d68515bff1d37b33702e889f311b18c535"],
+        ["8c3a5ce4856cf9d35ca2fb5cbd78a4f62ca9a430", "e73a02d68515bff1d37b33702e889f311b18c535"]
+      ],
+      "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
+      "sourceFiles": 1205,
+      "baseline": {
+        "cold": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "warm": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "edit": ["fc7bf6b824e5d5b9305591085ce5aff197d212eb1ca4abde2761a053ea2690a0", 38044, 107998],
+        "two-edits": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ],
+        "repack": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ]
+      },
+      "candidate": {
+        "cold": ["74a86d73451436e07d6760772f9997a8a5e18ac75ca3ce7d46592307dba7db63", 38050, 113582],
+        "warm": ["74a86d73451436e07d6760772f9997a8a5e18ac75ca3ce7d46592307dba7db63", 38050, 113582],
+        "edit": ["ff920efbdf74657227f687a0cd3d2a5ce694c7dbc628bd8a2549546a9e08e532", 38051, 113583],
+        "two-edits": [
+          "d20b3aeec8f5a57fd87cd4266fa97e10d68734a8fc8d22cd3168cb8a0fa1325a",
+          38053,
+          113585
+        ],
+        "repack": [
+          "d20b3aeec8f5a57fd87cd4266fa97e10d68734a8fc8d22cd3168cb8a0fa1325a",
+          38053,
+          113585
+        ]
+      }
+    },
+    {
+      "_note": "#4084. Relative to the preceding reviewed candidate graph, TypeScript confirms three additional field reads through the value slot of a ReadonlyMap. The reads target MethodSetEntry.overloads and MethodSetEntry.ambiguous in go/interface-impls.ts.",
+      "baselineSourceTrees": [
+        "d074cc6b389fb3afba9334994b53437a450c2a30",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "8131f7dd2f35e1a71e8de3fc1f4ee0dd7ab7da03",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "equivalentCandidateSourceTrees": [
+        ["737e02a5018307cd2f2215acbe5c7564432a9c84", "e73a02d68515bff1d37b33702e889f311b18c535"]
+      ],
+      "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
+      "sourceFiles": 1205,
+      "baseline": {
+        "cold": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "warm": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "edit": ["fc7bf6b824e5d5b9305591085ce5aff197d212eb1ca4abde2761a053ea2690a0", 38044, 107998],
+        "two-edits": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ],
+        "repack": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ]
+      },
+      "candidate": {
+        "cold": ["9e21ba2ca30f3db0e0eab3c4fac1046d6b1e1704e0fc6132787bfbee36e997a5", 38050, 113585],
+        "warm": ["9e21ba2ca30f3db0e0eab3c4fac1046d6b1e1704e0fc6132787bfbee36e997a5", 38050, 113585],
+        "edit": ["0520a7b297c951759cb6825b70695ef7ec8255e4557306417d91a23338280c74", 38051, 113586],
+        "two-edits": [
+          "d0e121596850de8724744aafd5e10259884fdd241e2f0a9c743cf50dcec0566b",
+          38053,
+          113588
+        ],
+        "repack": [
+          "d0e121596850de8724744aafd5e10259884fdd241e2f0a9c743cf50dcec0566b",
+          38053,
+          113588
+        ]
+      }
+    },
+    {
+      "_note": "#4084. On this frozen main corpus the TypeScript compiler verified declaration positions and type-reference targets. Interface field types restore 57 chained reads. Additional dispatch edges retain the primary signature and point to declared concrete implementations. The 65 previous runtime-dispatch reads targeting erased subinterfaces are absent.",
+      "baselineSourceTrees": [
+        "d074cc6b389fb3afba9334994b53437a450c2a30",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "1e5050c061ec9864d6d51109c4fe48043035d53c",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "sourceDigest": "f63b5b39504a86875623b3d8a7ef95d50781a135cbda000bff8ae59bb9421cde",
+      "sourceFiles": 1205,
+      "baseline": {
+        "cold": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "warm": ["86c322c41b1f7264338ce803bc1919389236eeae3c26b7efa6dfdfeb9bd480f9", 38043, 107997],
+        "edit": ["fc7bf6b824e5d5b9305591085ce5aff197d212eb1ca4abde2761a053ea2690a0", 38044, 107998],
+        "two-edits": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ],
+        "repack": [
+          "f884079813b820e306cd8ffbcac35d99479cda7d412c31b430c24af51690dfdc",
+          38046,
+          108000
+        ]
+      },
+      "candidate": {
+        "cold": ["67188d9b4042fc2153cde3ca9dfa9e17111428e9f812c68790dc63edaed309ca", 38050, 113573],
+        "warm": ["67188d9b4042fc2153cde3ca9dfa9e17111428e9f812c68790dc63edaed309ca", 38050, 113573],
+        "edit": ["26fcd2513ff7274d2b3976b24391cd902b363bc25f6e91f46be596a1132623e0", 38051, 113574],
+        "two-edits": [
+          "391363034a75ca118ddbe1d62218d4651c6d56b1150c758f8febf58ab0be1562",
+          38053,
+          113576
+        ],
+        "repack": [
+          "391363034a75ca118ddbe1d62218d4651c6d56b1150c758f8febf58ab0be1562",
+          38053,
+          113576
+        ]
+      }
+    },
+    {
+      "_note": "#4084. On the 1,204-file release corpus, the 941 added references match the reviewed main-corpus targets, including two sites shifted by six lines. TypeScript confirms the retained primary fields at all 65 removed interface-dispatch sites. Three Map value-slot field reads distinguish this source from 88fee68e.",
+      "baselineSourceTrees": [
+        "4d44c393f50c0d1a71f2cda2381d769d59c19657",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "8131f7dd2f35e1a71e8de3fc1f4ee0dd7ab7da03",
+        "e73a02d68515bff1d37b33702e889f311b18c535"
+      ],
+      "equivalentCandidateSourceTrees": [
+        ["737e02a5018307cd2f2215acbe5c7564432a9c84", "e73a02d68515bff1d37b33702e889f311b18c535"]
+      ],
+      "sourceDigest": "f4c1b2e125f6ec2768dbd9b6ca44843e68d1caa4d09a141cc5c2abbd0e240f11",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "warm": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "edit": ["c5e175a112066981a3a5b0fb7f2cc65391df25dad7e63601ad7c4da1a3e1453a", 38025, 107954],
+        "two-edits": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ],
+        "repack": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ]
+      },
+      "candidate": {
+        "cold": ["805477e9790470de2012e19614d15f755c8a3ba61194e0faa2f540327c6d42f7", 38031, 113539],
+        "warm": ["805477e9790470de2012e19614d15f755c8a3ba61194e0faa2f540327c6d42f7", 38031, 113539],
+        "edit": ["ab21b7920ccbff3898fb449dd399cc56ffb76b6f69e73ab7c81f81672f8c3a5a", 38032, 113540],
+        "two-edits": [
+          "170262b46b1113f15e67fa77ea27c912dff3b1c472740fbae229d6ac5f809f6a",
+          38034,
+          113542
+        ],
+        "repack": [
+          "170262b46b1113f15e67fa77ea27c912dff3b1c472740fbae229d6ac5f809f6a",
+          38034,
+          113542
+        ]
+      }
+    },
+    {
+      "baselineSourceTrees": [
+        "4d44c393f50c0d1a71f2cda2381d769d59c19657",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "954fbb3de8dc83904138df739fa35945d0454b93",
+        "9e8ce2ad0ade37a5b697d9ddb26ea99b6eb33032"
+      ],
+      "sourceDigest": "f4c1b2e125f6ec2768dbd9b6ca44843e68d1caa4d09a141cc5c2abbd0e240f11",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "warm": ["5a74848af521f1e6eae4e72ec9d3fbf89d6dfced1ce9f1dd9a5c12581bf34da4", 38024, 107953],
+        "edit": ["c5e175a112066981a3a5b0fb7f2cc65391df25dad7e63601ad7c4da1a3e1453a", 38025, 107954],
+        "two-edits": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ],
+        "repack": [
+          "78647f23ce8137a1fe2b28f66cc17f63af1311dd491c22e271acf03cb4cc1828",
+          38027,
+          107956
+        ]
+      },
+      "candidate": {
+        "cold": ["9ba00aa6bd0d8a65ad8f3337cd9a5f3c8a4d262621b550f605401ffed104a7de", 38031, 112663],
+        "warm": ["9ba00aa6bd0d8a65ad8f3337cd9a5f3c8a4d262621b550f605401ffed104a7de", 38031, 112663],
+        "edit": ["87b092eeb1d73e62f5681b6876ce741ebc590ccd451adf23c446bcd0d7f2af43", 38032, 112664],
+        "two-edits": [
+          "d1a02ef61011c67a7a8e965d9a049fcd6619fc71201b9075c363ef6773347088",
+          38034,
+          112666
+        ],
+        "repack": [
+          "d1a02ef61011c67a7a8e965d9a049fcd6619fc71201b9075c363ef6773347088",
+          38034,
+          112666
+        ]
+      }
+    },
+    {
+      "baselineSourceTrees": [
+        "f5ed2dda0b4b5155d7beae0fcdb4327f7c1ae57e",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "98e9c2ec453efad8a4131e35a8242b4242208448",
+        "9e8ce2ad0ade37a5b697d9ddb26ea99b6eb33032"
+      ],
+      "sourceDigest": "a716906b94c253c7375b738b3031d250b7b79b0585c88b309f301d2bb3b4e926",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["aa2a1c44bec4490910afc5bd135a73846e78e38482377d817dac9b33f36befde", 38024, 107950],
+        "warm": ["aa2a1c44bec4490910afc5bd135a73846e78e38482377d817dac9b33f36befde", 38024, 107950],
+        "edit": ["95d76aa26f604358e8865c8316f195fcfa84a98fe1f0a8540cb528143c25c6cd", 38025, 107951],
+        "two-edits": [
+          "8b58fb33d7a15c72ba1bd614949697647d10b78b912b9cd3a641cf2abb77ac6b",
+          38027,
+          107953
+        ],
+        "repack": [
+          "8b58fb33d7a15c72ba1bd614949697647d10b78b912b9cd3a641cf2abb77ac6b",
+          38027,
+          107953
+        ]
+      },
+      "candidate": {
+        "cold": ["e441ae15c0152cd6084224d21988200dcc41fb42063a80f658b839eb53ed49d3", 38024, 112638],
+        "warm": ["e441ae15c0152cd6084224d21988200dcc41fb42063a80f658b839eb53ed49d3", 38024, 112638],
+        "edit": ["47fecdb90397e6ae6acfd99add8499837e4c31c5c1aa0acbf0456971be0c8b21", 38025, 112639],
+        "two-edits": [
+          "4141016d9cf534ac8d275ef56ff13877cdbca74f737eb07dffa4b22efd9a3149",
+          38027,
+          112641
+        ],
+        "repack": [
+          "4141016d9cf534ac8d275ef56ff13877cdbca74f737eb07dffa4b22efd9a3149",
+          38027,
+          112641
+        ]
+      }
+    },
+    {
+      "baselineSourceTrees": [
+        "f5ed2dda0b4b5155d7beae0fcdb4327f7c1ae57e",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "e8c45f6a55b0f24cffeced8841e28857d1b6c547",
+        "9e8ce2ad0ade37a5b697d9ddb26ea99b6eb33032"
+      ],
+      "sourceDigest": "a716906b94c253c7375b738b3031d250b7b79b0585c88b309f301d2bb3b4e926",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["aa2a1c44bec4490910afc5bd135a73846e78e38482377d817dac9b33f36befde", 38024, 107950],
+        "warm": ["aa2a1c44bec4490910afc5bd135a73846e78e38482377d817dac9b33f36befde", 38024, 107950],
+        "edit": ["95d76aa26f604358e8865c8316f195fcfa84a98fe1f0a8540cb528143c25c6cd", 38025, 107951],
+        "two-edits": [
+          "8b58fb33d7a15c72ba1bd614949697647d10b78b912b9cd3a641cf2abb77ac6b",
+          38027,
+          107953
+        ],
+        "repack": [
+          "8b58fb33d7a15c72ba1bd614949697647d10b78b912b9cd3a641cf2abb77ac6b",
+          38027,
+          107953
+        ]
+      },
+      "candidate": {
+        "cold": ["e441ae15c0152cd6084224d21988200dcc41fb42063a80f658b839eb53ed49d3", 38024, 112638],
+        "warm": ["e441ae15c0152cd6084224d21988200dcc41fb42063a80f658b839eb53ed49d3", 38024, 112638],
+        "edit": ["47fecdb90397e6ae6acfd99add8499837e4c31c5c1aa0acbf0456971be0c8b21", 38025, 112639],
+        "two-edits": [
+          "4141016d9cf534ac8d275ef56ff13877cdbca74f737eb07dffa4b22efd9a3149",
+          38027,
+          112641
+        ],
+        "repack": [
+          "4141016d9cf534ac8d275ef56ff13877cdbca74f737eb07dffa4b22efd9a3149",
+          38027,
+          112641
+        ]
+      }
+    },
+    {
       "baselineSourceTrees": [
         "ca401b5aadd224d31608942ed660b5ac9b28580f",
         "83ca9e394db987214069b750a873c8c341c0560b"
@@ -82,6 +497,90 @@
           "2afad661fd6be8246506059764f2c07c2cb6e0326ebd953734493e1d388c6d2a",
           37793,
           106642
+        ]
+      }
+    },
+    {
+      "baselineSourceTrees": [
+        "5d38dc913fc1fafc2e63bd400b03303d6d66fad8",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "0bd418328b398a0aab41f00bbd86ec7dcd2d0336",
+        "9e8ce2ad0ade37a5b697d9ddb26ea99b6eb33032"
+      ],
+      "sourceDigest": "fb88549ee277e5a062c36393e18070072b99ba615ab8d5255a882158005d8309",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["edf0edc98af6857716383a868972d2c6a93304612458f51bd557c4d4583ba2de", 38023, 107947],
+        "warm": ["edf0edc98af6857716383a868972d2c6a93304612458f51bd557c4d4583ba2de", 38023, 107947],
+        "edit": ["f6988e2057c07fcf2b9c3f2191e1f3308372dc4dcbcfa2620e22cc86a7ac4333", 38024, 107948],
+        "two-edits": [
+          "f23ebde1676ccfc48cf0fc6dab85a63372cfb540cbfe164bd0cb8ecb3dc5b044",
+          38026,
+          107950
+        ],
+        "repack": [
+          "f23ebde1676ccfc48cf0fc6dab85a63372cfb540cbfe164bd0cb8ecb3dc5b044",
+          38026,
+          107950
+        ]
+      },
+      "candidate": {
+        "cold": ["1836bf8d2f3a9f6fec652cff56cf7eabfefcc7abe7809b4738085bf29e83b8c9", 38023, 112635],
+        "warm": ["1836bf8d2f3a9f6fec652cff56cf7eabfefcc7abe7809b4738085bf29e83b8c9", 38023, 112635],
+        "edit": ["aec48b9aeec6c13f72bc303b23d340f0296c9800edd8e622f3abed21c0f56fa5", 38024, 112636],
+        "two-edits": [
+          "b45da0640ced3e3d1dad855e20ee1bff49d020e26453fa823463d7a037f1b2d2",
+          38026,
+          112638
+        ],
+        "repack": [
+          "b45da0640ced3e3d1dad855e20ee1bff49d020e26453fa823463d7a037f1b2d2",
+          38026,
+          112638
+        ]
+      }
+    },
+    {
+      "baselineSourceTrees": [
+        "a9443cc3d5cecd02797514f1ac622229ad485289",
+        "196f9344962250e43352d23bec6a81cdc739a257"
+      ],
+      "candidateSourceTrees": [
+        "45c6f9e2dcf0fe21dfcc70ff2cff065fe5b14319",
+        "9e8ce2ad0ade37a5b697d9ddb26ea99b6eb33032"
+      ],
+      "sourceDigest": "26a847df98ae6df936e1fe5fe097ea3ca594f4ba5d1cee08a9e7ab5df7cd71df",
+      "sourceFiles": 1204,
+      "baseline": {
+        "cold": ["f23333efab4a90bc0f28bd430ab5a96b18e9969c1b8236969a222197767fa8e2", 38024, 107950],
+        "warm": ["f23333efab4a90bc0f28bd430ab5a96b18e9969c1b8236969a222197767fa8e2", 38024, 107950],
+        "edit": ["9c450495cf8697e96589b82bcaa1ba347d02bc01bc85312ba551f5b201e030ae", 38025, 107951],
+        "two-edits": [
+          "0e0675f1fd93e7b865dab3d4013a021ac0f53d4352d4f18bf9f69e8bb9b0a332",
+          38027,
+          107953
+        ],
+        "repack": [
+          "0e0675f1fd93e7b865dab3d4013a021ac0f53d4352d4f18bf9f69e8bb9b0a332",
+          38027,
+          107953
+        ]
+      },
+      "candidate": {
+        "cold": ["a0518433a3c3a0cfb4a8d995b274339bb4ebcdc2b74289d21a70b18fb2ff0b40", 38024, 112638],
+        "warm": ["a0518433a3c3a0cfb4a8d995b274339bb4ebcdc2b74289d21a70b18fb2ff0b40", 38024, 112638],
+        "edit": ["05dad1c32ce5f37e1517e56c2d959525657d5538a8f5bf67375bf27024100e54", 38025, 112639],
+        "two-edits": [
+          "bdb8f9cea1d3abecb98bb92815f13e95e4bdf6fa1cf71894aa50915d687694ba",
+          38027,
+          112641
+        ],
+        "repack": [
+          "bdb8f9cea1d3abecb98bb92815f13e95e4bdf6fa1cf71894aa50915d687694ba",
+          38027,
+          112641
         ]
       }
     }

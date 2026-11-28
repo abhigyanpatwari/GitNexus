@@ -14,7 +14,7 @@ type Lane =
   | 'docker'
   | 'browser'
   | 'abi'
-  | 'java'
+  | 'conformance'
   | 'workflows';
 type Plan = {
   coverage: boolean;
@@ -35,7 +35,7 @@ type WorkflowJob = {
   name?: string;
   if?: string;
   steps?: { name?: string; with?: { name?: string } }[];
-  strategy?: { matrix?: { os?: string[] } };
+  strategy?: { matrix?: { os?: string[]; include?: { label: string }[] } };
 };
 function jobsFor(workflow: string) {
   const file = path.resolve(__dirname, '../../../.github/workflows', workflow + '.yml');
@@ -63,27 +63,43 @@ it('reserves the release matrix for Publish', () => {
   ]) {
     expect(jobs[name]?.if, name).toBe('fromJSON(inputs.plan).release');
   }
+  expect(jobs['compiler-conformance'].if).toBe('fromJSON(inputs.plan).run.conformance');
   expect(jobs.tests.if).toBe('fromJSON(inputs.plan).run.cli');
   expect(jobs['eval-tests'].if).toBe('fromJSON(inputs.plan).run.eval');
 });
 
 it.each([
   [['README.md', 'docs/guide.md'], []],
-  [['gitnexus/src/cli/doctor.ts'], ['quality', 'cli', 'java']],
-  [['gitnexus/src/storage/repo-manager.ts'], ['quality', 'cli', 'java']],
-  [['gitnexus/src/core/lbug/db.ts'], ['quality', 'cli', 'java']],
-  [['gitnexus/src/core/run-analyze.ts'], ['quality', 'cli', 'java']],
-  [['gitnexus/src/mcp/local/local-backend.ts'], ['quality', 'cli', 'java', 'browser']],
-  [['gitnexus/src/cli/index.ts'], ['quality', 'cli', 'java', 'browser']],
-  [['gitnexus/src/cli/serve.ts'], ['quality', 'cli', 'java', 'browser']],
-  [['gitnexus/src/core/group/extractors/grpc-extractor.ts'], ['quality', 'cli', 'java', 'abi']],
+  [['gitnexus/src/cli/doctor.ts'], ['quality', 'cli', 'conformance']],
+  [['gitnexus/src/storage/repo-manager.ts'], ['quality', 'cli', 'conformance']],
+  [['gitnexus/src/core/lbug/db.ts'], ['quality', 'cli', 'conformance']],
+  [['gitnexus/src/core/run-analyze.ts'], ['quality', 'cli', 'conformance']],
+  [['gitnexus/src/mcp/local/local-backend.ts'], ['quality', 'cli', 'conformance', 'browser']],
+  [['gitnexus/src/cli/index.ts'], ['quality', 'cli', 'conformance', 'browser']],
+  [['gitnexus/src/cli/serve.ts'], ['quality', 'cli', 'conformance', 'browser']],
+  [
+    ['gitnexus/src/core/group/extractors/grpc-extractor.ts'],
+    ['quality', 'cli', 'conformance', 'abi'],
+  ],
   [['gitnexus/test/fixtures/javascript/example.js'], ['quality', 'cli']],
-  [['gitnexus/test/fixtures/java/Example.java'], ['quality', 'cli', 'java']],
+  [['gitnexus/test/fixtures/java/Example.java'], ['quality', 'cli', 'conformance']],
+  [
+    ['gitnexus/tools/compiler-conformance/typescript/compare.mjs'],
+    ['quality', 'cli', 'conformance'],
+  ],
+  [
+    ['gitnexus/test/fixtures/compiler-conformance/javascript-recursion/a.js'],
+    ['quality', 'cli', 'conformance'],
+  ],
+  [['gitnexus/tools/compiler-conformance/compare.mjs'], ['quality', 'cli', 'conformance']],
   [['Dockerfile.cli'], ['quality', 'cli', 'docker']],
   [['gitnexus-web/src/lib/upload-filter.ts'], ['quality', 'cli', 'web', 'browser']],
   [['gitnexus-web/tsconfig.app.json'], ['quality', 'cli', 'web', 'browser']],
   [['gitnexus-web/vercel.json'], ['quality', 'cli', 'web', 'browser']],
-  [['gitnexus/package-lock.json'], ['quality', 'cli', 'java', 'abi', 'web', 'browser', 'eval']],
+  [
+    ['gitnexus/package-lock.json'],
+    ['quality', 'cli', 'conformance', 'abi', 'web', 'browser', 'eval'],
+  ],
   [['gitnexus/.npmrc'], ['quality', 'cli', 'eval']],
   [
     ['AGENTS.md', 'CLAUDE.md'],
@@ -98,8 +114,8 @@ it.each([
     [],
   ],
   [['gitnexus-web/src/App.tsx'], ['quality', 'web', 'browser']],
-  [['gitnexus-shared/src/types.ts'], ['quality', 'cli', 'web', 'browser', 'java']],
-  [['gitnexus/src/server/api.ts'], ['quality', 'cli', 'java', 'browser']],
+  [['gitnexus-shared/src/types.ts'], ['quality', 'cli', 'web', 'browser', 'conformance']],
+  [['gitnexus/src/server/api.ts'], ['quality', 'cli', 'conformance', 'browser']],
   [['eval/tests/test_release.py'], ['quality', 'eval']],
   [['docker-server.mjs'], ['quality', 'docker']],
   [
@@ -108,7 +124,7 @@ it.each([
   ],
   [
     ['.github/workflows/ci.yml'],
-    ['quality', 'cli', 'web', 'eval', 'docker', 'browser', 'abi', 'java', 'workflows'],
+    ['quality', 'cli', 'web', 'eval', 'docker', 'browser', 'abi', 'conformance', 'workflows'],
   ],
 ])('selects checks for %j', (files, expected) => {
   expect(affected(files)).toEqual(new Set(expected));
@@ -478,9 +494,10 @@ describe('release reuse', () => {
 
   it.each([
     [[], [], []],
-    [['quality / typecheck'], [], ['cli', 'java']],
-    [['tests / Java compiler conformance'], [], ['cli', 'java']],
-    [[], ['coverage-reports'], ['cli', 'java', 'web']],
+    [['quality / typecheck'], [], ['cli', 'conformance']],
+    [['tests / Java compiler conformance'], [], ['cli', 'conformance']],
+    [['tests / TypeScript compiler conformance'], [], ['cli', 'conformance']],
+    [[], ['coverage-reports'], ['cli', 'conformance', 'web']],
     [['quality / lint'], [], ['quality']],
   ] as const)(
     'schedules fresh checks with missing jobs %j and artifacts %j',
@@ -497,9 +514,11 @@ describe('release reuse', () => {
         ...['format', 'lint', 'typecheck', 'typecheck-web', 'workflow-convention'].map(
           (id) => 'quality / ' + (quality[id].name ?? id),
         ),
-        ...['coverage-merge', 'java-compiler-conformance', 'eval-tests'].map(
-          (id) => 'tests / ' + tests[id].name,
+        ...tests['compiler-conformance'].strategy!.matrix!.include!.map(
+          ({ label }) =>
+            'tests / ' + tests['compiler-conformance'].name!.replace('${{ matrix.label }}', label),
         ),
+        ...['coverage-merge', 'eval-tests'].map((id) => 'tests / ' + tests[id].name),
         ...tests['abi-assert'].strategy!.matrix!.os!.map(
           (os) => 'tests / ' + tests['abi-assert'].name!.replace('${{ matrix.os }}', os),
         ),

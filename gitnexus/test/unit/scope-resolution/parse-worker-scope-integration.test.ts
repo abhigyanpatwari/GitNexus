@@ -117,6 +117,32 @@ describe('extractParsedFile', () => {
       expect(seenPath).toBe('deep/path/file.ts');
       expect(seenTree).toBe(cachedTree);
     });
+
+    it('defaults an absent or undefined source kind while preserving explicit metadata', () => {
+      const seen: unknown[] = [];
+      const provider = fakeProvider({
+        emitScopeCaptures: (_text, _path, _tree, meta) => {
+          seen.push(meta);
+          return [moduleScopeMatch()];
+        },
+      });
+      extractParsedFile(provider, 'src', 'a.ts');
+      extractParsedFile(provider, 'src', 'a.ts', undefined, undefined, { parseContext: 'ctx' });
+      extractParsedFile(provider, 'src', 'a.ts', undefined, undefined, {
+        sourceKind: undefined,
+        parseContext: 'ctx',
+      });
+      extractParsedFile(provider, 'src', 'a.ts', undefined, undefined, {
+        sourceKind: 'pre-extracted-script',
+        parseContext: 'ctx',
+      });
+      expect(seen).toEqual([
+        { sourceKind: 'full-file' },
+        { sourceKind: 'full-file', parseContext: 'ctx' },
+        { sourceKind: 'full-file', parseContext: 'ctx' },
+        { sourceKind: 'pre-extracted-script', parseContext: 'ctx' },
+      ]);
+    });
   });
 
   describe('error resilience — never breaks legacy parsing', () => {

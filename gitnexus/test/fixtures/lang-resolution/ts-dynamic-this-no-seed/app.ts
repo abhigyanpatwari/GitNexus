@@ -17,4 +17,8 @@ export class App {
       this.route.go();
     },
   };
+
+  follow() {
+    this.route.go();
+  }
 }
