@@ -50,6 +50,7 @@ import {
 } from '../typescript/module-exports.js';
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
+import { collectEcmaScopeContextPaths } from '../typescript/collect-ecma-scope-context.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
 
 async function loadResolutionConfig(repoPath: string, fresh = false) {
@@ -58,6 +59,8 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
     nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
   };
 }
+
+const resolveJsImportTarget = makeJsResolveImportTarget();
 
 const javascriptScopeResolver: ScopeResolver = {
   postExtractSourceTextPolicy: 'uncached-files',
@@ -70,8 +73,18 @@ const javascriptScopeResolver: ScopeResolver = {
   importsBindAtLexicalScope: true,
   ownedMembersBindAtModuleScope: false,
 
-  resolveImportTarget: makeJsResolveImportTarget(),
+  resolveImportTarget: resolveJsImportTarget,
   moduleExports: typescriptModuleExports,
+
+  // Pull import-reachable `.ts`/`.tsx` (and sibling JS) into the JavaScript
+  // pass so mixed allowJs / migration repos emit IMPORTS/CALLS across the
+  // language boundary (#4252). Same hook shape as Vue / TypeScript.
+  collectScopeContextPaths(options) {
+    return collectEcmaScopeContextPaths({
+      ...options,
+      resolveImportTarget: resolveJsImportTarget,
+    });
+  },
 
   // JavaScript resolution reads the same declared inputs TypeScript does —
   // `jsconfig.json` is a tsconfig by another name, and `package.json` is shared
