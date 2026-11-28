@@ -330,6 +330,17 @@ export type ReceiverMemberResolution =
       readonly detail?: string;
     };
 
+/** The executable target can be known even when no source signature was selected. */
+export type UnqualifiedCallResolution =
+  | ReceiverMemberResolution
+  | {
+      readonly kind: 'implementation';
+      readonly definition: SymbolDefinition;
+      readonly candidateIds: readonly string[];
+      /** A declaration whose return type every viable signature shares. */
+      readonly commonReturnSource?: SymbolDefinition;
+    };
+
 export interface ImportResolutionContext {
   readonly parsedFiles: readonly ParsedFile[];
   readonly parsedImport?: ParsedImport;
@@ -563,6 +574,14 @@ export interface ScopeResolver {
     repoPath: string,
     filePaths: readonly string[],
   ): Promise<unknown> | unknown;
+
+  /** Optional file-local discriminator for captures that depend on captured
+   * project metadata. The same tag reaches the worker and keys its cached facts. */
+  fileParseContext?(
+    filePath: string,
+    source: string,
+    resolutionConfig: unknown,
+  ): string | undefined;
 
   /**
    * Per-scope binding-merge precedence. The shared finalize pass
@@ -1234,6 +1253,11 @@ export interface ScopeResolver {
    */
   readonly isNamespaceMemberVisible?: (ctx: { readonly member: SymbolDefinition }) => boolean;
 
+  /** Which owned member kind can also name a type when qualified by this declaration. */
+  readonly qualifiedTypeMemberKind?: (
+    owner: SymbolDefinition,
+  ) => SymbolDefinition['type'] | undefined;
+
   /** Optional compatibility rule for bare class-name receivers. Runs before
    * namespace precedence selection, so an incompatible declaration cannot
    * hide a compatible declaration in an enclosing namespace. Value receivers
@@ -1784,6 +1808,16 @@ export interface ScopeResolver {
       }
     | undefined;
 
+  /** Select an owner when a declared receiver describes several possible types.
+   * Return null when the provider recognizes the type but cannot select a declaration. */
+  readonly selectReceiverTypeOwner?: (
+    receiver: TypeRef,
+    site: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+    isStaticOnly: (member: SymbolDefinition) => boolean,
+  ) => SymbolDefinition | null | undefined;
+
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
    * simple receiver type before the generic flattened-MRO walk. Languages
@@ -1797,6 +1831,8 @@ export interface ScopeResolver {
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
+    /** When the receiver side is known, exclude members on the opposite side. */
+    excludeMember?: (member: SymbolDefinition) => boolean,
   ) => ReceiverMemberResolution | undefined;
 
   /** Identify the binary declaration of a call with no workspace receiver
@@ -1831,7 +1867,7 @@ export interface ScopeResolver {
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
-  ) => ReceiverMemberResolution | undefined;
+  ) => UnqualifiedCallResolution | undefined;
 
   /** Select among explicit constructors once the written type has been resolved.
    * A rejection is authoritative. Undefined keeps the shared arity-based lookup. */
@@ -1842,6 +1878,9 @@ export interface ScopeResolver {
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
+
+  /** Interface members in this language have no runtime implementation of their own. */
+  readonly interfaceMembersAreTypeOnly?: boolean;
 
   /** Find an implementation of an already selected compile-time signature.
    * This is override matching, not overload applicability at a runtime subtype.
@@ -1995,6 +2034,39 @@ export interface ScopeResolver {
       readonly resolutionConfig?: unknown;
     },
   ) => void;
+
+  /** Global token pattern for a provider-validated type expression. A match
+   * spans a complete name, including qualifiers, so only free formals bind.
+   * Decline when the argument or expression lacks stable declaration identity. */
+  readonly qualifiedHeritageTypePattern?: (
+    type: string,
+    bindings: ReadonlyMap<string, string | null>,
+    shadowed?: ReadonlySet<string>,
+  ) => RegExp | undefined;
+
+  /** This composite requires the provider’s canonical spelling for heritage comparison. */
+  readonly needsHeritageTypeNormalization?: (type: string) => boolean;
+
+  /** A composite method signature needs the names bound in its own declaration. */
+  readonly needsScopedOverrideType?: (type: string) => boolean;
+  /** Provider-recognized type operand sites when a composite also declares identifiers. */
+  readonly heritageTypeOperands?: (
+    type: string,
+    bindings: ReadonlyMap<string, string | null>,
+    shadowed?: ReadonlySet<string>,
+  ) => Iterable<RegExpExecArray> | undefined;
+
+  /** Specialize an outer nullable formal according to its declaration's constraints. */
+  readonly specializeNullableHeritageFormal?: (
+    owner: SymbolDefinition,
+    formal: string,
+    actual: string,
+  ) => string | null;
+  /** Canonical comparison spelling, or null when a declaration cannot establish its type identity. */
+  readonly normalizeNullableHeritageSignature?: (
+    type: string,
+    declaration?: { scope: ScopeId; indexes: ScopeResolutionIndexes },
+  ) => string | null;
 
   /**
    * Optional fallback for an UNQUALIFIED inheritance base that the shared

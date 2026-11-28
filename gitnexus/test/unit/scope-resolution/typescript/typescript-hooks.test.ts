@@ -18,6 +18,7 @@ import {
 } from '../../../../src/core/ingestion/languages/typescript/simple-hooks.js';
 import { synthesizeTsReceiverBinding } from '../../../../src/core/ingestion/languages/typescript/receiver-binding.js';
 import { typescriptMergeBindings } from '../../../../src/core/ingestion/languages/typescript/merge-bindings.js';
+import { compareGlobalProjectIds } from '../../../../src/core/ingestion/languages/typescript/global-declarations.js';
 import { typescriptProvider } from '../../../../src/core/ingestion/languages/typescript.js';
 import { typescriptArityCompatibility } from '../../../../src/core/ingestion/languages/typescript/arity.js';
 import { computeTsArityMetadata } from '../../../../src/core/ingestion/languages/typescript/arity-metadata.js';
@@ -39,6 +40,14 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
+
+it('keeps UTF-16 order, stable ties and missing IDs in TypeScript global namespace keys', () => {
+  const ids = [undefined, 'é', 'Z', 2, '2', 10, 'e\u0301', 'z'];
+  expect(JSON.stringify(ids.sort(compareGlobalProjectIds))).toBe(
+    JSON.stringify([10, 2, '2', 'Z', 'e\u0301', 'z', 'é', null]),
+  );
+  expect(['2', 2].sort(compareGlobalProjectIds)).toEqual(['2', 2]);
+});
 
 // ─── Fake scope helpers ───────────────────────────────────────────────────
 

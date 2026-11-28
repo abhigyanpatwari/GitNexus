@@ -74,7 +74,7 @@ export const computeFileHashesDetailed = async (
 
 /** Result of comparing the current on-disk hashes against stored ones. */
 export interface FileHashDiff {
-  /** Files whose content hash differs from stored. */
+  /** Existing files whose source or parse context changed. */
   changed: string[];
   /** Files in the current scan that weren't in the stored map. */
   added: string[];
@@ -93,14 +93,20 @@ export interface FileHashDiff {
 export const diffFileHashes = (
   current: ReadonlyMap<string, string>,
   stored: Readonly<Record<string, string>> | undefined,
+  parseContexts?: {
+    current?: ReadonlyMap<string, string>;
+    stored?: Readonly<Record<string, string>>;
+  },
 ): FileHashDiff => {
   const storedMap = new Map<string, string>(stored ? Object.entries(stored) : []);
+  const storedContexts = parseContexts?.stored && new Map(Object.entries(parseContexts.stored));
   const changed: string[] = [];
   const added: string[] = [];
   for (const [p, h] of current) {
     const prev = storedMap.get(p);
     if (prev === undefined) added.push(p);
-    else if (prev !== h) changed.push(p);
+    else if (prev !== h || parseContexts?.current?.get(p) !== storedContexts?.get(p))
+      changed.push(p);
   }
   const deleted: string[] = [];
   for (const p of storedMap.keys()) {

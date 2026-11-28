@@ -1,0 +1,3 @@
+{
+  "compilerOptions": { "module": "esnext", "strict": true, "strictNullChecks": false, "types": [] }
+}
