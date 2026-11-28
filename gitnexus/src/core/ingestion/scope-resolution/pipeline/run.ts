@@ -24,15 +24,21 @@
  */
 
 import v8 from 'node:v8';
-import type {
-  CallResultAssignmentSite,
-  ParsedFile,
-  ReferenceSite,
-  RegistryProviders,
-  Scope,
-  SymbolDefinition,
+import {
+  needsScopedHeritageArguments,
+  type HeritageSubstitutions,
+} from '../../heritage-substitutions.js';
+import {
+  makeScopeId,
+  type CallResultAssignmentSite,
+  type ParsedFile,
+  type ReferenceSite,
+  type RegistryProviders,
+  type Scope,
+  type ScopeId,
+  type SymbolDefinition,
+  type TypeRef,
 } from 'gitnexus-shared';
-import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { GraphReferenceIntegrityError } from '../../../graph/relationship-integrity.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -115,11 +121,14 @@ import {
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import { buildsPdg } from './registry.js';
 import {
+  findClassBindingInScope,
   findEnclosingClassDef,
   hasExplicitNameClaim,
+  isClassLike,
   lookupNameClaim,
   resolveInheritanceBaseInScope,
 } from '../scope/walkers.js';
+import { publishedNamespaceMember } from '../scope/published-namespace-member.js';
 import { normalizeQualifiedName, stripTrailingTypeArguments } from '../../utils/qualified-name.js';
 import {
   heritageTypeArgumentsKey,
@@ -428,6 +437,45 @@ function resolveImplicitInheritanceBaseAtSite(
   return resolveImplicitBase(site.name, derivingClass, scopes, site);
 }
 
+/** When the lookup name includes its qualifier, the lexical root owns the lookup. */
+function explicitInheritanceBase(
+  site: ReferenceSite,
+  caller: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const start = site.lookupScope ?? site.inScope;
+  const options = { position: site.atRange, purpose: site.lookupPurpose ?? 'type' } as const;
+  if (site.rawQualifiedName !== site.name || !site.name.includes('.')) {
+    return resolveInheritanceBaseInScope(
+      start,
+      site.name,
+      scopes,
+      site.rawQualifiedName,
+      caller,
+      options,
+    );
+  }
+  const [root, ...path] = site.name.split('.');
+  const claim = lookupNameClaim(start, root, scopes, options);
+  if (claim.imports.some((edge) => edge.kind === 'namespace')) {
+    return findClassBindingInScope(start, site.name, scopes, undefined, {
+      ...options,
+      uniqueQualifiedNameFallback: false,
+    });
+  }
+  const member = publishedNamespaceMember(claim.bindings, path, scopes, options.purpose);
+  return member && isClassLike(member.def.type) ? member.def : undefined;
+}
+
+interface ScopedHeritageEdge {
+  child: string;
+  base: string;
+  childDef: string;
+  baseDef: string;
+  scope: ScopeId;
+  needsScope: boolean;
+}
+
 /**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
@@ -436,24 +484,31 @@ function resolveImplicitInheritanceBaseAtSite(
  *
  * @returns Site keys to seed the downstream handled-site skip set.
  *
- * The generic INSTANTIATION each heritage edge was written with (#2912) goes to
- * `recordTypeArguments` rather than out through the return, because the caller
- * shares that sink with the language heritage hook — see
- * `HeritageTypeArguments` in `utils/generic-instantiation.ts`. This pass is
- * where the pairing exists at all: the site carries the arguments and this is
- * the only code that resolves the site to a (subtype, supertype) pair, so
- * recording it here costs one map write per generic heritage edge, while
- * recovering it downstream would mean redoing the resolution against a graph
- * edge that no longer carries the spelling.
+ * Record heritage type arguments as written through the same sink as the
+ * language heritage hook (#2912). When MRO substitutions are requested,
+ * also register the arguments against the resolved base's formal parameters
+ * while both declarations and their source spellings are available.
  */
 function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
-  recordTypeArguments: HeritageTypeArgumentSink,
-  unresolvedInheritanceByClass: Set<string>,
-  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
-  recordSourceBinding?: SourceBindingRecorder,
+  provider: ScopeResolver,
+  {
+    recordTypeArguments,
+    unresolvedInheritanceByClass,
+    recordSourceBinding,
+    substitutions,
+    scopedEdges,
+    scopedOverrideOwners,
+  }: {
+    recordTypeArguments: HeritageTypeArgumentSink;
+    unresolvedInheritanceByClass: Set<string>;
+    recordSourceBinding?: SourceBindingRecorder;
+    substitutions?: HeritageSubstitutions;
+    scopedEdges?: ScopedHeritageEdge[];
+    scopedOverrideOwners?: Set<string>;
+  },
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -492,14 +547,13 @@ function preEmitInheritanceEdges(
     }
 
     const targetDef =
-      resolveInheritanceBaseInScope(
-        site.lookupScope ?? site.inScope,
-        site.name,
-        scopes,
-        site.rawQualifiedName,
+      explicitInheritanceBase(site, callerClass, scopes) ??
+      resolveImplicitInheritanceBaseAtSite(
+        site,
         callerClass,
-        { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
-      ) ?? resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
+        scopes,
+        provider.resolveImplicitInheritanceBase,
+      );
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
       // same-named base. A self-edge is not inheritance evidence and would
@@ -518,20 +572,42 @@ function preEmitInheritanceEdges(
       unresolvedInheritanceByClass.add(callerClass.nodeId);
       continue;
     }
-    // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
-    // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
-    // deriving from a class-like is EXTENDS. The discriminator is purely
-    // symbol-kind-driven (no language is named here, per AGENTS.md): a base that
-    // resolves to neither an Interface nor a Trait symbol always takes the
-    // EXTENDS branch, so such languages are unchanged.
-    const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
-      targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
+    // Use the relationship captured at the declaration. If the provider omits
+    // it, infer conformance to interfaces and traits from the resolved target.
+    const edgeType =
+      site.heritageKind ??
+      (targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS');
     emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
+    if (scopedOverrideOwners && edgeType === 'EXTENDS') {
+      scopedOverrideOwners.add(callerClass.nodeId);
+      scopedOverrideOwners.add(targetDef.nodeId);
+    }
     // The instantiation this heritage clause wrote (`: IValidator<string>`),
     // keyed by the same graph-id pair the edge itself carries. Only generic
     // bases produce an entry; the sink owns the first-writer-wins rule.
     if (site.typeArguments !== undefined) {
       recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
+    }
+    const needsScope =
+      substitutions !== undefined && needsScopedHeritageArguments(site.typeArguments, provider);
+    substitutions?.registerBase(
+      callerGraphId,
+      targetGraphId,
+      targetDef,
+      site.typeArguments,
+      callerClass,
+      provider,
+      needsScope,
+    );
+    if (scopedEdges && site.typeArguments?.length && targetDef.typeParameters?.length) {
+      scopedEdges.push({
+        child: callerGraphId,
+        base: targetGraphId,
+        childDef: callerClass.nodeId,
+        baseDef: targetDef.nodeId,
+        scope: site.inScope,
+        needsScope,
+      });
     }
   }
 
@@ -618,6 +694,7 @@ export type ScopeResolutionSubPhase =
   | 'linking symbols';
 
 interface RunScopeResolutionInput {
+  readonly heritageSubstitutions?: HeritageSubstitutions;
   /** Source-backed providers use the same executable-region cap as workers. */
   readonly pdgMaxFunctionLines?: number;
   /** Observe the completed semantic pass without changing its graph output. */
@@ -921,6 +998,11 @@ export function runScopeResolution(
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
       let extractionWarned = false;
+      const parseContext = provider.fileParseContext?.(
+        file.path,
+        file.content,
+        input.resolutionConfig,
+      );
       parsed = extractParsedFile(
         provider.languageProvider,
         file.content,
@@ -930,6 +1012,7 @@ export function runScopeResolution(
           onWarn(warning);
         },
         cachedTree,
+        { parseContext },
       );
       if (parsed === undefined) {
         filesSkipped++;
@@ -1176,12 +1259,9 @@ export function runScopeResolution(
       name: refused.name,
     });
   }
-  // One store and ONE writer rule for heritage instantiations (#2912), shared by
-  // the pre-pass below and by the language hook further down — a heritage shape
-  // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
-  // through the same sink. FIRST writer wins: a repeated (sub, super) pair is a
-  // partial declaration or a re-listed base, and letting a later entry overwrite
-  // the first would make dispatch depend on file order.
+  // The pre-pass and the language hook share this sink for type arguments as
+  // written (#2912), including Rust `impl T for S` and Dart `implements`.
+  // Keep the first arguments recorded for a partial declaration or re-listed base.
   const heritageTypeArguments = new Map<string, readonly string[]>();
   const recordHeritageTypeArguments: HeritageTypeArgumentSink = (
     subtypeGraphId,
@@ -1193,17 +1273,24 @@ export function runScopeResolution(
     if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, typeArguments);
   };
   const unresolvedInheritanceByClass = new Set<string>();
+  const scopedEdges =
+    provider.normalizeNullableHeritageSignature && input.heritageSubstitutions
+      ? ([] as ScopedHeritageEdge[])
+      : undefined;
+  // A declaration can affect class override lookup only at an endpoint of a
+  // resolved EXTENDS edge. Capture both owners while their DefIds are in hand.
+  const scopedOverrideOwners =
+    input.heritageSubstitutions && provider.needsScopedOverrideType ? new Set<string>() : undefined;
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
-    : preEmitInheritanceEdges(
-        graph,
-        finalized,
-        nodeLookup,
-        recordHeritageTypeArguments,
+    : preEmitInheritanceEdges(graph, finalized, nodeLookup, provider, {
+        recordTypeArguments: recordHeritageTypeArguments,
         unresolvedInheritanceByClass,
-        provider.resolveImplicitInheritanceBase,
         recordSourceBinding,
-      );
+        substitutions: input.heritageSubstitutions,
+        scopedEdges,
+        scopedOverrideOwners,
+      });
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -1303,6 +1390,116 @@ export function runScopeResolution(
     });
   }
 
+  const hasHeritageBindings = input.heritageSubstitutions?.hasBindings;
+  const scopedOverrideType = scopedOverrideOwners?.size && provider.needsScopedOverrideType;
+  if (input.heritageSubstitutions && (hasHeritageBindings || scopedOverrideType)) {
+    const nullableBindings =
+      input.heritageSubstitutions.hasNullableBindings &&
+      provider.specializeNullableHeritageFormal !== undefined;
+    // Only a nullable chain's ancestors and descendants need source-backed method types.
+    const nullableChildren = new Set<string>();
+    const nullableAncestors = new Set<string>();
+    for (const edge of scopedEdges ?? []) {
+      if (!edge.needsScope) continue;
+      nullableChildren.add(edge.childDef);
+      nullableAncestors.add(edge.baseDef);
+      for (const ancestor of mroByClassDefId.get(edge.baseDef) ?? [])
+        nullableAncestors.add(ancestor);
+    }
+    const participation = new Map<string, boolean>();
+    const participates = (owner: string) => {
+      const known = participation.get(owner);
+      if (known !== undefined) return known;
+      const reachesNullable =
+        nullableAncestors.has(owner) ||
+        nullableChildren.has(owner) ||
+        mroByClassDefId.get(owner)?.some((ancestor) => nullableChildren.has(ancestor)) === true;
+      participation.set(owner, reachesNullable);
+      return reachesNullable;
+    };
+    const normalize = nullableChildren.size > 0 && provider.normalizeNullableHeritageSignature;
+    if (normalize) {
+      for (const edge of scopedEdges ?? []) {
+        if (!participates(edge.childDef)) continue;
+        input.heritageSubstitutions.normalizeBase(edge.child, edge.base, (type) =>
+          normalize(type, { scope: edge.scope, indexes }),
+        );
+      }
+    }
+    for (const def of finalized.defs.byId.values()) {
+      if (def.type !== 'Method') continue;
+      const useDeclaredTypes = nullableBindings && def.declaredParameterTypes !== undefined;
+      const declared = def.declaredParameterTypes ?? def.parameterTypes;
+      let scopedTypes: string[] | null | undefined;
+      let scopedResult: string | null | undefined;
+      const overrideOwner = def.ownerId !== undefined && scopedOverrideOwners?.has(def.ownerId);
+      // Some providers keep the complete return spelling on the graph method.
+      // Only compare declarations belonging to an actual class inheritance edge.
+      const graphMethod =
+        scopedOverrideType && overrideOwner && !def.returnType
+          ? resolveDefGraphId(def.filePath, def, nodeLookup)
+          : undefined;
+      const returnType =
+        def.returnType ??
+        (graphMethod ? graph.getNode(graphMethod)?.properties.returnType : undefined);
+      const scopeOverride =
+        scopedOverrideType &&
+        overrideOwner &&
+        (declared?.some(scopedOverrideType) || (returnType && scopedOverrideType(returnType)));
+      let normalizeHere: ScopeResolver['normalizeNullableHeritageSignature'];
+      if (scopeOverride) normalizeHere = provider.normalizeNullableHeritageSignature;
+      else if (normalize && def.ownerId && participates(def.ownerId)) normalizeHere = normalize;
+      if (normalizeHere && def.declarationRange) {
+        const scope = makeScopeId({
+          filePath: def.filePath,
+          range: def.declarationRange,
+          kind: 'Function',
+        });
+        if (finalized.scopeTree.has(scope)) {
+          if (declared)
+            for (const [i, type] of declared.entries()) {
+              const normalized = normalizeHere(type, { scope, indexes });
+              if (normalized === null) {
+                scopedTypes = null;
+                break;
+              }
+              if (normalized !== type) {
+                scopedTypes ??= [...declared];
+                scopedTypes[i] = normalized;
+              }
+            }
+          if (scopeOverride && returnType) {
+            const normalized = normalizeHere(returnType, { scope, indexes });
+            if (normalized !== returnType) scopedResult = normalized;
+          }
+        }
+      }
+      const retainFormals =
+        def.typeParameters?.length &&
+        (hasHeritageBindings ||
+          (overrideOwner &&
+            provider.languageProvider.overrideSignature?.applies(declared ?? [], returnType)));
+      if (
+        !retainFormals &&
+        !useDeclaredTypes &&
+        scopedTypes === undefined &&
+        scopedResult === undefined
+      )
+        continue;
+      const id = graphMethod ?? resolveDefGraphId(def.filePath, def, nodeLookup);
+      if (id) {
+        input.heritageSubstitutions.registerMethod(
+          id,
+          def,
+          useDeclaredTypes,
+          scopedTypes,
+          Boolean(scopeOverride && (scopedTypes !== undefined || scopedResult !== undefined)),
+          scopedResult,
+        );
+      }
+    }
+  }
+
   const tFinalize = PROF ? process.hrtime.bigint() : 0n;
 
   // Cross-package namespace typeBinding mirroring. Runs before
@@ -1361,10 +1558,28 @@ export function runScopeResolution(
     }
   }
 
-  const selectedCalls =
-    provider.receiverCallSite === undefined
-      ? undefined
-      : new Map<string, SymbolDefinition | null>();
+  // A receiver and its producing call are in the same source file. An inline
+  // chain can consume a selected result even without an assignment.
+  const receiverCallSite = provider.receiverCallSite;
+  const callResultFiles = new Set<string>();
+  if (receiverCallSite !== undefined) {
+    for (const file of parsedFiles) {
+      if (
+        file.callResultAssignmentSites?.some((site) => !refusedCallResultSites.has(site)) ||
+        file.referenceSites.some(
+          (site) =>
+            site.kind === 'call' &&
+            site.explicitReceiver !== undefined &&
+            receiverCallSite(site, indexes) !== undefined,
+        )
+      ) {
+        callResultFiles.add(file.filePath);
+      }
+    }
+  }
+  const selectedCalls = callResultFiles.size
+    ? new Map<string, SymbolDefinition | null>()
+    : undefined;
   const pendingCallReceivers = selectedCalls === undefined ? undefined : new Map<string, string>();
   const callResultProducers =
     selectedCalls === undefined ? undefined : new Map<string, CallResultAssignmentSite>();
@@ -1423,6 +1638,7 @@ export function runScopeResolution(
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    qualifiedTypeMemberKind: provider.qualifiedTypeMemberKind,
     isNamespaceMemberVisible:
       memberVisibleToQualifier === undefined
         ? undefined
@@ -1528,7 +1744,9 @@ export function runScopeResolution(
   const callResultAssignmentSites = new Set<string>();
   for (const parsed of emitParsedFiles) {
     for (const site of parsed.callResultAssignmentSites ?? []) {
-      callResultAssignmentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+      if (!refusedCallResultSites.has(site)) {
+        callResultAssignmentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+      }
     }
   }
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
@@ -1548,7 +1766,7 @@ export function runScopeResolution(
     input.pdg === true ||
     deferredIndirectSites.size > 0 ||
     callResultAssignmentSites.size > 0 ||
-    provider.receiverCallSite !== undefined
+    selectedCalls !== undefined
       ? createCalleeIdAccumulator(
           input.pdg === true
             ? undefined
@@ -1581,6 +1799,7 @@ export function runScopeResolution(
           pendingCallReceivers,
           callResultProducers,
           allFilePaths,
+          functionLocalValueDefIds,
           calleeIdSink: calleeIdAccumulator,
           // The pass's sources of positive EXTERNAL evidence for a dropped
           // receiver (`console.log`, `document.body`, `import os`). The first is
@@ -1687,6 +1906,10 @@ export function runScopeResolution(
         );
   if (replayedCallResultBindings > 0 || selectedCalls !== undefined) {
     const handledBeforeReplay = new Set(handledSites);
+    const replayFiles =
+      selectedCalls === undefined
+        ? emitParsedFiles
+        : emitParsedFiles.filter((file) => callResultFiles.has(file.filePath));
     const replayedReceiverBound = emitReceiverBoundCalls(
       graph,
       indexes,
@@ -1697,6 +1920,7 @@ export function runScopeResolution(
       workspaceIndex,
       readonlyModel,
       {
+        siteFiles: replayFiles,
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
         recordResolutionOutcome: selectedCalls === undefined ? undefined : recordResolutionOutcome,
@@ -1708,6 +1932,7 @@ export function runScopeResolution(
         externalReceiverNames: provider.languageProvider.externalReceiverNames,
         isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
         allFilePaths,
+        functionLocalValueDefIds,
         heritageTypeArguments,
         unresolvedInheritanceByClass,
       },
@@ -1735,11 +1960,16 @@ export function runScopeResolution(
       const receiverDropPositions = new Map<string, number>();
       let kept = 0;
       for (const outcome of resolutionOutcomes) {
-        if (outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved') {
+        if (
+          outcome.kind === 'suppressed' &&
+          (outcome.reason === 'receiver-unresolved' ||
+            outcome.reason === 'receiver-owned-but-unbound')
+        ) {
           const resolved =
-            selectedCalls === undefined
+            outcome.reason === 'receiver-unresolved' &&
+            (selectedCalls === undefined
               ? resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
-              : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null;
+              : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null);
           if (resolved) continue;
           if (outcome.siteKind !== undefined) {
             const key = answeredSiteKey(

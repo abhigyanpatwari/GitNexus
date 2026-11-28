@@ -141,10 +141,17 @@ assert.equal(result.calls, importers, 'Each importer calls one method');
 if (values.check) {
   assert.equal(wildcardEdges, 0, 'A wildcard import was stored as one edge per package file');
   // The importers' go methods, Trig.m and Color.t have package access.
+  // Color.t starts at the T in its field declaration on the third source line.
+  if (values.closure) {
+    assert.equal(
+      parsed.graph.getNode('Property:src/lim/Color.java:Color.t')?.properties.startColumn,
+      32,
+    );
+  }
   assert.equal(
     result.fingerprint,
     values.closure
-      ? '0f9f400e2539353f685a9936e71178d9101b4759a3608adbfe2ddf3481c8568f'
+      ? '8f2eaf97a355ed0fd56b7b394d326e8ce2364f1f62420171b6b171eb64f41b0f'
       : 'e8a3b2291a43a1202883455d46969972bbbdcf48011d79cdfbca1dc9fa3bbe1d',
     'Wildcard Java graph differs from the reviewed baseline',
   );

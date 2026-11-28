@@ -1,0 +1,1 @@
+export { operations as api } from './namespace.js';

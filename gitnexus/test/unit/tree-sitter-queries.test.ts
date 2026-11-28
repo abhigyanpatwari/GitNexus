@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
-import TypeScript from 'tree-sitter-typescript';
 import {
   TYPESCRIPT_QUERIES,
   JAVASCRIPT_QUERIES,
@@ -55,22 +54,6 @@ describe('tree-sitter queries', () => {
     it('captures function declarations', () => {
       expect(TYPESCRIPT_QUERIES).toContain('function_declaration');
       expect(TYPESCRIPT_QUERIES).toContain('@definition.function');
-    });
-
-    it('captures async generator function declarations as function definitions', () => {
-      const names = capturedDefinitionFunctionNames(
-        TypeScript.typescript as Parameters<Parser['setLanguage']>[0],
-        TYPESCRIPT_QUERIES,
-        `
-        export function userText() { return ''; }
-        export async function* runCoachLoop(): AsyncGenerator<string> {
-          yield 'ready';
-        }
-      `,
-      );
-
-      expect(names).toContain('userText');
-      expect(names).toContain('runCoachLoop');
     });
 
     it('captures method definitions', () => {

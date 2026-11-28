@@ -1,0 +1,11 @@
+{
+  "include": [
+    "../src",
+    "../packages/[api]/*.ts",
+    "../packages/*/index.ts"
+  ],
+  "exclude": [
+    "../src/excluded.ts",
+    "../src/ignored*"
+  ]
+}
