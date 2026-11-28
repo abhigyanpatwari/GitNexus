@@ -5,6 +5,26 @@ import {
 } from '../../class-extractors/configs/typescript-javascript.js';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
+function enclosingMemberOwner(member: SyntaxNode) {
+  for (let parent = member.parent; parent !== null; parent = parent.parent) {
+    // Object members and executable-body locals belong to their own scope.
+    if (
+      parent.type === 'object' ||
+      parent.type === 'object_type' ||
+      parent.type === 'statement_block'
+    )
+      return null;
+    if (
+      parent.type === 'class' ||
+      parent.type === 'class_declaration' ||
+      parent.type === 'abstract_class_declaration' ||
+      parent.type === 'interface_declaration'
+    )
+      return resolveTsJsContainerTypeOwner(parent);
+  }
+  return null;
+}
+
 /** Keep class scope declarations on the graph's owner/member IDs. Reject an anonymous
  * parenthesized class candidate unless its export supplies the `default` binding. */
 export function synthesizeTsJsClassIdentity(
@@ -36,30 +56,13 @@ export function synthesizeTsJsClassIdentity(
     nodes['@declaration.property'];
   const name = captures['@declaration.name'];
   if (member === undefined || name === undefined) return true;
-  for (let parent = member.parent; parent !== null; parent = parent.parent) {
-    // Object members and executable-body locals belong to their own scope.
-    if (
-      parent.type === 'object' ||
-      parent.type === 'object_type' ||
-      parent.type === 'statement_block'
-    )
-      return true;
-    if (
-      parent.type === 'class' ||
-      parent.type === 'class_declaration' ||
-      parent.type === 'abstract_class_declaration' ||
-      parent.type === 'interface_declaration'
-    ) {
-      const owner = resolveTsJsContainerTypeOwner(parent);
-      if (owner !== null) {
-        captures['@declaration.qualified_name'] = syntheticCapture(
-          '@declaration.qualified_name',
-          member,
-          `${owner.name}.${name.text}`,
-        );
-      }
-      return true;
-    }
+  const owner = enclosingMemberOwner(member);
+  if (owner !== null) {
+    captures['@declaration.qualified_name'] = syntheticCapture(
+      '@declaration.qualified_name',
+      member,
+      `${owner.name}.${name.text}`,
+    );
   }
   return true;
 }

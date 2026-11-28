@@ -619,35 +619,36 @@ function createInstanceofNarrowingCollector() {
       byName.set(begins.name, begins);
     }
   }
+  function recordIfGuards(node: SyntaxNode, scope: LexicalScope): void {
+    const guard = readInstanceofGuard(node, scope);
+    if (!guard) return;
+    guards.push(guard);
+    pending.set(guard.consequence.id, guard);
+    const alternative = node.childForFieldName('alternative')?.lastNamedChild;
+    if (!alternative) return;
+    const opposite: InstanceofGuard = {
+      ...guard,
+      consequence: alternative,
+      alternative: true,
+      uses: [],
+    };
+    // Direct else-if tests have no intervening receiver write or lexical declaration.
+    // Keep only the first test of each constructor on each receiver in this chain.
+    const outer = active.at(-1)?.guard;
+    if (outer?.alternative && outer.consequence.id === node.id) {
+      const chain = outer.chain ?? new Map();
+      if (!outer.chain) recordFirstTest(outer, chain);
+      recordFirstTest(opposite, chain);
+    }
+    guards.push(opposite);
+    pending.set(alternative.id, opposite);
+  }
   return {
     writes,
     observe(node: SyntaxNode, scope: LexicalScope): void {
       updateActiveGuards(node);
       if (node.type === 'if_statement') {
-        const guard = readInstanceofGuard(node, scope);
-        if (guard) {
-          guards.push(guard);
-          pending.set(guard.consequence.id, guard);
-          const alternative = node.childForFieldName('alternative')?.lastNamedChild;
-          if (alternative) {
-            const outer = active.at(-1)?.guard;
-            const opposite: InstanceofGuard = {
-              ...guard,
-              consequence: alternative,
-              alternative: true,
-              uses: [],
-            };
-            // Direct else-if tests have no intervening receiver write or lexical declaration.
-            // Keep only the first test of each constructor on each receiver in this chain.
-            if (outer?.alternative && outer.consequence.id === node.id) {
-              const chain = outer.chain ?? new Map();
-              if (!outer.chain) recordFirstTest(outer, chain);
-              recordFirstTest(opposite, chain);
-            }
-            guards.push(opposite);
-            pending.set(alternative.id, opposite);
-          }
-        }
+        recordIfGuards(node, scope);
       } else if (byName.size > 0 && node.type === 'member_expression') {
         const receiver = node.childForFieldName('object');
         const guard =

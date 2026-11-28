@@ -116,6 +116,14 @@ async function* readProjectConfigs(paths: ReadonlySet<string>, extended: Set<str
     yield readCompilerOptions(absPath, 0, extended).then((options) => ({ absPath, options }));
 }
 
+function repoRelativeFileSelection(repoRoot: string, options: ResolvedOptions) {
+  const selection: Pick<ResolvedOptions, 'files' | 'include' | 'exclude'> = {};
+  for (const key of ['files', 'include', 'exclude'] as const) {
+    if (options[key]) selection[key] = options[key].map((entry) => repoRelative(repoRoot, entry));
+  }
+  return selection;
+}
+
 /** Load every tsconfig in the repo, resolving `extends` chains. */
 export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex | null> {
   const files = await findTsconfigFiles(repoRoot);
@@ -141,10 +149,7 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
     // package lookups — silently inherited the repo root's aliases instead.
     // An empty scope is the accurate answer for such a file, and only a scope
     // can express it.
-    const selection: Pick<ResolvedOptions, 'files' | 'include' | 'exclude'> = {};
-    for (const key of ['files', 'include', 'exclude'] as const) {
-      if (options[key]) selection[key] = options[key].map((entry) => repoRelative(repoRoot, entry));
-    }
+    const selection = repoRelativeFileSelection(repoRoot, options);
     const { references: declared = [], ...compilerOptions } = options;
     const targets = declared.filter((target) => {
       const relative = path.relative(repoRoot, target);

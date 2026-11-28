@@ -59,9 +59,20 @@ export function parseTypeParameterList(text: string): TypeParameter[] | undefine
   text = withoutTypeComments(text);
   const open = text.indexOf('<');
   if (open === -1) return undefined;
-  const finalCloser = text.lastIndexOf('>');
   const out: TypeParameter[] = [];
   let start = open + 1;
+  for (const end of parameterDelimiters(text, start)) {
+    const parameter = parseEntry(text.slice(start, end));
+    if (parameter) out.push(parameter);
+    if (text[end] === '>') return out.length ? out : undefined;
+    start = end + 1;
+  }
+  return undefined;
+}
+
+/** Top-level commas and the closing angle of the parameter list. */
+function* parameterDelimiters(text: string, start: number): Generator<number> {
+  const finalCloser = text.lastIndexOf('>');
   let depth = 0;
   let inDefault = false;
   for (const i of ungroupedOffsets(text, start)) {
@@ -72,16 +83,13 @@ export function parseTypeParameterList(text: string): TypeParameter[] | undefine
       // A comparison inside a default has its own closing angle later.
       // In a bound like Box<U>=Default, the nested angle closes above.
       if (ch === '=') inDefault = true;
-      if (ch === '>' && inDefault && text[i + 1] === '=' && i < finalCloser) continue;
-      if (ch !== ',' && ch !== '>') continue;
-      const parameter = parseEntry(text.slice(start, i));
-      if (parameter) out.push(parameter);
-      if (ch === '>') return out.length ? out : undefined;
-      start = i + 1;
-      inDefault = false;
+      const closesList = ch === '>' && !(inDefault && text[i + 1] === '=' && i < finalCloser);
+      if (ch === ',' || closesList) {
+        yield i;
+        inDefault = false;
+      }
     }
   }
-  return undefined;
 }
 
 /**
