@@ -15,6 +15,7 @@ gitnexus mcp --http              # Start MCP server (Streamable HTTP + SSE) — 
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus eval-server             # Start lightweight evaluation HTTP tools (loopback by default)
 gitnexus list                    # List all indexed repositories
+gitnexus list --json             # The same repositories as one JSON line, for scripts
 gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
 gitnexus wiki [path]             # Generate repository wiki from knowledge graph

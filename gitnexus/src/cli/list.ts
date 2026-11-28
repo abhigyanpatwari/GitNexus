@@ -4,11 +4,41 @@
  * Shows all indexed repositories from the global registry.
  */
 
-import { listRegisteredRepos } from '../storage/repo-manager.js';
+import { listRegisteredRepos, type RegistryEntry } from '../storage/repo-manager.js';
 import { t } from './i18n/index.js';
 
-export const listCommand = async () => {
+export interface ListOptions {
+  json?: boolean;
+}
+
+/**
+ * One `list --json` row: the registry fields, under the names the MCP
+ * `list_repos` tool gives them. It is not the whole `list_repos` row, which
+ * also carries `staleness`, `siblings`, `contentRetention` and
+ * `sourceAvailable`, computed per repository.
+ */
+const toJsonRow = (entry: RegistryEntry) => ({
+  name: entry.name,
+  path: entry.path,
+  storagePath: entry.storagePath,
+  indexedAt: entry.indexedAt,
+  lastCommit: entry.lastCommit,
+  remoteUrl: entry.remoteUrl,
+  stats: entry.stats,
+  branch: entry.branch,
+  branches: entry.branches?.length
+    ? entry.branches.map(({ branch, indexedAt, lastCommit }) => ({ branch, indexedAt, lastCommit }))
+    : undefined,
+});
+
+export const listCommand = async (options: ListOptions = {}) => {
   const entries = await listRegisteredRepos({ validate: true });
+
+  if (options.json) {
+    // One line on stdout, so a script can parse it; no registry is an empty list.
+    console.log(JSON.stringify({ schemaVersion: 1, repositories: entries.map(toJsonRow) }));
+    return;
+  }
 
   if (entries.length === 0) {
     console.log(t('common.notIndexed'));

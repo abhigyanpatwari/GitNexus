@@ -95,6 +95,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'mcp|--auth-token <token>': 'help.option.mcp.authToken',
   'serve|-p, --port <port>': 'help.option.port',
   'serve|--host <host>': 'help.option.serve.host',
+  'list|--json': 'help.option.json',
   'status|--json': 'help.option.status.json',
   'uninstall|-f, --force': 'help.option.uninstall.force',
   'clean|-f, --force': 'help.option.force.confirmation',
