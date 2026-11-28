@@ -1,3 +1,4 @@
+import type { CallNullMode } from './global-declarations.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
 import {
@@ -87,7 +88,8 @@ export function acceptsArgumentEvidence(
   annotation: string,
   type: string,
   evidence?: ArgumentEvidence | null,
-  acceptsLooseField?: (value: string) => boolean,
+  mode: CallNullMode = 'strict',
+  fieldUndefinedType?: () => string | undefined,
 ): ArgumentCompatibility {
   const literal = literalValue(annotation);
   if (literal !== undefined) {
@@ -118,22 +120,28 @@ export function acceptsArgumentEvidence(
   const accepted = new Set<string>();
   for (const field of annotation.slice(1, -1).split(/[;,]/u)) {
     if (!field.trim()) continue;
-    const prop =
-      /^\s*(?:readonly\s+)?([\w$]+)(\?)?\s*:\s*(number|string|boolean|unknown|any)\s*$/u.exec(
-        field,
-      );
+    const prop = /^\s*(?:readonly\s+)?([\w$]+)(\?)?\s*:\s*([\w\s|]+?)\s*$/u.exec(field);
     if (!prop) return undefined;
-    accepted.add(prop[1]);
-    const value = fields.get(prop[1]);
+    const alternatives = prop[3].split(/\s*\|\s*/u);
     if (
-      value === undefined
-        ? !prop[2]
-        : prop[3] !== value &&
-          prop[3] !== 'any' &&
-          prop[3] !== 'unknown' &&
-          !acceptsLooseField?.(value)
+      !alternatives.every((part) =>
+        /^(?:number|string|boolean|unknown|any|undefined|null)$/u.test(part),
+      )
     )
-      return false;
+      return undefined;
+    accepted.add(prop[1]);
+    const raw = fields.get(prop[1]);
+    if (raw === undefined) {
+      if (!prop[2]) return false;
+      continue;
+    }
+    if (alternatives.includes('any') || alternatives.includes('unknown')) continue;
+    const value = raw === 'undefined' && fieldUndefinedType ? fieldUndefinedType() : raw;
+    if (value === undefined) return undefined;
+    if (alternatives.includes(value)) continue;
+    if (mode === 'loose' && (value === 'null' || value === 'undefined')) continue;
+    if (mode === 'strict' && prop[2] && value === 'undefined') continue;
+    return false;
   }
   return [...fields.keys()].every((key) => accepted.has(key));
 }

@@ -23,7 +23,8 @@ import {
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import {
-  callStrictNullChecks,
+  callNullModes,
+  type CallNullMode,
   overloadNameTable,
   receiverTypeIsOutOfScope,
 } from './global-declarations.js';
@@ -360,11 +361,11 @@ function fixedPrimitiveTuple(spelling?: string): string[] | undefined {
 function acceptsPrimitiveArguments(
   signature: SymbolDefinition,
   types: string[],
-  strictNullChecks: boolean,
+  mode: CallNullMode,
   indexes: ScopeResolutionIndexes,
   evidence?: readonly (ArgumentEvidence | null)[],
   enumArguments?: ReadonlyMap<number, NonNullable<ReturnType<typeof enumArgument>>>,
-  acceptsLooseField?: (value: string) => boolean,
+  fieldUndefinedType?: () => string | undefined,
 ): ArgumentCompatibility {
   if (!signature.declarationRange) return undefined;
   const formals = signature.parameterTypes;
@@ -420,7 +421,7 @@ function acceptsPrimitiveArguments(
   for (const [i, type] of types.entries()) {
     const annotation = annotations[i] ?? restElement;
     if (annotation === undefined) return undefined;
-    const looseNull = !strictNullChecks && isNullish(type);
+    const looseNull = mode === 'loose' && isNullish(type);
     if (
       type === 'undefined' &&
       i >= (signature.requiredParameterCount ?? Infinity) &&
@@ -443,7 +444,7 @@ function acceptsPrimitiveArguments(
     const enumValue = enumArguments?.get(i);
     const checked = enumValue
       ? acceptsEnum(annotation, enumValue, signature, scope.id, indexes)
-      : acceptsArgumentEvidence(annotation, type, evidence?.[i], acceptsLooseField);
+      : acceptsArgumentEvidence(annotation, type, evidence?.[i], mode, fieldUndefinedType);
     if (checked === false) return false;
     if (checked === true) continue;
     if (checked === 'assignable') {
@@ -662,9 +663,11 @@ function selectProjectOverload(
       (declarations?.get(a.ownerId ?? '') ?? 0) - (declarations?.get(b.ownerId ?? '') ?? 0) ||
       byPosition(a.declarationRange!, b.declarationRange!),
   );
-  const mode = callStrictNullChecks(site, indexes);
-  if (mode !== 'mixed') return select(mode);
-  const strict = select(true);
+  const modes = callNullModes(site, indexes);
+  let shadowType: string | undefined;
+  let checkedUndefined = false;
+  const first = select(modes[0]);
+  if (modes.length === 1) return first;
   const hasNullishArgument = types.some((type, i) => {
     if (isNullish(type)) return true;
     const arg = evidence?.[i];
@@ -675,30 +678,38 @@ function selectProjectOverload(
       arg.fields.some(([, fieldType]) => isNullish(fieldType))
     );
   });
-  if (!hasNullishArgument) return strict;
-  return strict === select(false) ? strict : 'project-dependent';
+  if (!hasNullishArgument) return first;
+  return modes.every((mode) => mode === modes[0] || select(mode) === first)
+    ? first
+    : 'project-dependent';
 
-  // A property spelled undefined may refer to a local value of any type.
-  function acceptsLooseField(value: string): boolean {
-    if (value !== 'undefined') return value === 'null';
-    const claim = lookupNameClaim(site.inScope, 'undefined', indexes, {
-      purpose: 'value',
-      position: site.atRange,
-    });
-    return claim.status === 'absent' && !claim.typeBinding;
+  // The identifier in `{ value: undefined }` can be a typed local binding.
+  function fieldUndefinedType() {
+    if (!checkedUndefined) {
+      const claim = lookupNameClaim(site.inScope, 'undefined', indexes, {
+        purpose: 'value',
+        position: site.atRange,
+      });
+      shadowType =
+        claim.status === 'absent' && !claim.typeBinding
+          ? 'undefined'
+          : (claim.typeBinding?.declaredSpelling ?? claim.typeBinding?.rawName);
+      checkedUndefined = true;
+    }
+    return shadowType;
   }
 
-  function select(strictNullChecks: boolean) {
+  function select(mode: CallNullMode) {
     let firstAssignable: SymbolDefinition | undefined;
     for (const signature of signatures) {
       const applicable = acceptsPrimitiveArguments(
         signature,
         types,
-        strictNullChecks,
+        mode,
         indexes,
         evidence,
         enumArguments,
-        strictNullChecks ? undefined : acceptsLooseField,
+        fieldUndefinedType,
       );
       if (applicable === undefined) return undefined;
       if (applicable === true) return signature;

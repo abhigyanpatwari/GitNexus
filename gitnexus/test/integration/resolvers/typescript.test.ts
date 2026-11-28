@@ -1679,3 +1679,27 @@ export function numberCall() { return API.numberValue(); }
     ]);
   });
 });
+
+describe('TypeScript optional parameters named undefined', () => {
+  const result = useFixture('ts-optional-undefined-shadow', {
+    'tsconfig.json': JSON.stringify({
+      compilerOptions: { strict: true, exactOptionalPropertyTypes: true },
+    }),
+    'use.ts': `class WithText { read() {} }
+class Other { read() {} }
+function pick(value: { text?: string }): WithText;
+function pick(value: unknown): Other;
+function pick(value: unknown): WithText | Other { return new Other(); }
+export function maybe(undefined?: string) { const value = pick({ text: undefined }); value.read(); }
+export function known(undefined: string) { const value = pick({ text: undefined }); value.read(); }`,
+  });
+
+  it('only publishes the specific result for a definitely string-valued parameter', () => {
+    const callers = result()
+      .graph.relationships.filter(
+        (edge) => edge.type === 'CALLS' && edge.targetId === 'Method:use.ts:WithText.read#0',
+      )
+      .map((edge) => edge.sourceId);
+    expect(callers).toEqual(['Function:use.ts:known']);
+  });
+});

@@ -715,8 +715,9 @@ ${['function_signature', 'method_signature', 'abstract_method_signature']
   type: (type_annotation
     (generic_type) @type-binding.type)) @type-binding.parameter
 
+;; In a parameter binding the TypeScript grammar names the legal spelling undefined separately.
 (required_parameter
-  pattern: (identifier) @type-binding.name
+  pattern: [(identifier) (undefined)] @type-binding.name
   type: (type_annotation
     (predefined_type) @type-binding.type)) @type-binding.parameter
 
@@ -759,7 +760,7 @@ ${['function_signature', 'method_signature', 'abstract_method_signature']
 
 (required_parameter
   (accessibility_modifier)
-  pattern: (identifier) @type-binding.name
+  pattern: [(identifier) (undefined)] @type-binding.name
   type: (type_annotation
     (predefined_type) @type-binding.type)) @type-binding.parameter-property
 
@@ -791,6 +792,8 @@ ${['function_signature', 'method_signature', 'abstract_method_signature']
   type: (type_annotation
     (generic_type) @type-binding.type)) @type-binding.parameter
 
+;; A parameter named undefined can itself be omitted. Its bare annotation does
+;; not establish the type at a use of that identifier.
 (optional_parameter
   pattern: (identifier) @type-binding.name
   type: (type_annotation

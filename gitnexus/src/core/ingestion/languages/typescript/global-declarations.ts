@@ -31,10 +31,15 @@ type Projects = {
 const projectsByFiles = new WeakMap<readonly ParsedFile[], Projects | undefined>();
 // TypeScript 7 enables strict checking by default. Keep only files for which
 // resolution can differ, using the same program membership as global names.
-type NullChecks = boolean | 'mixed';
-const nullChecksByScopeTree = new WeakMap<
+export type CallNullMode = 'loose' | 'strict' | 'exact';
+const singleMode: Record<CallNullMode, readonly CallNullMode[]> = {
+  loose: ['loose'],
+  strict: ['strict'],
+  exact: ['exact'],
+};
+const nullModesByScopeTree = new WeakMap<
   ScopeResolutionIndexes['scopeTree'],
-  Map<string, false | 'mixed'>
+  Map<string, readonly CallNullMode[]>
 >();
 
 /** Preserve the code-unit order of the serialized IDs, including numeric program indices. */
@@ -45,16 +50,26 @@ export function compareGlobalProjectIds(
   return compareCodeUnits(String(left), String(right));
 }
 
-function strictNullChecks(project: TsconfigScope | string): boolean {
-  return typeof project === 'string' || (project.strictNullChecks ?? project.strict ?? true);
+function projectNullMode(project: TsconfigScope | string): CallNullMode {
+  if (typeof project === 'string') return 'strict';
+  if (!(project.strictNullChecks ?? project.strict ?? true)) return 'loose';
+  return project.exactOptionalPropertyTypes ? 'exact' : 'strict';
 }
 
+export function callNullModes(site: ReferenceSite, indexes: ScopeResolutionIndexes) {
+  const overrides = nullModesByScopeTree.get(indexes.scopeTree);
+  return (
+    overrides?.get(indexes.scopeTree.getScope(site.inScope)?.filePath ?? '') ?? singleMode.strict
+  );
+}
+
+/** Strict-null consumers need agreement independent of exact optional property checking. */
 export function callStrictNullChecks(
   site: ReferenceSite,
   indexes: ScopeResolutionIndexes,
-): NullChecks {
-  const overrides = nullChecksByScopeTree.get(indexes.scopeTree);
-  return overrides?.get(indexes.scopeTree.getScope(site.inScope)?.filePath ?? '') ?? true;
+): boolean | 'mixed' {
+  const modes = callNullModes(site, indexes);
+  return modes.includes('loose') ? (modes.length === 1 ? false : 'mixed') : true;
 }
 
 const scriptDeclarations = new WeakSet<SymbolDefinition>();
@@ -154,7 +169,7 @@ export function rememberDeclarationProjects(
   config: Projects | undefined,
 ) {
   if (
-    config?.tsconfigs?.scopes.some((scope) => !strictNullChecks(scope)) ||
+    config?.tsconfigs?.scopes.some((scope) => projectNullMode(scope) !== 'strict') ||
     files.some((file) => {
       const scope = declarationScope(file.captureSideChannel);
       return scope && (scope.globalNames.length || scope.scriptNames?.length);
@@ -311,7 +326,7 @@ export function bindGlobalDeclarations(
   files: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
 ) {
-  nullChecksByScopeTree.delete(indexes.scopeTree);
+  nullModesByScopeTree.delete(indexes.scopeTree);
   if (!projectsByFiles.has(files)) return;
   const config = projectsByFiles.get(files);
   const projectOf = (file: ParsedFile) =>
@@ -321,10 +336,10 @@ export function bindGlobalDeclarations(
   const membership = projectMembers(files, config, indexes, projectOf);
   const standalone = new Set(config?.tsconfigs?.standalonePrograms);
   const programIds = new Map(config?.tsconfigs?.scopes.map((scope, index) => [scope, index]));
-  const nullChecks = config?.tsconfigs?.scopes.some((scope) => !strictNullChecks(scope))
-    ? new Map<string, false | 'mixed'>()
+  const nullModes = config?.tsconfigs?.scopes.some((scope) => projectNullMode(scope) !== 'strict')
+    ? new Map<string, readonly CallNullMode[]>()
     : undefined;
-  if (nullChecks) nullChecksByScopeTree.set(indexes.scopeTree, nullChecks);
+  if (nullModes) nullModesByScopeTree.set(indexes.scopeTree, nullModes);
   const globals = new Map<TsconfigScope | string, Map<string, BindingRef[]>>();
   const declaredNamespaces = new Map<ParsedFile, Set<SymbolDefinition>>();
   for (const file of files) {
@@ -404,8 +419,13 @@ export function bindGlobalDeclarations(
         visibleProjects = primary.length ? primary : configured;
       }
     }
-    if (nullChecks && visibleProjects.some((project) => !strictNullChecks(project))) {
-      nullChecks.set(file.filePath, visibleProjects.some(strictNullChecks) ? 'mixed' : false);
+    if (nullModes) {
+      const first = projectNullMode(visibleProjects[0]);
+      if (visibleProjects.some((project) => projectNullMode(project) !== first)) {
+        nullModes.set(file.filePath, [...new Set(visibleProjects.map(projectNullMode))]);
+      } else if (first !== 'strict') {
+        nullModes.set(file.filePath, singleMode[first]);
+      }
     }
     if (visibleProjects.includes(owner)) visibleProjects = [owner];
     const symbols = globals.get(visibleProjects[0]);

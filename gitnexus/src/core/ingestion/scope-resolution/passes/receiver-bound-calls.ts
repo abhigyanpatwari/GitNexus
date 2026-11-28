@@ -712,6 +712,8 @@ export function emitReceiverBoundCalls(
 }
 
 interface ReceiverBoundOptions {
+  /** Value definitions excluded from published ACCESSES edges by the graph bridge. */
+  readonly functionLocalValueDefIds?: ReadonlySet<string>;
   /** Only these files have call sites to revisit. Declarations from all files remain visible. */
   readonly siteFiles?: readonly ParsedFile[];
   /** Stable pass identity for provider indexes shared with return propagation. */
@@ -2705,6 +2707,14 @@ function emitReceiverBoundCallsInPass(
             continue;
           }
           recordMember(memberDef);
+          if (
+            declared &&
+            (site.kind === 'read' || site.kind === 'write') &&
+            options.functionLocalValueDefIds?.has(memberDef.nodeId)
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
           const ok = tryEmitEdge(
             graph,
             scopes,

@@ -1793,6 +1793,7 @@ export function runScopeResolution(
           pendingCallReceivers,
           callResultProducers,
           allFilePaths,
+          functionLocalValueDefIds,
           calleeIdSink: calleeIdAccumulator,
           // The pass's sources of positive EXTERNAL evidence for a dropped
           // receiver (`console.log`, `document.body`, `import os`). The first is
@@ -1925,6 +1926,7 @@ export function runScopeResolution(
         externalReceiverNames: provider.languageProvider.externalReceiverNames,
         isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
         allFilePaths,
+        functionLocalValueDefIds,
         heritageTypeArguments,
         unresolvedInheritanceByClass,
       },

@@ -486,6 +486,17 @@ ${registration}
 });
 
 describe('Node timer imports in callback initializers', () => {
+  const immediateBindings = `
+    function runImmediate() {}
+    const directHandle = setImmediate(() => runImmediate());
+    const globalHandle = global.setImmediate(() => runImmediate());
+    const currentHandle = globalThis.setImmediate(() => runImmediate());
+    function useCustom(setImmediate, globalThis) {
+      const localWrapper = setImmediate(() => runImmediate());
+      const memberWrapper = globalThis.setImmediate(() => runImmediate());
+      localWrapper(); memberWrapper();
+    }
+  `;
   const esm = `
     import { setTimeout as defer, setInterval } from 'node:timers';
     import * as timers from 'timers';
@@ -517,10 +528,38 @@ describe('Node timer imports in callback initializers', () => {
   `;
   const result = useFixture('explicit-node-timers', {
     'wrapper.js': 'export function setTimeout(fn) { return fn; }',
-    'timers.mjs': esm,
-    'timers.mts': esm,
-    'timers.cjs': commonjs,
+    'timers.mjs': esm + immediateBindings,
+    'timers.mts': esm + immediateBindings,
+    'timers.cjs': commonjs + immediateBindings,
+    'timers.cts': commonjs + immediateBindings,
   });
+  it.each(['timers.mjs', 'timers.mts', 'timers.cjs', 'timers.cts'])(
+    'keeps ambient Immediate handles separate from shadowed callables in %s',
+    (file) => {
+      const nodes = result().graph.nodes.filter((node) => node.properties.filePath === file);
+      for (const name of ['directHandle', 'globalHandle', 'currentHandle']) {
+        expect(
+          nodes.filter((node) => node.properties.name === name).map((node) => node.label),
+        ).toEqual(['Const']);
+      }
+      const calls = getRelationships(result(), 'CALLS').filter(
+        (edge) => edge.targetFilePath === file,
+      );
+      expect(
+        calls
+          .filter((edge) => edge.source === 'useCustom')
+          .map((edge) => edge.target)
+          .filter((target) => ['localWrapper', 'memberWrapper'].includes(target))
+          .sort(),
+      ).toEqual(['localWrapper', 'memberWrapper']);
+      expect(
+        calls
+          .filter((edge) => edge.target === 'runImmediate')
+          .map((edge) => (edge.sourceLabel === 'File' ? 'module' : edge.source))
+          .sort(),
+      ).toEqual(['localWrapper', 'memberWrapper', 'module']);
+    },
+  );
   it.each(['timers.mjs', 'timers.mts', 'timers.cjs'])(
     'distinguishes Node and local bindings in %s',
     (file) => {

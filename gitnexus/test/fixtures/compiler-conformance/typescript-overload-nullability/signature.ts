@@ -20,3 +20,13 @@ export function literal(value: unknown) {}
 export function field(value: { text: string }): void;
 export function field(value: unknown): void;
 export function field(value: unknown) {}
+
+class WithText { read() {} }
+class WithoutText { read() {} }
+export function optionalField(value: { text?: string }): WithText;
+export function optionalField(value: unknown): WithoutText;
+export function optionalField(value: unknown): WithText | WithoutText { return new WithText(); }
+
+export function admitsUndefined(value: { text?: undefined | string }): void;
+export function admitsUndefined(value: unknown): void;
+export function admitsUndefined(value: unknown) {}

@@ -67,6 +67,13 @@ export const DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET: ReadonlySet<string> = new 
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST,
 );
 
+export const nodeTimerFunctions: ReadonlySet<string> = new Set([
+  'setTimeout',
+  'setInterval',
+  'setImmediate',
+]);
+const registrationNames = new Set([...DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST, ...nodeTimerFunctions]);
+const nodeGlobalReceivers = new Set(['globalThis', 'global']);
 const globalReceivers = new Set(['globalThis', 'window', 'self', 'global']);
 const registrationHandles = new WeakMap<SyntaxNode['tree'], ReadonlySet<number>>();
 
@@ -74,19 +81,20 @@ const registrationHandles = new WeakMap<SyntaxNode['tree'], ReadonlySet<number>>
 export function registrationGlobal(callee: SyntaxNode | null): string | undefined {
   if (callee?.type === 'identifier') {
     const name = decodeIdentifierEscapes(callee.text);
-    if (DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(name)) return name;
+    if (registrationNames.has(name)) return name;
   }
   if (callee?.type !== 'member_expression') return undefined;
   const property = callee.childForFieldName('property');
-  if (
-    !property ||
-    !DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(decodeIdentifierEscapes(property.text))
-  )
-    return undefined;
+  if (!property) return undefined;
+  const member = decodeIdentifierEscapes(property.text);
+  if (!registrationNames.has(member)) return undefined;
   const object = callee.childForFieldName('object');
   if (object?.type !== 'identifier') return undefined;
   const name = decodeIdentifierEscapes(object.text);
-  return globalReceivers.has(name) ? name : undefined;
+  const receivers = DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(member)
+    ? globalReceivers
+    : nodeGlobalReceivers;
+  return receivers.has(name) ? name : undefined;
 }
 
 /** Scope extraction may reparse a worker tree whose grammar differs (TS vs TSX). */

@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
-import { SyntaxKind } from 'typescript/unstable/ast';
+import { isFunctionLikeDeclaration, SyntaxKind } from 'typescript/unstable/ast';
 import { typescriptProvider } from '../../../dist/core/ingestion/languages/typescript.js';
 import { extractParsedFile } from '../../../dist/core/ingestion/scope-extractor-bridge.js';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
@@ -19,7 +19,7 @@ import {
   emittedDiagnosticCodes,
 } from './module-values.mjs';
 import { compareCodeUnits, compareReports, compareStringTuples } from '../compare.mjs';
-import { compilerReport } from './compiler-report.mjs';
+import { compilerReport, sourceRange } from './compiler-report.mjs';
 import {
   compareProject,
   compareProjects,
@@ -45,26 +45,37 @@ test('the published graph retains the namespace constant read and prunes functio
   const key = 'lang-resolution/typescript-namespace-const';
   const project = path.resolve(root, '../..', key);
   const expected = [];
+  let localReads = 0;
   const { sites } = compilerReport(project, diagnostics[key], false, {
     onSourceFile(source, checker, compilerProject) {
       function visit(node) {
-        if (
-          node.kind === SyntaxKind.ReturnStatement &&
-          node.expression?.kind === SyntaxKind.Identifier
-        ) {
+        if (node.kind === SyntaxKind.ReturnStatement) {
+          const use = node.expression;
+          const name = use.kind === SyntaxKind.PropertyAccessExpression ? use.name : use;
+          assert.equal(name.kind, SyntaxKind.Identifier);
           const variable = checker
-            .getSymbolAtLocation(node.expression)
+            .getSymbolAtLocation(name)
             ?.valueDeclaration?.resolve(compilerProject);
           assert.equal(variable?.kind, SyntaxKind.VariableDeclaration);
           const owner = node.parent.parent;
           assert.equal(owner.kind, SyntaxKind.FunctionDeclaration);
-          const targetFile = variable.getSourceFile();
-          expected.push([
-            owner.name.text,
-            path.relative(project, targetFile.fileName),
-            variable.name.text,
-            targetFile.getLineAndCharacterOfPosition(variable.name.getStart()).line,
-          ]);
+          let ancestor = variable.parent;
+          while (ancestor && !isFunctionLikeDeclaration(ancestor)) ancestor = ancestor.parent;
+          if (ancestor) localReads++;
+          else {
+            const target = variable.getSourceFile();
+            const { file, start, end } = sourceRange(project, use);
+            expected.push([
+              file,
+              owner.name.text,
+              'read',
+              start,
+              end,
+              path.relative(project, target.fileName),
+              variable.name.text,
+              target.getLineAndCharacterOfPosition(variable.name.getStart()).line,
+            ]);
+          }
         }
         node.forEachChild(visit);
       }
@@ -72,27 +83,26 @@ test('the published graph retains the namespace constant read and prunes functio
     },
   }).VARIABLE_READS;
   assert.equal(sites.length, 1);
-  const [read] = sites;
+  assert.equal(localReads, 1);
+  assert.equal(expected.length, 2);
   const { graph } = await runPipelineFromRepo(project, () => {});
-  const accesses = [...graph.iterRelationshipsByType('ACCESSES')];
-  assert.equal(accesses.length, 1);
-  const [edge] = accesses;
-  assert.ok(edge.id.endsWith(':read:' + read.start + ':' + read.end));
-  const reader = graph.getNode(edge.sourceId);
-  const variable = graph.getNode(edge.targetId);
-  assert.equal(reader.properties.filePath, read.file);
-  assert.equal(variable.label, 'Const');
-  assert.deepEqual(
-    [
-      [
-        reader.properties.name,
-        variable.properties.filePath,
-        variable.properties.name,
-        variable.properties.startLine,
-      ],
-    ],
-    expected,
-  );
+  const actual = [...graph.iterRelationshipsByType('ACCESSES')].map((edge) => {
+    const reader = graph.getNode(edge.sourceId);
+    const variable = graph.getNode(edge.targetId);
+    assert.equal(variable.label, 'Const');
+    const { kind, start, end } = publishedPropertyAccess(edge);
+    return [
+      reader.properties.filePath,
+      reader.properties.name,
+      kind,
+      start,
+      end,
+      variable.properties.filePath,
+      variable.properties.name,
+      variable.properties.startLine,
+    ];
+  });
+  assert.deepEqual(actual.sort(compareStringTuples), expected.sort(compareStringTuples));
 });
 test(
   'NodeNext package format determines whether an import-bearing file has a CommonJS default',

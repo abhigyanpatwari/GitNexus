@@ -189,3 +189,26 @@ public class NativeForms: Forms {
     });
   });
 });
+
+describe('C# verbatim qualified names in generic heritage', () => {
+  const result = useFixture(
+    'csharp-verbatim-qualified-heritage',
+    {
+      'Verbatim.cs': `namespace N { public class T {} public class @int {} public class Pair<A, B> {} }
+public class Base<T> {
+ public virtual void M(global::@N.Pair<global::N.@T, T> value) {}
+}
+public class Good : Base<int> {
+ public override void M(global::@N.Pair<global::N.@T, int> value) {}
+}
+public class Bad : Base<int> {
+ public override void M(global::@N.Pair<global::N.@int, int> value) {}
+}`,
+    },
+    { workerPoolSize: 1 },
+  );
+
+  it('substitutes the free formal while preserving the qualified type with the same tail', () => {
+    expectOverrides(result, 'Verbatim.cs', { Good: ['Base.M'] });
+  });
+});

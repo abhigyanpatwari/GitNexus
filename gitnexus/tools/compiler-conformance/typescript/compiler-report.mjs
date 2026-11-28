@@ -44,7 +44,7 @@ function relative(root, source) {
   return path.relative(root, source.fileName).split(path.sep).join('/');
 }
 
-function sourceRange(root, node) {
+export function sourceRange(root, node) {
   const file = node.getSourceFile();
   const position = (offset) => {
     const { line, character } = file.getLineAndCharacterOfPosition(offset);

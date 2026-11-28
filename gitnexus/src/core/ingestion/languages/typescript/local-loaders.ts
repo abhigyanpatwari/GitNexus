@@ -16,11 +16,11 @@ import {
 import { canonicalTypeScriptName } from './identifiers.js';
 import {
   clearRegistrationHandles,
+  nodeTimerFunctions,
   omitRegistrationFunctions,
   registrationGlobal,
 } from '../../ts-js-hoc-utils.js';
 
-const nodeTimerFunctions = new Set(['setTimeout', 'setInterval', 'setImmediate']);
 const FUNCTION_TYPES = new Set([
   'function_declaration',
   'generator_function_declaration',
