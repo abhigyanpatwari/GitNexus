@@ -137,7 +137,7 @@ history to the Actions cache after the execution audit passes. Cache expiry affe
 
 To reproduce a native shard, use a release run. For coverage, use the release or PR run that executed it. Download its `shard-timing-input` artifact into
 `gitnexus/.vitest/timings/` and set `GITNEXUS_SHARD_PROFILE` to `windows-latest`,
-`macos-latest`, or `coverage` (the default). Then use the same `--shard=i/n`
+`macos-26`, or `coverage` (the default). Then use the same `--shard=i/n`
 argument with `npm run test:cross-platform -- --shard=i/n` or `npm test -- --shard=i/n`.
 Keep `.vitest/` untracked. Bump the workflow's timing-cache schema key when a
 runner/measurement change makes the stored profiles incompatible.

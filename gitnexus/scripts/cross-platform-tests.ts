@@ -485,7 +485,7 @@ const FILESYSTEM = [
   // Auto-sync reads a cloned `.gitnexusrc` through the symlink/hard-link guard,
   // and clone recovery uses real `git` plus temp dirs. Ubuntu coverage alone
   // would never create the Windows file symlink (`type: 'file'`) or run the
-  // git-config failure path on windows-latest / macos-latest.
+  // git-config failure path on windows-latest / macos-26.
   'test/unit/gitnexus-rc-embeddings.test.ts',
   'test/unit/git-clone.test.ts',
 ];

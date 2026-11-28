@@ -171,7 +171,7 @@ function auditCliTests(root: string, [directory, output, shardsText]: string[]) 
     throw new Error('Usage: test-completeness.ts <reports-dir> <output.json> <platform-shards>');
   }
   const names = ['coverage.json', 'benchmarks.json', 'preflight.json'];
-  for (const os of ['windows-latest', 'macos-latest']) {
+  for (const os of ['windows-latest', 'macos-26']) {
     for (let shard = 1; shard <= shards; shard++) names.push(`${os}-${shard}.json`);
   }
   // Exact expected receipts: an absent/cancelled job is never an empty success.

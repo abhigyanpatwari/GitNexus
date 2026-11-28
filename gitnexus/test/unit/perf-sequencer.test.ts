@@ -59,12 +59,12 @@ describe('timing-based CI sharding', () => {
   it('keeps platform histories separate and gives independent runners identical partitions', async () => {
     const { specs, history, split } = fixture();
     history('windows-latest', [10000, 10, 9000, 10]);
-    history('macos-latest', [9000, 10000, 10, 10]);
+    history('macos-26', [9000, 10000, 10, 10]);
     vi.stubEnv('GITNEXUS_SHARD_PROFILE', 'windows-latest');
     const windows = await split();
     expect(await split()).toEqual(windows);
     expect(windows.some((bin) => bin.includes(specs[0]) && bin.includes(specs[2]))).toBe(false);
-    vi.stubEnv('GITNEXUS_SHARD_PROFILE', 'macos-latest');
+    vi.stubEnv('GITNEXUS_SHARD_PROFILE', 'macos-26');
     const mac = await split();
     expect(mac.some((bin) => bin.includes(specs[0]) && bin.includes(specs[1]))).toBe(false);
     expect(mac).not.toEqual(windows);

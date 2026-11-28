@@ -3252,7 +3252,7 @@ describe.skipIf(SKIP_LSOF_PATH)(
       // sentinel, NOT a bogus path: an invalid GITNEXUS_HOOK_TIMEOUT_PATH falls
       // through to the real candidate list by design. CI lane note: the sibling
       // wrapped ETIMEDOUT tests above exercise GNU /usr/bin/timeout on the
-      // Linux lane, and on macos-latest hit BSD /usr/bin/timeout (macOS ≥13,
+      // Linux lane, and on macos-26 hit BSD /usr/bin/timeout (macOS ≥13,
       // `-k`-compatible) or Homebrew gtimeout — a de-facto BSD-wrapper
       // regression test.
       it(`${label}: ETIMEDOUT lsof with wrapper disabled → identical fail-closed skip`, () => {

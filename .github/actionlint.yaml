@@ -1,7 +1,8 @@
 # Runner labels missing from actionlint's built-in list.
 # gitnexus-evolution: the skill-evolution EC2 runner (infra/gitnexus-evolution/).
-# GitHub hosts ubuntu-26.04. Actionlint 1.7.12 predates that label.
+# GitHub hosts ubuntu-26.04 and macos-26. Actionlint may predate those labels.
 self-hosted-runner:
   labels:
     - gitnexus-evolution
     - ubuntu-26.04
+    - macos-26

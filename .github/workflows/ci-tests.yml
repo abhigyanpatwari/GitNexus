@@ -71,7 +71,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # Pin macOS to macos-26 (Tahoe GA) instead of floating macos-latest;
+        # keeps native-binding CI on a versioned runner label (#2483).
+        os: [windows-latest, macos-26]
     env:
       GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
     steps:
@@ -756,14 +758,14 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: .vitest/timings
-          key: test-timings-v1-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: test-timings-v1-node22-vitest5-
+          key: test-timings-v2-macos26-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: test-timings-v2-macos26-node22-vitest5-
       - name: Prepare timing snapshot
         if: steps.execution.outputs.initialize == 'true'
         shell: bash
         run: |
           mkdir -p .vitest/timings
-          for profile in coverage windows-latest macos-latest; do
+          for profile in coverage windows-latest macos-26; do
             file=".vitest/timings/$profile.json"
             if [ ! -f "$file" ]; then printf '{}\n' > "$file"; fi
           done
@@ -806,7 +808,7 @@ jobs:
       fail-fast: false
       matrix:
         # Ubuntu already covered by the coverage job above
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-26]
         # Timing-based assignment uses the same frozen input for all N runners.
         # Keep the existing per-shard watchdog and matrix count.
         shard: ${{ fromJSON(needs.shard-plan.outputs.shards) }}
@@ -903,7 +905,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-26]
     env:
       GITNEXUS_SHARD_PROFILE: ${{ matrix.os }}
     steps:
@@ -952,7 +954,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: .vitest/timings
-          key: test-timings-v1-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
+          key: test-timings-v2-macos26-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Legacy three-shard check names summarize the release's native matrix.
   # PR branch protection uses CI Gate and the selected-suite execution check.
@@ -964,7 +966,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-26]
         check: [1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -997,7 +999,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -1014,7 +1016,7 @@ jobs:
 
       # GITNEXUS_REQUIRE_ZIG=1: every OS in this matrix has a committed
       # vendored tree-sitter-zig prebuild (linux-arm64 is rebuilt by the
-      # prebuild workflow; ubuntu/windows/macos latest are x64/arm64 with
+      # prebuild workflow; ubuntu/windows/macos runners are x64/arm64 with
       # shipped binaries), so the smoke's "optional grammar may be absent"
       # exemption is revoked here and an ABI-broken Zig binding fails the
       # job instead of being accepted as a clean absence.
@@ -1037,7 +1039,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+        os: [windows-latest, macos-26, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     # Windows pack + web install regularly exceeds 15 minutes when setup also
     # runs prepare/postinstall/build before prepack compiles the same tree again.
