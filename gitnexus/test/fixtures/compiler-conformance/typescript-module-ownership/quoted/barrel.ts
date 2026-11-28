@@ -1,0 +1,1 @@
+export { 'public-name' as "another name" } from './local.js';

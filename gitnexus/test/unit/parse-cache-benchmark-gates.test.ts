@@ -84,7 +84,10 @@ describe('parse-cache performance acceptance', () => {
     const { graphExpectations } = JSON.parse(
       readFileSync(new URL('./baseline.json', benchmark), 'utf8'),
     );
-    const expected = graphExpectations[0];
+    const expected = graphExpectations.find(
+      (entry: { equivalentCandidateSourceTrees?: string[][] }) =>
+        entry.equivalentCandidateSourceTrees?.length,
+    );
     const pair = report().warmup;
     pair.baseline.provenance.runtimeHead = 'a'.repeat(40);
     pair.baseline.provenance.runtimeSourceTrees = expected.baselineSourceTrees;
@@ -100,6 +103,18 @@ describe('parse-cache performance acceptance', () => {
       }
     }
     expect(() => validatePair(pair)).not.toThrow();
+    const equivalent = structuredClone(pair);
+    equivalent.candidate.provenance.runtimeSourceTrees = expected.equivalentCandidateSourceTrees[0];
+    expect(() => validatePair(equivalent)).not.toThrow();
+    const corruptEquivalent = structuredClone(equivalent);
+    corruptEquivalent.candidate.measurements[2].parsedDigest = 'd'.repeat(64);
+    expect(() => validatePair(corruptEquivalent)).toThrow('Unexpected candidate graph for edit');
+    equivalent.candidate.provenance.runtimeSourceTrees = [
+      expected.equivalentCandidateSourceTrees[0][0],
+      '0'.repeat(40),
+    ];
+    expect(() => validatePair(equivalent)).toThrow('Graph parsedDigest differs for cold');
+
     const unrelated = structuredClone(pair);
     unrelated.candidate.provenance.runtimeHead = '7'.repeat(40);
     unrelated.candidate.provenance.runtimeSourceTrees = ['8'.repeat(40), '9'.repeat(40)];

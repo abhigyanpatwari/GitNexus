@@ -129,7 +129,7 @@
   },
   "csharp-dictionary-keys-values/App.cs": {
     "captureGroups": 21,
-    "digest": "1f6dfccf8eef881d22795dc6aa80bd267f0ee6f12538c7cabf5cac71db6a7f57"
+    "digest": "b24073cbad034229430722d7b33362e37f8504845aeb8f399eba660cb0026e4e"
   },
   "csharp-dictionary-keys-values/Repo.cs": {
     "captureGroups": 7,
@@ -165,7 +165,7 @@
   },
   "csharp-foreach/Program.cs": {
     "captureGroups": 20,
-    "digest": "0f71f4a62926fb335d32b456d5778812519c0eb2bf85528e2e9073db1b976749"
+    "digest": "e4209b4f816849d7467a3c6e651403f28933771252a4e12e7a08af9f50c990f9"
   },
   "csharp-frozen-binding-collision/App/Program.cs": {
     "captureGroups": 18,
@@ -189,7 +189,7 @@
   },
   "csharp-generic-type-refs/Program.cs": {
     "captureGroups": 25,
-    "digest": "28246dd1c88ecfe07fcee84ba314dbd9e39ccd0c30f20b8fb4633ec71e48e375"
+    "digest": "63ab1991baaacb5509e2db7a9f140ba7de36ff8f2955bfa685f64adf516fe849"
   },
   "csharp-global-namespace-precedence/Audit/Checker.cs": {
     "captureGroups": 12,
@@ -425,7 +425,7 @@
   },
   "csharp-null-check-narrowing/Services/App.cs": {
     "captureGroups": 36,
-    "digest": "6c7fa1daf5d12a60403a63d5d29c1b42b99370d12f4be53c8e56bb31e5b09d8a"
+    "digest": "025f33f766262af7d8bf44c49e5fdc74680319d8fc7b9ac0d3331d09a427b115"
   },
   "csharp-null-conditional/App.cs": {
     "captureGroups": 17,
@@ -749,7 +749,7 @@
   },
   "csharp-var-foreach/Program.cs": {
     "captureGroups": 32,
-    "digest": "58052d12af8b6e4f34924d59bd965773ce6083cb557adebe28eb1d3edcd41b7a"
+    "digest": "9e8431a17f89496a3ca0d6d07536a47fd9309fdbdfd97d6fde4485f1ea23ae32"
   },
   "csharp-variadic-resolution/Services/App.cs": {
     "captureGroups": 10,

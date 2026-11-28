@@ -26,8 +26,11 @@
  * immediate side-channel collection. Performs no I/O.
  */
 
-import { recordCommonJsModuleKind } from './module-kind.js';
+import { recordCommonJsModuleKind, recordConditionalEsmExports } from './module-kind.js';
+import { enumConstants, type EnumValues } from './enum-arguments.js';
+import { argumentEvidence, callRangeKey, type CallEvidence } from './argument-evidence.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { anonymousDefaultClassKeyword } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from './class-identity.js';
 import {
   findNodeAtRange,
@@ -35,15 +38,29 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
-import { collectEsmExportEvidence, addEsmExportMarkerCaptures } from '../../ts-js-export-marker.js';
+import {
+  collectEsmExportEvidence,
+  localExportSpecifiers,
+  addEsmExportMarkerCaptures,
+  recordEsmDefault,
+} from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
+import {
+  canonicalModuleExportName,
+  canonicalTypeScriptName,
+  literalMethodName,
+  signedNumericLiteral,
+} from './identifiers.js';
+import { defaultFactoryResult } from './default-factory.js';
 import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import {
+  cjsExportedName,
+  fixedNodeModuleFormat,
   isShadowedCjsExportAssignment,
   isUnexportedMemberAssignmentValue,
   isUndeclarableThisMemberValue,
@@ -61,6 +78,48 @@ import {
   isBlockedPairCallbackRegistration,
   isDefaultExportHocFunctionNode,
 } from '../../ts-js-hoc-utils.js';
+
+type NamespaceAliases = Map<string, { values: Set<string>; types: Set<string> }>;
+
+function collectNamespaceAliases(
+  statement: SyntaxNode,
+  clause: SyntaxNode,
+  aliases: NamespaceAliases,
+) {
+  for (const { name, publicName, typeOnly } of localExportSpecifiers(statement, clause)) {
+    const key = canonicalModuleExportName(publicName.text);
+    if (key === null) continue;
+    let entry = aliases.get(name);
+    if (!entry) {
+      entry = { values: new Set(), types: new Set() };
+      aliases.set(name, entry);
+    }
+    (typeOnly ? entry.types : entry.values).add(key);
+  }
+}
+
+/** Each ambient namespace block owns its export list, even when declarations merge. */
+function namespaceExportEvidence(body: SyntaxNode, filePath: string) {
+  const ambient = /\.d\.[cm]?ts$/i.test(filePath) || body.closest('ambient_declaration') !== null;
+  const aliases: NamespaceAliases = new Map();
+  if (!ambient) return { implicit: false, aliases };
+  let implicit = true;
+  for (const statement of body.namedChildren) {
+    if (statement.type !== 'export_statement' || statement.childForFieldName('declaration'))
+      continue;
+    implicit = false;
+    const clause = statement.namedChildren.find((child) => child.type === 'export_clause');
+    if (clause && !statement.childForFieldName('source'))
+      collectNamespaceAliases(statement, clause, aliases);
+  }
+  return { implicit, aliases };
+}
+
+function methodNameCaptureTag(grouped: CaptureMatch) {
+  if (grouped['@declaration.method']) return '@declaration.name';
+  if (grouped['@reference.call.member']) return '@reference.name';
+  if (grouped['@type-binding.return']) return '@type-binding.name';
+}
 
 /** tree-sitter-typescript node types for function-like scopes that may
  *  carry a synthesized `this` binding. Kept in sync with the
@@ -411,12 +470,25 @@ export function emitTsScopeCaptures(
     recordCacheHit();
   }
 
-  recordCommonJsModuleKind(tree.rootNode, filePath);
-
+  const out: CaptureMatch[] = [];
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
-  const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
-  const out: CaptureMatch[] = [];
+  const exportEvidence = collectEsmExportEvidence(
+    tree.rootNode,
+    filePath,
+    sourceText,
+    fixedNodeModuleFormat(filePath),
+  );
+  const returnedDefault = sourceText.includes('default')
+    ? defaultFactoryResult(tree.rootNode)
+    : undefined;
+  const returnedDefaultId = returnedDefault?.value.id;
+  let defaultDeclaration: Record<string, Capture> | undefined;
+  const namespaceExports = new Map<number, ReturnType<typeof namespaceExportEvidence>>();
+  let awaitedCalls: Map<string, Capture> | undefined;
+  let bracketReceivers: Map<string, string> | undefined;
+  let callArguments: CallEvidence | undefined;
+  let enumValues: EnumValues | undefined;
 
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
@@ -430,7 +502,49 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
-    synthesizeTsJsClassIdentity(grouped, groupedNodes);
+    const enumeration = groupedNodes['@declaration.enum'];
+    if (enumeration) {
+      const values = enumConstants(enumeration);
+      if (values.length) {
+        enumValues ??= {};
+        enumValues[`${enumeration.startPosition.row + 1}:${enumeration.startPosition.column}`] =
+          values;
+      }
+    }
+    const methodKey = methodNameCaptureTag(grouped);
+    const nameNode = methodKey && groupedNodes[methodKey];
+    if (
+      methodKey &&
+      nameNode &&
+      nameNode.type !== 'identifier' &&
+      nameNode.type !== 'property_identifier' &&
+      nameNode.type !== 'private_property_identifier'
+    ) {
+      const key = literalMethodName(nameNode);
+      if (key === undefined) continue;
+      grouped[methodKey] = { ...grouped[methodKey], text: key };
+      if (methodKey === '@type-binding.name') {
+        // Same-named methods on different owners may return different types.
+        grouped['@type.member-return'] = syntheticCapture('@type.member-return', nameNode, key);
+      } else if (methodKey === '@reference.name') {
+        bracketReceivers ??= new Map();
+        bracketReceivers.set(
+          callRangeKey(grouped['@reference.call.member'].range),
+          callRangeKey(grouped['@reference.receiver'].range),
+        );
+      } else if (key.includes('.')) {
+        // A dot inside the property key cannot be recovered by splitting its qualified name.
+        grouped['@declaration.literal-member-name'] = syntheticCapture(
+          '@declaration.literal-member-name',
+          nameNode,
+          key,
+        );
+      }
+    }
+    if (!synthesizeTsJsClassIdentity(grouped, groupedNodes)) continue;
+    const qualified = grouped['@reference.qualified-name'];
+    if (qualified?.text.includes('\\'))
+      grouped[qualified.name] = { ...qualified, text: canonicalTypeScriptName(qualified.text) };
 
     // Decompose each `import_statement` / re-export `export_statement`
     // so `interpretTsImport` sees the kind/source/name/alias markers
@@ -598,6 +712,18 @@ export function emitTsScopeCaptures(
       if (arrowNode !== null && isUndeclarableThisMemberValue(arrowNode, tree.rootNode)) {
         continue;
       }
+      const name = groupedNodes['@declaration.name'];
+      if (
+        name?.type === 'property_identifier' &&
+        arrowNode?.parent?.type === 'assignment_expression' &&
+        cjsExportedName(arrowNode, tree.rootNode) === name.text
+      ) {
+        grouped['@declaration.is-exported'] = syntheticCapture(
+          '@declaration.is-exported',
+          name,
+          'true',
+        );
+      }
     }
 
     if (fnDeclAnchor !== undefined) {
@@ -642,7 +768,7 @@ export function emitTsScopeCaptures(
     if (declAnchor !== undefined) {
       const fnNode = findFunctionNode(tree.rootNode, declAnchor.range, declAnchorNode);
       if (fnNode !== null) {
-        const arity = computeTsArityMetadata(fnNode);
+        const arity = computeTsArityMetadata(fnNode, !!grouped['@declaration.overload-signature']);
         if (arity.parameterCount !== undefined) {
           grouped['@declaration.parameter-count'] = syntheticCapture(
             '@declaration.parameter-count',
@@ -662,6 +788,13 @@ export function emitTsScopeCaptures(
             '@declaration.parameter-types',
             fnNode,
             JSON.stringify(arity.parameterTypes),
+          );
+        }
+        if (arity.declaredParameterTypes !== undefined) {
+          grouped['@declaration.declared-parameter-types'] = syntheticCapture(
+            '@declaration.declared-parameter-types',
+            fnNode,
+            JSON.stringify(arity.declaredParameterTypes),
           );
         }
       }
@@ -701,6 +834,28 @@ export function emitTsScopeCaptures(
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'new_expression');
       if (callNode !== null) {
+        // The TS grammar attaches await to the callee of an explicit generic call.
+        // The compiler's call expression starts at the operand, after await.
+        if (callAnchor.text.startsWith('await')) {
+          const callee = callNode.childForFieldName('function');
+          const operand =
+            callee?.type === 'await_expression'
+              ? callee.namedChildren.find((child) => child && child.type !== 'comment')
+              : undefined;
+          if (operand) {
+            grouped[callAnchor.name] = {
+              ...callAnchor,
+              text: sourceText.slice(operand.startIndex, callNode.endIndex),
+              range: {
+                ...callAnchor.range,
+                startLine: operand.startPosition.row + 1,
+                startCol: operand.startPosition.column,
+              },
+            };
+            awaitedCalls ??= new Map();
+            awaitedCalls.set(callRangeKey(callAnchor.range), grouped[callAnchor.name]);
+          }
+        }
         const argList = callNode.childForFieldName('arguments');
         const args: SyntaxNode[] =
           argList === null
@@ -715,6 +870,13 @@ export function emitTsScopeCaptures(
         );
 
         const argTypes = args.map((arg) => inferArgType(arg));
+        if (args.length && callNode.type === 'call_expression') {
+          const evidence = args.map((arg) => argumentEvidence(arg, inferArgType));
+          if (evidence.some((value) => value !== null)) {
+            callArguments ??= {};
+            callArguments[callRangeKey(grouped[callAnchor.name].range)] = evidence;
+          }
+        }
         grouped['@reference.parameter-types'] = syntheticCapture(
           '@reference.parameter-types',
           callNode,
@@ -732,7 +894,46 @@ export function emitTsScopeCaptures(
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
     addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
-    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
+    if (returnedDefaultId !== undefined && unbound?.id === returnedDefaultId)
+      defaultDeclaration = grouped;
+    const declaredName = groupedNodes['@declaration.name'];
+    const declarator = declaredName?.parent;
+    const declaration =
+      declarator?.type === 'variable_declarator' ||
+      (declarator?.type === 'internal_module' && declarator.parent?.type === 'expression_statement')
+        ? declarator.parent
+        : declarator;
+    const statement =
+      declaration?.parent?.type === 'export_statement' ? declaration.parent : declaration;
+    if (declaredName && statement?.parent?.parent?.type === 'internal_module') {
+      // The enclosing namespace owns this export list. File-level visibility
+      // is recorded independently by addEsmExportMarkerCaptures.
+      const body = statement.parent;
+      let publications = namespaceExports.get(body.id);
+      if (!publications) {
+        publications = namespaceExportEvidence(body, filePath);
+        namespaceExports.set(body.id, publications);
+      }
+      const local = canonicalTypeScriptName(declaredName.text);
+      const aliases = publications.aliases.get(local);
+      const names = new Set(aliases?.values);
+      if (statement.type === 'export_statement' || publications.implicit) names.add(local);
+      const erased = aliases && [...aliases.types].filter((name) => !names.has(name));
+      if (erased?.length) {
+        grouped['@declaration.type-only-exports'] = syntheticCapture(
+          '@declaration.type-only-exports',
+          declaredName,
+          JSON.stringify(erased),
+        );
+      }
+      grouped['@declaration.named-exports'] = syntheticCapture(
+        '@declaration.named-exports',
+        declaredName,
+        JSON.stringify([...names]),
+      );
+    }
+
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver'], literalMethodName);
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on every function-like
@@ -766,15 +967,72 @@ export function emitTsScopeCaptures(
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
-  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
+  const callableFlows = synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS);
+  if (awaitedCalls || bracketReceivers) {
+    // Argument and invocation facts join the reference by its entire call range.
+    for (const match of callableFlows) {
+      const invoke = match['@callable-flow.invoke'];
+      const callee = match['@callable-flow.callee'];
+      // value[key]() invokes the property, never the binding used as its receiver.
+      if (
+        bracketReceivers &&
+        invoke &&
+        callee &&
+        bracketReceivers.get(callRangeKey(invoke.range)) === callRangeKey(callee.range)
+      )
+        continue;
+      const site = match['@callable-flow.argument'] ?? match['@callable-flow.invoke'];
+      const call = site && awaitedCalls?.get(callRangeKey(site.range));
+      out.push(call ? { ...match, [site.name]: { ...call, name: site.name } } : match);
+    }
+  } else {
+    out.push(...callableFlows);
+  }
 
   // CommonJS module-export declarations (#2723). Shared with the JavaScript
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
-  synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
+  const localImports = synthesizeTsLocalImports(
+    tree.rootNode,
+    filePath,
+    out,
+    returnedDefault && defaultDeclaration
+      ? (written, write) => {
+          if (
+            defaultDeclaration &&
+            written === returnedDefault.name &&
+            returnedDefault.isPriorWrite(write)
+          ) {
+            defaultDeclaration = undefined;
+          }
+        }
+      : undefined,
+    cachedTree,
+  );
+  if (returnedDefault && defaultDeclaration) {
+    const { value } = returnedDefault;
+    recordEsmDefault(exportEvidence, defaultDeclaration['@declaration.name']);
+    defaultDeclaration['@declaration.is-exported'] = syntheticCapture(
+      '@declaration.is-exported',
+      value,
+      'true',
+    );
+    defaultDeclaration['@declaration.is-default-export'] = syntheticCapture(
+      '@declaration.is-default-export',
+      value,
+      'true',
+    );
+    defaultDeclaration['@declaration.named-exports'] = syntheticCapture(
+      '@declaration.named-exports',
+      value,
+      '[]',
+    );
+  }
+  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out, callArguments, enumValues);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out, localImports);
 
+  recordConditionalEsmExports(filePath, exportEvidence?.conditionalEsmExports, out);
   return out;
 }
 
@@ -804,9 +1062,8 @@ function relevantNodesRightFirst(root: SyntaxNode, types: readonly string[]): Sy
  * pipeline drops for registry-primary languages — yielding 0 inheritance edges
  * in worker mode (issue #1951).
  *
- * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
- * `extends_clause` value + `implements_clause` types, matching the legacy
- * TypeScript heritage query's class scope (TYPESCRIPT_QUERIES). Generic
+ * Named classes and anonymous default-export classes supply an `extends_clause`
+ * value and `implements_clause` types through their `class_heritage`. Generic
  * bases agree across both paths: `extends Base<T>` is captured by the legacy
  * `extends_clause value: (identifier)` already (the `type_arguments` are a
  * sibling field), and `implements IFoo<T>` is captured by a legacy clause
@@ -823,10 +1080,9 @@ function relevantNodesRightFirst(root: SyntaxNode, types: readonly string[]): Sy
  * and `abstract class X implements I` produced no edge and every dispatch walk
  * dead-ended on a bodiless declaration). They reach their bases by different
  * shapes: an abstract class carries the same `class_heritage` child a concrete
- * one does, while an interface's bases hang off `extends_type_clause` directly. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
- * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
- * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
- * are emitted with the same `inherits` kind here. The base lookup name is
+ * one does, while an interface's bases hang off `extends_type_clause` directly.
+ * The source clause supplies the edge kind so an interface extending another
+ * interface keeps its EXTENDS relationship. The base lookup name is
  * normalized to its bare simple identifier (`BaseModel<string>` → `BaseModel`,
  * `models.Base` → `Base`) so `findClassBindingInScope` resolves it.
  */
@@ -835,7 +1091,9 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
     'interface_declaration',
     'class_declaration',
     'abstract_class_declaration',
+    'class',
   ])) {
+    if (node.type === 'class' && !anonymousDefaultClassKeyword(node)) continue;
     // `interface B extends A, C` hangs its bases off an `extends_type_clause`
     // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
     // class path below cannot reach them (#2842 review). The clause's `type`
@@ -855,8 +1113,6 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
     // child, so the existing body handles it once the node type is admitted.
     // Omitting it severed the only link between an interface and the concrete
     // classes below an abstract base — a whole subtree, not a leaf.
-    if (node.type !== 'class_declaration' && node.type !== 'abstract_class_declaration') continue;
-
     // Find the `class_heritage` child (holds extends / implements clauses).
     let heritage: SyntaxNode | null = null;
     for (const child of node.namedChildren) {
@@ -895,11 +1151,53 @@ function emitTsInheritanceBase(
   if (base === null) return;
   const nameNode = terminalTsTypeNameNode(base);
   if (nameNode === null) return;
+  const namedBase = base.type === 'generic_type' ? base.childForFieldName('name') : base;
+  const qualified = namedBase && qualifiedHeritageName(namedBase);
+  let argumentsNode: SyntaxNode | null = null;
+  if (base.type === 'generic_type') argumentsNode = base.childForFieldName('type_arguments');
+  else if (base.parent?.type === 'extends_clause')
+    argumentsNode = base.parent.childForFieldName('type_arguments') ?? base.nextNamedSibling;
+  const argumentTag = '@reference.type-arguments';
   out.push({
+    [argumentTag]:
+      argumentsNode?.type === 'type_arguments'
+        ? nodeToCapture(argumentTag, argumentsNode)
+        : syntheticCapture(argumentTag, base, ''),
     '@reference.inherits': nodeToCapture('@reference.inherits', base),
-    '@reference.name': nodeToCapture('@reference.name', nameNode),
+    '@reference.name': qualified
+      ? syntheticCapture('@reference.name', nameNode, qualified)
+      : nodeToCapture('@reference.name', nameNode),
+    ...(qualified &&
+      namedBase && {
+        '@reference.qualified-name': syntheticCapture(
+          '@reference.qualified-name',
+          namedBase,
+          qualified,
+        ),
+      }),
+    '@reference.heritage-kind': syntheticCapture(
+      '@reference.heritage-kind',
+      base,
+      base.parent?.type === 'implements_clause' ? 'IMPLEMENTS' : 'EXTENDS',
+    ),
     '@reference.lookup-purpose': syntheticCapture('@reference.lookup-purpose', base, purpose),
   });
+}
+
+function qualifiedHeritageName(node: SyntaxNode): string | undefined {
+  if (node.type !== 'member_expression' && node.type !== 'nested_type_identifier') return undefined;
+  const parts: string[] = [];
+  let current: SyntaxNode | null = node;
+  while (current?.type === 'member_expression' || current?.type === 'nested_type_identifier') {
+    const member = current.childForFieldName('property') ?? current.childForFieldName('name');
+    if (!member || !['type_identifier', 'property_identifier', 'identifier'].includes(member.type))
+      return undefined;
+    parts.unshift(canonicalTypeScriptName(member.text));
+    current = current.childForFieldName('object') ?? current.childForFieldName('module');
+  }
+  return current && ['identifier', 'type_identifier'].includes(current.type)
+    ? [canonicalTypeScriptName(current.text), ...parts].join('.')
+    : undefined;
 }
 
 /** Resolve a TypeScript heritage base node to its bare simple-identifier node.
@@ -1003,16 +1301,18 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
 /**
  * `for (const [k, v] of mapId)` over a `Map<K,V>` — synthesize per-slot
  * type bindings so `v` resolves like a `Map` iterator tuple element.
- * Uses sentinel `__MAP_TUPLE_i__:rhs` consumed by compound-receiver.
+ * The sentinel also records whether an asynchronous iterator may supply the tuple.
  */
 export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
   for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
     if (node.childForFieldName('operator')?.type !== 'of') continue;
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
-    if (left === null || right === null) continue;
-    if (left.type !== 'array_pattern' || right.type !== 'identifier') continue;
+    if (left?.type !== 'array_pattern' || right?.type !== 'identifier') continue;
     const rhs = right.text;
+    const prefix = node.children.some((child) => child.type === 'await')
+      ? '__ASYNC_MAP_TUPLE_'
+      : '__MAP_TUPLE_';
     let slot = 0;
     // Top-level separators mark slots even when a slot has no simple binding.
     for (const child of left.children) {
@@ -1027,7 +1327,7 @@ export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMa
         '@type-binding.type': syntheticCapture(
           '@type-binding.type',
           child,
-          `__MAP_TUPLE_${slot}__:${rhs}`,
+          `${prefix}${slot}__:${rhs}`,
         ),
         '@type-binding.map-tuple-entry': syntheticCapture(
           '@type-binding.map-tuple-entry',
@@ -1046,7 +1346,12 @@ export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMa
 function inferArgType(argNode: SyntaxNode): string {
   switch (argNode.type) {
     case 'number':
-      return 'number';
+      return argNode.text.endsWith('n') ? 'bigint' : 'number';
+    case 'unary_expression': {
+      const number = signedNumericLiteral(argNode);
+      if (number === undefined) return '';
+      return number.endsWith('n') ? 'bigint' : 'number';
+    }
     case 'string':
     case 'template_string':
       return 'string';
