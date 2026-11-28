@@ -172,7 +172,12 @@ function extractDartReturnType(node: SyntaxNode): string | undefined {
  * - Optional positional: `[int? x]` — wrapped in optional_formal_parameters with '['
  * - Optional named: `{int? x}` or `{required int x}` — wrapped in optional_formal_parameters with '{'
  */
-function extractDartParameters(node: SyntaxNode): ParameterInfo[] {
+export interface DartParameterInfo extends ParameterInfo {
+  /** A written nominal application or nullable type, or null for a non-nominal type. */
+  nullableHeritageType?: string | null;
+}
+
+function extractDartParameters(node: SyntaxNode): DartParameterInfo[] {
   const inner = getInnerSignature(node);
   if (!inner) return [];
 
@@ -210,8 +215,11 @@ export function extractDartFormalParameterList(listNode: SyntaxNode): ParameterI
 /**
  * Extract ParameterInfo entries from a formal_parameter_list or optional_formal_parameters node.
  */
-function extractParamsFromList(listNode: SyntaxNode, isOptionalBlock: boolean): ParameterInfo[] {
-  const params: ParameterInfo[] = [];
+function extractParamsFromList(
+  listNode: SyntaxNode,
+  isOptionalBlock: boolean,
+): DartParameterInfo[] {
+  const params: DartParameterInfo[] = [];
 
   for (let i = 0; i < listNode.namedChildCount; i++) {
     const child = listNode.namedChild(i);
@@ -229,76 +237,67 @@ function extractParamsFromList(listNode: SyntaxNode, isOptionalBlock: boolean): 
   return params;
 }
 
-/**
- * Extract a single ParameterInfo from a formal_parameter node.
- */
-function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): ParameterInfo {
-  const nameNode = param.childForFieldName('name');
-  const name = nameNode?.text ?? '<unknown>';
+function skipTypeComments(node: SyntaxNode | null): SyntaxNode | null {
+  while (node?.type === 'comment' || node?.type === 'documentation_comment')
+    node = node.nextNamedSibling;
+  return node;
+}
 
-  // Find the type node
-  let typeName: string | null = null;
-  let rawTypeName: string | null = null;
+function setParameterType(
+  info: DartParameterInfo,
+  node: SyntaxNode,
+  next: SyntaxNode | null,
+): void {
+  info.rawType = node.text?.trim() ?? null;
+  info.type = extractSimpleTypeName(node) ?? info.rawType;
+  if (node.type !== 'type_identifier') {
+    info.nullableHeritageType = null;
+    return;
+  }
+
+  // The grammar represents `prefix.Type` as two type_identifier siblings.
+  if (next?.type === 'type_identifier' && node.nextSibling?.type === '.') {
+    info.type = `${node.text}.${next.text}`;
+    info.rawType = info.type;
+    next = next.nextNamedSibling;
+  }
+  let suffix = skipTypeComments(next);
+  if (suffix?.type === 'type_arguments') {
+    info.nullableHeritageType = info.type + suffix.text;
+    suffix = skipTypeComments(suffix.nextNamedSibling);
+  }
+  if (suffix?.type === 'nullable_type' && suffix.text === '?')
+    info.nullableHeritageType = (info.nullableHeritageType ?? info.type) + '?';
+}
+
+function hasRequiredModifier(param: SyntaxNode): boolean {
+  for (let i = 0; i < param.childCount; i++) {
+    if (param.child(i)?.text.trim() === 'required') return true;
+  }
+  // tree-sitter-dart also emits `required` as an anonymous sibling token.
+  let previous = param.previousSibling;
+  while (previous && !previous.isNamed && previous.text.trim() === ',')
+    previous = previous.previousSibling;
+  return Boolean(previous && !previous.isNamed && previous.text.trim() === 'required');
+}
+
+/** Extract a single ParameterInfo from a formal_parameter node. */
+function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): DartParameterInfo {
+  const info: DartParameterInfo = {
+    name: param.childForFieldName('name')?.text ?? '<unknown>',
+    type: null,
+    rawType: null,
+    isOptional: isOptionalBlock && !hasRequiredModifier(param),
+    isVariadic: false, // Dart has no variadic params
+  };
   for (let i = 0; i < param.namedChildCount; i++) {
     const child = param.namedChild(i);
     if (child && TYPE_NODE_TYPES.has(child.type)) {
-      rawTypeName = child.text?.trim() ?? null;
-      typeName = extractSimpleTypeName(child) ?? rawTypeName;
-      // The grammar represents `prefix.Type` as two type_identifier siblings.
-      // Keeping only the first would bind the parameter to the prefix itself.
-      const member = param.namedChild(i + 1);
-      if (
-        child.type === 'type_identifier' &&
-        member?.type === 'type_identifier' &&
-        child.nextSibling?.type === '.'
-      ) {
-        typeName = `${child.text}.${member.text}`;
-        rawTypeName = typeName;
-      }
-      break;
-    }
-    // Also check type_identifier
-    if (child?.type === 'type_identifier') {
-      rawTypeName = child.text?.trim() ?? null;
-      typeName = rawTypeName;
+      setParameterType(info, child, param.namedChild(i + 1));
       break;
     }
   }
-
-  // Check for 'required' keyword:
-  // 1. Among children of the param node itself
-  let hasRequired = false;
-  for (let i = 0; i < param.childCount; i++) {
-    const child = param.child(i);
-    if (child && child.text.trim() === 'required') {
-      hasRequired = true;
-      break;
-    }
-  }
-  // 2. In tree-sitter-dart, `required` may be an anonymous sibling token
-  //    immediately preceding the formal_parameter inside optional_formal_parameters.
-  if (isOptionalBlock && !hasRequired) {
-    let prev = param.previousSibling;
-    // Skip comma separators
-    while (prev && !prev.isNamed && prev.text.trim() === ',') {
-      prev = prev.previousSibling;
-    }
-    if (prev && !prev.isNamed && prev.text.trim() === 'required') {
-      hasRequired = true;
-    }
-  }
-
-  // A parameter is optional if it's inside an optional_formal_parameters block
-  // and does NOT have the 'required' keyword
-  const isOptional = isOptionalBlock && !hasRequired;
-
-  return {
-    name,
-    type: typeName,
-    rawType: rawTypeName,
-    isOptional,
-    isVariadic: false, // Dart has no variadic params
-  };
+  return info;
 }
 
 /**

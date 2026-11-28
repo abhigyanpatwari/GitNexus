@@ -155,11 +155,18 @@ describe.skipIf(process.platform === 'win32')('selected CI checks', () => {
   it.each([
     [{}, 0],
     [{ RUN_CLI: 'true', TESTS: 'skipped' }, 1],
-    [{ RUN_JAVA: 'true', JAVA: 'failure' }, 1],
+    [{ RUN_CONFORMANCE: 'true', CONFORMANCE: 'failure' }, 1],
+    [{ RUN_CONFORMANCE: 'false', CONFORMANCE: 'skipped' }, 0],
   ] as const)('checks results before merging coverage (%j)', (env, expected) => {
     const step = namedStep(producer, 'Require selected CLI suites');
     const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], {
-      env: { RUN_CLI: 'true', RUN_JAVA: 'true', TESTS: 'success', JAVA: 'success', ...env },
+      env: {
+        RUN_CLI: 'true',
+        RUN_CONFORMANCE: 'true',
+        TESTS: 'success',
+        CONFORMANCE: 'success',
+        ...env,
+      },
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(expected);
@@ -211,22 +218,28 @@ describe('SonarQube coverage handoff', () => {
   it('keeps threshold failures blocking while allowing both reports to reach the scanner', () => {
     const step = (name: string) => namedStep(producer, name);
     const merge = step('Merge coverage + enforce thresholds');
-    const java = step('Add Java conformance to the CLI SonarQube report');
+    const conformance = step('Add compiler conformance to the CLI SonarQube report');
     const web = step('Run gitnexus-web unit tests');
     const upload = step('Upload SonarQube coverage');
     expect(merge['continue-on-error']).toBeUndefined();
     expect(web['continue-on-error']).toBeUndefined();
     for (const name of [
       'Download Java conformance LCOV',
-      'Add Java conformance to the CLI SonarQube report',
+      'Download TypeScript conformance LCOV',
+      'Add compiler conformance to the CLI SonarQube report',
       'Install gitnexus-web dependencies',
       'Run gitnexus-web unit tests',
     ]) {
       expect(step(name).if).toContain('!cancelled()');
     }
-    expect(producer.indexOf(java)).toBeGreaterThan(producer.indexOf(merge));
+    for (const provider of ['Java', 'TypeScript']) {
+      const download = step('Download ' + provider + ' conformance LCOV');
+      expect(download.if).toContain('fromJSON(inputs.plan).run.conformance');
+      expect(download.if).toContain("needs.compiler-conformance.result == 'success'");
+    }
+    expect(producer.indexOf(conformance)).toBeGreaterThan(producer.indexOf(merge));
     expect(upload.if).toContain(
-      "(!fromJSON(inputs.plan).run.java || steps.java-lcov.outcome == 'success')",
+      "(!fromJSON(inputs.plan).run.conformance || steps.conformance-lcov.outcome == 'success')",
     );
     expect(upload.if).toContain('!cancelled()');
     expect(upload['continue-on-error']).toBe(true);
@@ -252,27 +265,39 @@ describe('SonarQube coverage handoff', () => {
     expect(readWorkflow('ci').jobs.sonar.if).not.toMatch(/success\(|needs\.tests/);
   });
 
-  it.skipIf(process.platform === 'win32')('appends Java hits and requires the CLI report', () => {
-    temp = mkdtempSync(path.join(tmpdir(), 'sonar-java-coverage-'));
-    const coverage = path.join(temp, 'coverage');
-    const java = path.join(temp, 'java-conformance-coverage');
-    mkdirSync(coverage);
-    mkdirSync(java);
-    const source = 'SF:src/index.ts\nDA:1,0\nend_of_record\n';
-    const javaSource = 'SF:src/ingestion.ts\nDA:2,1\nend_of_record\n';
-    writeFileSync(path.join(java, 'lcov.info'), javaSource);
-    const script = namedStep(producer, 'Add Java conformance to the CLI SonarQube report').run;
-    if (!script) throw new Error('Missing Java LCOV merge step');
-    const combine = () =>
-      spawnSync('bash', ['-e', '-c', script], {
-        cwd: temp,
-        env: { ...process.env, RUNNER_TEMP: temp },
-      });
-    expect(combine().status).toBe(1);
-    writeFileSync(path.join(coverage, 'lcov.info'), source);
-    expect(combine().status).toBe(0);
-    expect(readFileSync(path.join(coverage, 'lcov.info'), 'utf8')).toBe(source + javaSource);
-  });
+  it.skipIf(process.platform === 'win32')(
+    'appends Java and TypeScript hits and requires the CLI report',
+    () => {
+      temp = mkdtempSync(path.join(tmpdir(), 'sonar-conformance-coverage-'));
+      const coverage = path.join(temp, 'coverage');
+      const java = path.join(temp, 'java-conformance-coverage');
+      mkdirSync(coverage);
+      mkdirSync(java);
+      const typescript = path.join(temp, 'typescript-conformance-coverage');
+      mkdirSync(typescript);
+      const source = 'SF:src/index.ts\nDA:1,0\nend_of_record\n';
+      const javaSource = 'SF:src/ingestion.ts\nDA:2,1\nend_of_record\n';
+      writeFileSync(path.join(java, 'lcov.info'), javaSource);
+      const tsSource = 'SF:src/typescript.ts\nDA:3,1\nend_of_record\n';
+      writeFileSync(path.join(typescript, 'lcov.info'), tsSource);
+      const script = namedStep(
+        producer,
+        'Add compiler conformance to the CLI SonarQube report',
+      ).run;
+      if (!script) throw new Error('Missing compiler LCOV merge step');
+      const combine = () =>
+        spawnSync('bash', ['-e', '-c', script], {
+          cwd: temp,
+          env: { ...process.env, RUNNER_TEMP: temp },
+        });
+      expect(combine().status).toBe(1);
+      writeFileSync(path.join(coverage, 'lcov.info'), source);
+      expect(combine().status).toBe(0);
+      expect(readFileSync(path.join(coverage, 'lcov.info'), 'utf8')).toBe(
+        source + javaSource + tsSource,
+      );
+    },
+  );
 
   it('scans stacked PRs and pins main coverage to the trusted Publish run', () => {
     const ci = readWorkflow('ci');

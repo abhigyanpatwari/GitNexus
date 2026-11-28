@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { csharpTupleOverride } from './csharp/tuple-overrides.js';
 import { csharpRenameProvider } from './csharp/rename.js';
 import { createCollisionQualifiedClassExtractor } from '../class-extractors/collision-qualified.js';
 import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
@@ -160,6 +161,7 @@ const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
 const csharpClassIdentity = createCollisionQualifiedClassExtractor(csharpClassConfig);
 
 export const csharpProvider = defineLanguage({
+  overrideSignature: csharpTupleOverride,
   rename: csharpRenameProvider,
   id: SupportedLanguages.CSharp,
   extensions: ['.cs'],

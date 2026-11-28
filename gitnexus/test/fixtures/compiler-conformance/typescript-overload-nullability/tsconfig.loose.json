@@ -1,0 +1,1 @@
+{ "extends": "./base.json", "files": ["loose.ts"] }
