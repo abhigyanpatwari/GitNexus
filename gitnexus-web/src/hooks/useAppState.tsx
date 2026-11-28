@@ -17,13 +17,17 @@ import type {
   ChatMessage,
   ToolCallInfo,
   MessageStep,
+  TokenUsage,
 } from '../core/llm/types';
 import {
   loadSettings,
   getActiveProviderConfig,
   getProviderCapabilities,
+  getAgentConfig,
+  getModelNameForSettings,
   saveSettings,
 } from '../core/llm/settings-service';
+import { estimateCostUsd } from '../core/llm/pricing';
 import type { AgentMessage } from '../core/llm/agent';
 import { type EdgeType } from '../lib/constants';
 import {
@@ -622,6 +626,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const agentRef = useRef<any>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatStateRef = useRef<'idle' | 'streaming' | 'aborting'>('idle');
+  const chatGenerationRef = useRef(0);
 
   // Mirror graphMode into a ref so initializeAgent's deferred callers (lazy chat
   // init, settings-driven re-init) can read the current mode without re-creating
@@ -708,6 +713,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const sendChatMessage = useCallback(
     async (message: string): Promise<void> => {
       if (chatStateRef.current !== 'idle') return;
+      const turnGeneration = chatGenerationRef.current;
 
       // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
       clearAICodeReferences();
@@ -717,6 +723,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       if (!isAgentReady) {
         // Try to initialize first
         await initializeAgent();
+        if (turnGeneration !== chatGenerationRef.current) return;
         if (!agentRef.current) return;
       }
 
@@ -754,6 +761,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       chatAbortRef.current = chatAbortController;
 
       const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
+      const agentConfig = getAgentConfig(llmSettings);
+      const activeModelName = getModelNameForSettings(llmSettings);
 
       // Prepare message history for agent (convert our format to AgentMessage format)
       const history: AgentMessage[] = [...chatMessages, userMessage].flatMap<AgentMessage>((m) => {
@@ -779,9 +788,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       const toolCallsForMessage: ToolCallInfo[] = [];
       let stepCounter = 0;
       let assistantHistoryMessages: ChatMessage['historyMessages'];
+      let messageUsage: TokenUsage | undefined;
+      let estimatedCostUsd: number | null | undefined;
 
       // Helper to update the message with current steps
       const updateMessage = () => {
+        if (turnGeneration !== chatGenerationRef.current) return;
+
         // Build content from steps for backwards compatibility
         const contentParts = stepsForMessage
           .filter((s) => s.type === 'reasoning' || s.type === 'content')
@@ -798,6 +811,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             historyMessages: assistantHistoryMessages,
             steps: [...stepsForMessage],
             toolCalls: [...toolCallsForMessage],
+            tokenUsage: messageUsage,
+            estimatedCostUsd,
             timestamp: existing?.timestamp ?? Date.now(),
           };
           if (existing) {
@@ -821,6 +836,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       try {
         const onChunk = (chunk: AgentStreamChunk) => {
+          if (turnGeneration !== chatGenerationRef.current) return;
           switch (chunk.type) {
             case 'reasoning':
               // LLM's thinking/reasoning - accumulate contiguous reasoning
@@ -1085,6 +1101,59 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               }
               break;
 
+            case 'usage':
+              if (chunk.usage) {
+                messageUsage = chunk.usage;
+                estimatedCostUsd = estimateCostUsd(
+                  llmSettings.activeProvider,
+                  activeModelName,
+                  chunk.usage,
+                );
+                scheduleMessageUpdate();
+              }
+              break;
+
+            case 'budget_exceeded': {
+              if (chunk.usage) {
+                messageUsage = chunk.usage;
+                estimatedCostUsd = estimateCostUsd(
+                  llmSettings.activeProvider,
+                  activeModelName,
+                  chunk.usage,
+                );
+              }
+              const notice =
+                chunk.reason === 'token_budget'
+                  ? i18n.t('chat:budget.tokenLimitReached', { limit: chunk.limit })
+                  : i18n.t('chat:budget.iterationLimitReached', { limit: chunk.limit });
+              const markStoppedToolCall = (tc: ToolCallInfo): ToolCallInfo =>
+                tc.status === 'running' || tc.status === 'pending'
+                  ? { ...tc, status: 'stopped', result: notice }
+                  : tc;
+              for (let i = 0; i < toolCallsForMessage.length; i++) {
+                toolCallsForMessage[i] = markStoppedToolCall(toolCallsForMessage[i]);
+              }
+              for (let i = 0; i < stepsForMessage.length; i++) {
+                const step = stepsForMessage[i];
+                if (step.type === 'tool_call' && step.toolCall) {
+                  stepsForMessage[i] = { ...step, toolCall: markStoppedToolCall(step.toolCall) };
+                }
+              }
+              setCurrentToolCalls((prev) => prev.map(markStoppedToolCall));
+              stepsForMessage.push({
+                id: `step-${++stepCounter}`,
+                type: 'reasoning',
+                content: `\n\n> ⚠️ ${notice}`,
+              });
+              if (rafHandle != null) {
+                cancelAnimationFrame(rafHandle);
+                rafHandle = null;
+              }
+              pendingUpdate = false;
+              updateMessage();
+              break;
+            }
+
             case 'error':
               setAgentError(chunk.error ?? 'Unknown error');
               break;
@@ -1093,28 +1162,54 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               assistantHistoryMessages = providerCapabilities.preserveAssistantTranscript
                 ? chunk.historyMessages
                 : undefined;
-              // Finalize the assistant message - just call updateMessage one more time
-              scheduleMessageUpdate();
+              if (chunk.usage) {
+                messageUsage = chunk.usage;
+                estimatedCostUsd = estimateCostUsd(
+                  llmSettings.activeProvider,
+                  activeModelName,
+                  chunk.usage,
+                );
+              }
+              if (chunk.usageUnavailable) {
+                stepsForMessage.push({
+                  id: `step-${++stepCounter}`,
+                  type: 'reasoning',
+                  content: `\n\n> ℹ️ ${i18n.t('chat:budget.usageUnavailable', {
+                    limit: agentConfig.tokenBudget,
+                  })}`,
+                });
+              }
+              if (rafHandle != null) {
+                cancelAnimationFrame(rafHandle);
+                rafHandle = null;
+              }
+              pendingUpdate = false;
+              updateMessage();
               break;
           }
         };
 
         // Stream agent response using the full streaming generator
-        // (handles reasoning, tool_call, tool_result, content, and done events)
+        // (handles reasoning, tool_call, tool_result, usage, budget_exceeded, content, and done events)
         const agent = agentRef.current;
         if (!agent) throw new Error('Agent not initialized');
         const { streamAgentResponse } = await import('../core/llm/agent');
+        if (turnGeneration !== chatGenerationRef.current || chatAbortController.signal.aborted) {
+          return;
+        }
         for await (const chunk of streamAgentResponse(agent, history, {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
           signal: chatAbortController.signal,
+          maxIterations: agentConfig.maxIterations,
+          tokenBudget: agentConfig.tokenBudget,
         })) {
-          if (chunk.type === 'cancelled') {
+          if (turnGeneration !== chatGenerationRef.current || chunk.type === 'cancelled') {
             break;
           }
           onChunk(chunk);
         }
       } catch (error) {
-        if (!chatAbortController.signal.aborted) {
+        if (!chatAbortController.signal.aborted && turnGeneration === chatGenerationRef.current) {
           const message = error instanceof Error ? error.message : String(error);
           setAgentError(message);
         }
@@ -1123,9 +1218,31 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           cancelAnimationFrame(rafHandle);
           rafHandle = null;
         }
-        chatStateRef.current = 'idle';
-        setIsChatLoading(false);
-        setCurrentToolCalls([]);
+        if (turnGeneration === chatGenerationRef.current) {
+          if (pendingUpdate) {
+            pendingUpdate = false;
+            if (chatAbortController.signal.aborted) {
+              const stoppedLabel = i18n.t('chat:stopped');
+              const markStopped = (tc: ToolCallInfo): ToolCallInfo =>
+                tc.status === 'running' || tc.status === 'pending'
+                  ? { ...tc, status: 'stopped', result: stoppedLabel }
+                  : tc;
+              for (let i = 0; i < toolCallsForMessage.length; i++) {
+                toolCallsForMessage[i] = markStopped(toolCallsForMessage[i]);
+              }
+              for (let i = 0; i < stepsForMessage.length; i++) {
+                const step = stepsForMessage[i];
+                if (step.type === 'tool_call' && step.toolCall) {
+                  stepsForMessage[i] = { ...step, toolCall: markStopped(step.toolCall) };
+                }
+              }
+            }
+            updateMessage();
+          }
+          chatStateRef.current = 'idle';
+          setIsChatLoading(false);
+          setCurrentToolCalls([]);
+        }
       }
     },
     [
@@ -1139,7 +1256,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
-      llmSettings.activeProvider,
+      llmSettings,
     ],
   );
 
@@ -1183,6 +1300,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const clearChat = useCallback(() => {
+    chatGenerationRef.current += 1;
     chatAbortRef.current?.abort();
     chatAbortRef.current = null;
     chatStateRef.current = 'idle';

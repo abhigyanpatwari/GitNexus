@@ -14,6 +14,7 @@ import { useAppState } from '../hooks/useAppState';
 import { useAutoScroll } from '../hooks/useAutoScroll';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
+import { formatCostUsd, formatTokenCount } from '../core/llm/pricing';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +46,33 @@ export const RightPanel = () => {
   const { scrollContainerRef, messagesContainerRef, isAtBottom, scrollToBottom } = useAutoScroll(
     chatMessages,
     isChatLoading,
+  );
+
+  const conversationUsage = chatMessages.reduce(
+    (acc, msg) => {
+      if (msg.tokenUsage) {
+        acc.inputTokens += msg.tokenUsage.inputTokens;
+        acc.outputTokens += msg.tokenUsage.outputTokens;
+        acc.totalTokens += msg.tokenUsage.totalTokens;
+      }
+      if (typeof msg.estimatedCostUsd === 'number') {
+        acc.estimatedCostUsd = (acc.estimatedCostUsd ?? 0) + msg.estimatedCostUsd;
+        if (msg.estimatedCostUsd === 0) {
+          acc.hasLocalCost = true;
+        }
+      } else if (msg.tokenUsage && msg.tokenUsage.totalTokens > 0) {
+        acc.hasUnknownCost = true;
+      }
+      return acc;
+    },
+    {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      estimatedCostUsd: null as number | null,
+      hasLocalCost: false,
+      hasUnknownCost: false,
+    },
   );
 
   const findFileNodeIdForUI = useCallback(
@@ -273,6 +301,33 @@ export const RightPanel = () => {
         <div className="relative flex flex-1 flex-col overflow-hidden">
           {/* Status bar */}
           <div className="flex items-center gap-2.5 border-b border-border-subtle bg-elevated/50 px-4 py-3">
+            {conversationUsage.totalTokens > 0 && (
+              <span
+                data-testid="conversation-token-usage"
+                title={t('chat:usage.conversationTitle', {
+                  input: formatTokenCount(conversationUsage.inputTokens),
+                  output: formatTokenCount(conversationUsage.outputTokens),
+                })}
+                className="flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface px-2.5 py-1 font-mono text-[11px] text-text-secondary"
+              >
+                <span>
+                  {t('chat:usage.tokensCount', {
+                    count: formatTokenCount(conversationUsage.totalTokens),
+                  })}
+                </span>
+                {conversationUsage.estimatedCostUsd !== null &&
+                  !conversationUsage.hasUnknownCost && (
+                    <>
+                      <span className="text-text-muted">•</span>
+                      <span className="text-accent">
+                        {conversationUsage.estimatedCostUsd === 0 && conversationUsage.hasLocalCost
+                          ? t('chat:usage.localCost')
+                          : formatCostUsd(conversationUsage.estimatedCostUsd)}
+                      </span>
+                    </>
+                  )}
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-2">
               {!isAgentReady && (
                 <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-300">
@@ -304,7 +359,7 @@ export const RightPanel = () => {
           )}
 
           {/* Messages */}
-          <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
+          <div ref={scrollContainerRef} className="flex-1 scrollbar-thin overflow-y-auto p-4">
             {chatMessages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center px-4 text-center">
                 <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
@@ -396,6 +451,40 @@ export const RightPanel = () => {
                               showCopyButton={true}
                             />
                           )}
+                          {message.tokenUsage && message.tokenUsage.totalTokens > 0 && (
+                            <div
+                              data-testid="message-token-usage"
+                              title={t('chat:usage.turnBreakdown', {
+                                input: formatTokenCount(message.tokenUsage.inputTokens),
+                                output: formatTokenCount(message.tokenUsage.outputTokens),
+                              })}
+                              className="mt-2 flex items-center gap-1.5 font-mono text-[11px] text-text-muted"
+                            >
+                              <span>
+                                {t('chat:usage.tokensCount', {
+                                  count: formatTokenCount(message.tokenUsage.totalTokens),
+                                })}
+                              </span>
+                              <span>
+                                (
+                                {t('chat:usage.turnBreakdown', {
+                                  input: formatTokenCount(message.tokenUsage.inputTokens),
+                                  output: formatTokenCount(message.tokenUsage.outputTokens),
+                                })}
+                                )
+                              </span>
+                              {typeof message.estimatedCostUsd === 'number' && (
+                                <>
+                                  <span>•</span>
+                                  <span>
+                                    {message.estimatedCostUsd === 0
+                                      ? t('chat:usage.localCost')
+                                      : formatCostUsd(message.estimatedCostUsd)}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
@@ -429,7 +518,7 @@ export const RightPanel = () => {
                 onKeyDown={handleKeyDown}
                 placeholder={t('chat:input.placeholder')}
                 rows={1}
-                className="scrollbar-thin min-h-[36px] flex-1 resize-none border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                className="min-h-[36px] flex-1 resize-none scrollbar-thin border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
                 style={{ height: '36px', overflowY: 'hidden' }}
               />
               <button

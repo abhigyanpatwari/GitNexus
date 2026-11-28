@@ -112,5 +112,13 @@
   "openRouterModels": "OpenRouter Models",
   "zaiPlatform": "Z.AI Platform",
   "glmCodingApi": "Coding API（默认）。通用 API 请使用 https://api.z.ai/api/paas/v4。",
+  "agentLimits": {
+    "title": "Agent 限制与预算",
+    "maxIterationsLabel": "每轮最大迭代次数",
+    "maxIterationsHint": "每个问题允许的最大推理和工具调用轮数（1–50，默认 8）。",
+    "tokenBudgetLabel": "单次提问 Token 预算",
+    "tokenBudgetPlaceholder": "0（不限制）",
+    "tokenBudgetHint": "当单次响应超过此 Token 数时优雅停止 Agent（依赖提供商返回 Token 用量；未返回用量时无法强制限制）。设为 0 表示不限制。"
+  },
   "privacyFull": "你的 API Key 只保存在此浏览器的会话存储中，关闭标签页后会清除。聊天时会直接发送给 LLM 提供商，你的代码不会离开本机。"
 }

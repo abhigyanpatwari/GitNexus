@@ -197,8 +197,37 @@ export type ProviderConfig =
   | GLMConfig
   | DeepSeekConfig;
 
+export const DEFAULT_MAX_ITERATIONS = 8;
+export const MIN_MAX_ITERATIONS = 1;
+export const MAX_MAX_ITERATIONS = 50;
+export const DEFAULT_TOKEN_BUDGET = 0; // 0 = unlimited
+
 /**
- * Stored settings (what goes to localStorage)
+ * Runtime safety limits for Graph RAG agent execution
+ */
+export interface AgentConfig {
+  /** Maximum ReAct tool/reasoning iterations per question (default: 8) */
+  maxIterations: number;
+  /** Maximum cumulative tokens allowed per question; 0 means unlimited (default: 0) */
+  tokenBudget: number;
+}
+
+export const DEFAULT_AGENT_CONFIG: AgentConfig = {
+  maxIterations: DEFAULT_MAX_ITERATIONS,
+  tokenBudget: DEFAULT_TOKEN_BUDGET,
+};
+
+/**
+ * Cumulative token counts reported by an LLM provider
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+/**
+ * Stored settings (what goes to localStorage / sessionStorage)
  */
 export interface LLMSettings {
   activeProvider: LLMProvider;
@@ -216,6 +245,9 @@ export interface LLMSettings {
   glm?: Partial<Omit<GLMConfig, 'provider'>>;
   deepseek?: Partial<Omit<DeepSeekConfig, 'provider'>>;
 
+  // Agent execution limits & budget
+  agent?: Partial<AgentConfig>;
+
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
   hasSeenClusteringPrompt: boolean;
@@ -228,6 +260,7 @@ export interface LLMSettings {
  */
 export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   activeProvider: 'gemini',
+  agent: { ...DEFAULT_AGENT_CONFIG },
   intelligentClustering: false,
   hasSeenClusteringPrompt: false,
   useSameModelForClustering: true,
@@ -311,6 +344,10 @@ export interface ChatMessage {
   toolCalls?: ToolCallInfo[];
   /** Ordered steps: reasoning, tool calls, and final content interleaved */
   steps?: MessageStep[];
+  /** Cumulative token usage reported for this response turn */
+  tokenUsage?: TokenUsage;
+  /** Estimated USD cost for this response turn (null if pricing unknown, 0 for local models) */
+  estimatedCostUsd?: number | null;
   toolCallId?: string;
   timestamp: number;
 }
@@ -363,8 +400,21 @@ export type AgentStreamChunk =
   | { type: 'tool_call'; toolCall: ToolCallInfo }
   | { type: 'tool_result'; toolCall: ToolCallInfo }
   | { type: 'content'; content: string }
+  | { type: 'usage'; usage: TokenUsage }
+  | {
+      type: 'budget_exceeded';
+      reason: 'token_budget' | 'max_iterations';
+      limit: number;
+      usage: TokenUsage;
+    }
   | { type: 'error'; error: string }
-  | { type: 'done'; historyMessages?: AgentHistoryMessage[] }
+  | {
+      type: 'done';
+      historyMessages?: AgentHistoryMessage[];
+      usage?: TokenUsage;
+      /** Set when a nonzero tokenBudget was configured but the provider omitted token usage metadata. */
+      usageUnavailable?: boolean;
+    }
   | { type: 'cancelled' };
 
 /**

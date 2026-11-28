@@ -19,10 +19,16 @@ import {
   getProviderDisplayName,
   getAvailableModels,
   fetchOpenRouterModels,
+  normalizeMaxIterations,
+  normalizeTokenBudget,
 } from '../core/llm/settings-service';
 import { getAuthToken, setAuthToken } from '../services/backend-client';
 import type { LLMSettings, LLMProvider, MiniMaxThinkingMode } from '../core/llm/types';
 import {
+  DEFAULT_MAX_ITERATIONS,
+  DEFAULT_TOKEN_BUDGET,
+  MAX_MAX_ITERATIONS,
+  MIN_MAX_ITERATIONS,
   getMiniMaxModelCapabilities,
   MINIMAX_ANTHROPIC_BASE_URLS,
   MINIMAX_DOCS_ROOTS,
@@ -260,6 +266,9 @@ export const SettingsPanel = ({
 }: SettingsPanelProps) => {
   const { t } = useTranslation(['common', 'settings']);
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
+  const [maxIterationsInput, setMaxIterationsInput] = useState<string>(() =>
+    String(normalizeMaxIterations(loadSettings().agent?.maxIterations)),
+  );
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   /** Deploy access token. Stored outside LLM settings, persisted on Save. */
   const [authToken, setAuthTokenState] = useState(getAuthToken);
@@ -284,7 +293,9 @@ export const SettingsPanel = ({
   // Load settings when panel opens
   useEffect(() => {
     if (isOpen) {
-      setSettings(loadSettings());
+      const loaded = loadSettings();
+      setSettings(loaded);
+      setMaxIterationsInput(String(normalizeMaxIterations(loaded.agent?.maxIterations)));
       setAuthTokenState(getAuthToken());
       setSaveStatus('idle');
       setOllamaError(null);
@@ -325,7 +336,21 @@ export const SettingsPanel = ({
 
   const handleSave = () => {
     try {
-      saveSettings(settings);
+      const parsedDraft = Number(maxIterationsInput.trim());
+      const resolvedMaxIterations =
+        maxIterationsInput.trim() === '' || !Number.isFinite(parsedDraft)
+          ? DEFAULT_MAX_ITERATIONS
+          : normalizeMaxIterations(Math.trunc(parsedDraft));
+      const normalizedSettings: LLMSettings = {
+        ...settings,
+        agent: {
+          maxIterations: resolvedMaxIterations,
+          tokenBudget: normalizeTokenBudget(settings.agent?.tokenBudget),
+        },
+      };
+      setSettings(normalizedSettings);
+      setMaxIterationsInput(String(resolvedMaxIterations));
+      saveSettings(normalizedSettings);
       // The token persists on Save with everything else, not per keystroke: it
       // is the only affordance this panel gives for "committed", and a
       // half-typed token would otherwise ride the next probe.
@@ -1095,6 +1120,111 @@ export const SettingsPanel = ({
               </div>
             </div>
           )}
+
+          {/* Agent Limits & Budget */}
+          <div className="space-y-4 rounded-xl border border-border-subtle bg-elevated/50 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+              <Brain className="h-4 w-4 text-accent" />
+              <span>{t('settings:agentLimits.title')}</span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="agent-max-iterations"
+                  className="block text-xs font-medium text-text-secondary"
+                >
+                  {t('settings:agentLimits.maxIterationsLabel')}
+                </label>
+                <input
+                  id="agent-max-iterations"
+                  type="number"
+                  min={MIN_MAX_ITERATIONS}
+                  max={MAX_MAX_ITERATIONS}
+                  value={maxIterationsInput}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setMaxIterationsInput(raw);
+                    const trimmed = raw.trim();
+                    if (trimmed === '') return;
+                    const parsed = Number(trimmed);
+                    if (Number.isFinite(parsed)) {
+                      setSettings((prev) => ({
+                        ...prev,
+                        agent: {
+                          maxIterations: Math.trunc(parsed),
+                          tokenBudget: prev.agent?.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
+                        },
+                      }));
+                    }
+                  }}
+                  onBlur={() => {
+                    const trimmed = maxIterationsInput.trim();
+                    const parsed = Number(trimmed);
+                    const normalized =
+                      trimmed === '' || !Number.isFinite(parsed)
+                        ? DEFAULT_MAX_ITERATIONS
+                        : normalizeMaxIterations(Math.trunc(parsed));
+                    setMaxIterationsInput(String(normalized));
+                    setSettings((prev) => ({
+                      ...prev,
+                      agent: {
+                        maxIterations: normalized,
+                        tokenBudget: normalizeTokenBudget(prev.agent?.tokenBudget),
+                      },
+                    }));
+                  }}
+                  className="w-full rounded-xl border border-border-subtle bg-elevated px-3.5 py-2.5 font-mono text-sm text-text-primary transition-all outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                />
+                <p className="text-[11px] leading-relaxed text-text-muted">
+                  {t('settings:agentLimits.maxIterationsHint')}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="agent-token-budget"
+                  className="block text-xs font-medium text-text-secondary"
+                >
+                  {t('settings:agentLimits.tokenBudgetLabel')}
+                </label>
+                <input
+                  id="agent-token-budget"
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={settings.agent?.tokenBudget ?? DEFAULT_TOKEN_BUDGET}
+                  placeholder={t('settings:agentLimits.tokenBudgetPlaceholder')}
+                  onChange={(e) => {
+                    const trimmed = e.target.value.trim();
+                    const parsed = trimmed === '' ? 0 : Number(trimmed);
+                    if (Number.isFinite(parsed)) {
+                      setSettings((prev) => ({
+                        ...prev,
+                        agent: {
+                          maxIterations: prev.agent?.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+                          tokenBudget: Math.max(0, Math.trunc(parsed)),
+                        },
+                      }));
+                    }
+                  }}
+                  onBlur={() =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      agent: {
+                        maxIterations: normalizeMaxIterations(prev.agent?.maxIterations),
+                        tokenBudget: normalizeTokenBudget(prev.agent?.tokenBudget),
+                      },
+                    }))
+                  }
+                  className="w-full rounded-xl border border-border-subtle bg-elevated px-3.5 py-2.5 font-mono text-sm text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                />
+                <p className="text-[11px] leading-relaxed text-text-muted">
+                  {t('settings:agentLimits.tokenBudgetHint')}
+                </p>
+              </div>
+            </div>
+          </div>
 
           {/* Privacy Note */}
           <div className="rounded-xl border border-border-subtle bg-elevated/50 p-4">
