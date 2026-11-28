@@ -254,6 +254,11 @@ describe('NestJS routes inherited across files', () => {
       imports: "import Base from './base';",
     },
     {
+      label: 'an anonymous default with a block comment after export',
+      base: "export /* controller base */ default class { @Get('ping') ping() {} }",
+      imports: "import Base from './base';",
+    },
+    {
       label: 'an aliased import',
       base: "export class Named { @Get('ping') ping() {} }",
       imports: "import { Named as Base } from './base';",

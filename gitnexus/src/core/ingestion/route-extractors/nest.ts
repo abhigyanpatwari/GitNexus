@@ -430,9 +430,6 @@ const INHERITANCE_HINT = new RegExp(
   `\\bextends\\b|@(?:${[...NEST_METHOD_DECORATORS.keys()].join('|')})\\b`,
 );
 
-/** Parse-free gate for {@link anonymousDefaultClass}: most files have no default export. */
-const DEFAULT_EXPORT_HINT = /\bexport\s+default\b/;
-
 /** A base class's own names hide nothing from itself; only computed keys drop out. */
 const NOTHING_REDECLARED: ReadonlySet<string> = new Set();
 
@@ -477,7 +474,7 @@ export function extractNestInheritanceFacts(
   if (INHERITANCE_HINT.test(text)) {
     const root = tree.rootNode;
     const byName = indexClassesByName(root);
-    const anonymous = DEFAULT_EXPORT_HINT.test(text) ? anonymousDefaultClass(root) : undefined;
+    const anonymous = text.includes('default') ? anonymousDefaultClass(root) : undefined;
     if (byName.size > 0 || anonymous !== undefined) {
       classes = classFacts(root, byName, anonymous, filePath, parsedImports, lineOffset);
     }
