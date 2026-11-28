@@ -27,8 +27,13 @@ import type {
   ParameterTypeClass,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import { classifyCppParameterType } from './arity-metadata.js';
 import { classifyType, type TypeClass } from './type-classifier.js';
-import type { ConstraintExpr, CppConstraintPayload } from './constraint-extractor.js';
+import type {
+  ConstraintExpr,
+  CppConstraintPayload,
+  CppTemplateParamUnwrap,
+} from './constraint-extractor.js';
 
 interface ConstraintArgClass {
   readonly typeClass: TypeClass;
@@ -137,10 +142,13 @@ function unaryShapeVerdict(
   const arg = args[0];
   if (arg === undefined || arg.typeClass === 'unknown') return 'unknown';
   const shape = arg.shape;
-  if (shape === undefined || shape.indirection === 'unknown' || shape.cv === 'unknown') {
+  if (shape === undefined || shape.indirection === 'unknown') {
     return 'unknown';
   }
-  if (options.requireTopLevelCv === true && shape.indirection === 'pointer') {
+  if (
+    options.requireTopLevelCv === true &&
+    (shape.cv === 'unknown' || shape.indirection === 'pointer')
+  ) {
     return 'unknown';
   }
   return predicate(shape) ? 'compatible' : 'incompatible';
@@ -207,14 +215,9 @@ function evaluate(
     case 'atomic': {
       const evaluator = REGISTRY.get(expr.name);
       if (evaluator === undefined) return 'unknown';
-      const classes = expr.args.map((paramName) => {
-        const argIdx = payload.paramArgIndex[paramName];
-        if (argIdx === undefined) return { typeClass: 'unknown' as TypeClass };
-        return classifyConstraintArg(
-          tokenForArg(ctx, argIdx),
-          shapeForTemplateParam(ctx, paramName, argIdx, def),
-        );
-      });
+      const classes = expr.args.map((paramName) =>
+        resolveTemplateParamConstraintArg(paramName, payload, ctx, def),
+      );
       return evaluator(classes);
     }
     case 'and': {
@@ -242,6 +245,97 @@ function evaluate(
       return 'unknown';
     }
   }
+}
+
+function resolveTemplateParamConstraintArg(
+  paramName: string,
+  payload: CppConstraintPayload,
+  ctx: ConstraintContext,
+  def?: SymbolDefinition,
+): ConstraintArgClass {
+  const argIdx = payload.paramArgIndex[paramName];
+  if (argIdx === undefined) return { typeClass: 'unknown' };
+
+  const unwrap = payload.paramUnwraps?.[paramName];
+  if (unwrap === undefined) {
+    return classifyConstraintArg(
+      tokenForArg(ctx, argIdx),
+      shapeForTemplateParam(ctx, paramName, argIdx, def),
+    );
+  }
+  return unwrapConstraintArg(unwrap, ctx, argIdx);
+}
+
+function unwrapConstraintArg(
+  unwrap: CppTemplateParamUnwrap,
+  ctx: ConstraintContext,
+  argIdx: number,
+): ConstraintArgClass {
+  const argShape = ctx.argumentTypeClasses?.[argIdx];
+  const argToken = tokenForArg(ctx, argIdx);
+
+  switch (unwrap.kind) {
+    case 'pointer': {
+      if (
+        argShape === undefined ||
+        argShape.indirection !== 'pointer' ||
+        argShape.pointerDepth < unwrap.depth
+      ) {
+        return { typeClass: 'unknown' };
+      }
+      const remDepth = argShape.pointerDepth - unwrap.depth;
+      const peeledShape: ParameterTypeClass = {
+        base: argShape.base,
+        cv: 'unknown',
+        indirection: remDepth > 0 ? 'pointer' : 'value',
+        pointerDepth: remDepth,
+      };
+      return classifyConstraintArg(argToken, peeledShape);
+    }
+    case 'lvalue-ref': {
+      if (argShape === undefined) return classifyConstraintArg(argToken, undefined);
+      if (argShape.indirection === 'unknown') return { typeClass: 'unknown' };
+      const peeledShape: ParameterTypeClass = {
+        base: argShape.base,
+        cv: 'unknown',
+        indirection: argShape.indirection === 'pointer' ? 'pointer' : 'value',
+        pointerDepth: argShape.indirection === 'pointer' ? argShape.pointerDepth : 0,
+      };
+      return classifyConstraintArg(argToken, peeledShape);
+    }
+    case 'template-arg': {
+      if (argShape === undefined || argShape.indirection === 'unknown') {
+        return { typeClass: 'unknown' };
+      }
+      if (unwrap.pointerDepth > 0) {
+        if (argShape.indirection !== 'pointer' || argShape.pointerDepth !== unwrap.pointerDepth) {
+          return { typeClass: 'unknown' };
+        }
+      } else if (argShape.indirection === 'pointer') {
+        return { typeClass: 'unknown' };
+      }
+      if (stripQualifiedPrefix(argShape.base) !== unwrap.containerBase) {
+        return { typeClass: 'unknown' };
+      }
+      const rawElem = argShape.templateArguments?.[unwrap.argIndex];
+      if (rawElem === undefined || rawElem === '' || rawElem === 'unknown') {
+        return { typeClass: 'unknown' };
+      }
+      if (rawElem.startsWith('enum:')) {
+        return {
+          typeClass: 'enum',
+          shape: { base: rawElem, cv: 'none', indirection: 'value', pointerDepth: 0 },
+        };
+      }
+      const elemShape = classifyCppParameterType(rawElem, undefined, rawElem);
+      return classifyConstraintArg(elemShape.base, elemShape);
+    }
+  }
+}
+
+function stripQualifiedPrefix(text: string): string {
+  const idx = text.lastIndexOf('::');
+  return idx >= 0 ? text.slice(idx + 2) : text;
 }
 
 /** Exposed for unit tests — lets `cpp-constraint.test.ts` assert

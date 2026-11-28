@@ -87,6 +87,9 @@ export function cppConversionRank(
   if (argType === paramType) {
     return exactShapeCompatible(argTypeClass, paramTypeClass) ? 0 : Infinity;
   }
+  if (templateContainerCompatible(argType, paramType, argTypeClass, paramTypeClass)) {
+    return 0;
+  }
   if (paramType === '...') return 5;
   if (INTEGRAL_PROMOTION.get(argType) === paramType) return 1;
   if (ARITHMETIC.has(argType) && ARITHMETIC.has(paramType)) return 2;
@@ -184,4 +187,36 @@ function exactShapeCompatible(
     return true;
   }
   return isPointer(argTypeClass) === isPointer(paramTypeClass);
+}
+
+function stripLeadingNamespace(typeName: string): string {
+  const idx = typeName.lastIndexOf('::');
+  return idx >= 0 ? typeName.slice(idx + 2) : typeName;
+}
+
+function templateContainerCompatible(
+  argType: string,
+  paramType: string,
+  argTypeClass: ParameterTypeClass | undefined,
+  paramTypeClass: ParameterTypeClass | undefined,
+): boolean {
+  if (!argType.includes('<') && argTypeClass?.templateArguments === undefined) return false;
+  const argBase = stripLeadingNamespace(normalizeCppParamType(argType));
+  const paramBase = stripLeadingNamespace(normalizeCppParamType(paramType));
+  if (argBase === '' || argBase !== paramBase) return false;
+  if (!exactShapeCompatible(argTypeClass, paramTypeClass)) return false;
+
+  const argArgs = argTypeClass?.templateArguments;
+  const paramArgs = paramTypeClass?.templateArguments;
+  if (argArgs !== undefined && paramArgs !== undefined) {
+    if (argArgs.length !== paramArgs.length) return false;
+    for (let i = 0; i < paramArgs.length; i++) {
+      const pArg = paramArgs[i];
+      // Single-token uppercase template parameter (`T`, `Elem`) is deducible;
+      // concrete arguments must match.
+      if (/^[A-Z]\w*$/.test(pArg)) continue;
+      if (pArg !== argArgs[i]) return false;
+    }
+  }
+  return true;
 }

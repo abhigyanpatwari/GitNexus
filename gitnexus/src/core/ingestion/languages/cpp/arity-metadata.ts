@@ -175,8 +175,13 @@ export function classifyCppParameterType(
   const source = fullParameterText ?? `${rawType} ${declaratorText ?? ''}`.trim();
   if (rawType === 'unknown') return unknownTypeClass('unknown');
 
-  const hasConst = /\bconst\b/.test(source);
-  const hasVolatile = /\bvolatile\b/.test(source);
+  // Inspect outer qualifiers/indirection outside `<...>` so nested template
+  // argument tokens (`std::vector<int*>`, `Box<const int>`) do not masquerade
+  // as top-level pointer/cv shape on the container itself.
+  const outerSource = stripTemplateAngleText(source);
+
+  const hasConst = /\bconst\b/.test(outerSource);
+  const hasVolatile = /\bvolatile\b/.test(outerSource);
   const cv: ParameterTypeClass['cv'] =
     hasConst && hasVolatile
       ? 'const volatile'
@@ -186,13 +191,13 @@ export function classifyCppParameterType(
           ? 'volatile'
           : 'none';
 
-  const pointerDepth = (source.match(/\*/g) ?? []).length;
+  const pointerDepth = (outerSource.match(/\*/g) ?? []).length;
   const indirection: ParameterTypeClass['indirection'] =
     pointerDepth > 0
       ? 'pointer'
-      : /&&/.test(source)
+      : /&&/.test(outerSource)
         ? 'rvalue-ref'
-        : /&/.test(source)
+        : /&/.test(outerSource)
           ? 'lvalue-ref'
           : 'value';
 
@@ -203,6 +208,21 @@ export function classifyCppParameterType(
     pointerDepth,
     ...templateArgumentsFor(`${source} ${rawType} ${declaratorText ?? ''}`),
   };
+}
+
+function stripTemplateAngleText(text: string): string {
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<') depth++;
+    else if (ch === '>') {
+      if (depth > 0) depth--;
+    } else if (depth === 0) {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 function unknownTypeClass(base: string): ParameterTypeClass {
@@ -233,18 +253,47 @@ function parseTopLevelTemplateArguments(rawType: string): string[] | undefined {
     } else if (ch === '>') {
       if (depth === 0) {
         const finalArg = rawType.slice(argStart, i).trim();
-        if (finalArg.length > 0) args.push(normalizeCppParamType(finalArg));
+        if (finalArg.length > 0) args.push(normalizeCppTemplateArgType(finalArg));
         return args.length > 0 ? args : undefined;
       }
       depth--;
     } else if (ch === ',' && depth === 0) {
       const arg = rawType.slice(argStart, i).trim();
-      if (arg.length > 0) args.push(normalizeCppParamType(arg));
+      if (arg.length > 0) args.push(normalizeCppTemplateArgType(arg));
       argStart = i + 1;
     }
   }
 
   return undefined;
+}
+
+/**
+ * Normalize a single template argument while preserving cv/pointer/reference
+ * decorations (`std::vector<int*>` -> `'int*'`, `std::vector<int>` -> `'int'`,
+ * `std::vector<std::string>` -> `'string'`) so one-level container deduction
+ * does not misclassify `int*` as plain `int` (#1896).
+ */
+export function normalizeCppTemplateArgType(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === '' || trimmed.includes('<')) return trimmed;
+
+  const refMatch = /(&&|&)\s*$/.exec(trimmed);
+  const refSuffix = refMatch?.[1] ?? '';
+  const withoutRef = refMatch !== null ? trimmed.slice(0, refMatch.index).trim() : trimmed;
+
+  const ptrMatches = withoutRef.match(/\*/g);
+  const ptrCount = ptrMatches?.length ?? 0;
+  const hasConst = /\bconst\b/.test(withoutRef);
+  const hasVolatile = /\bvolatile\b/.test(withoutRef);
+
+  const base = normalizeCppParamType(withoutRef);
+  if (ptrCount === 0 && refSuffix === '' && !hasConst && !hasVolatile) return base;
+
+  const quals: string[] = [];
+  if (hasConst) quals.push('const');
+  if (hasVolatile) quals.push('volatile');
+  const cvPrefix = quals.length > 0 ? `${quals.join(' ')} ` : '';
+  return `${cvPrefix}${base}${'*'.repeat(ptrCount)}${refSuffix}`;
 }
 
 function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {

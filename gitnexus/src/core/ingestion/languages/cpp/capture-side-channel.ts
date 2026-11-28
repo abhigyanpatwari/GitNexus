@@ -48,6 +48,11 @@ import {
   collectCppMemberLookupSideChannel,
   type CppMemberLookupSideChannel,
 } from './member-lookup.js';
+import {
+  applyCppCtadSideChannel,
+  collectCppCtadSideChannel,
+  type CppCtadSideChannel,
+} from './ctad.js';
 
 /**
  * Plain JSON-serializable composite of every C++ capture-time side-channel
@@ -70,6 +75,7 @@ export interface CppCaptureSideChannel {
   readonly twoPhase: CppTwoPhaseSideChannel;
   readonly memberLookup: CppMemberLookupSideChannel;
   readonly usingDeclarations?: readonly CppUsingDeclaration[];
+  readonly ctad?: CppCtadSideChannel;
 }
 
 /**
@@ -84,6 +90,9 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
   const twoPhase = collectCppTwoPhaseSideChannel(filePath);
   const memberLookup = collectCppMemberLookupSideChannel(filePath);
   const usingDeclarations = collectCppUsingDeclarations(filePath);
+  const ctad = collectCppCtadSideChannel(filePath);
+  const hasCtad =
+    ctad.sites.length > 0 || ctad.classShapes.length > 0 || ctad.deductionGuides.length > 0;
 
   const isEmpty =
     adl.argInfoBySite.length === 0 &&
@@ -95,7 +104,8 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
     twoPhase.dependentPackBaseClasses.length === 0 &&
     memberLookup.baseEdges.length === 0 &&
     memberLookup.memberUsings.length === 0 &&
-    usingDeclarations.length === 0;
+    usingDeclarations.length === 0 &&
+    !hasCtad;
   if (isEmpty) return undefined;
 
   return {
@@ -106,6 +116,7 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
     twoPhase,
     memberLookup,
     usingDeclarations,
+    ...(hasCtad ? { ctad } : {}),
   };
 }
 
@@ -131,5 +142,8 @@ export function applyCppCaptureSideChannel(parsed: ParsedFile): void {
   if (data.twoPhase !== undefined) applyCppTwoPhaseSideChannel(parsed.filePath, data.twoPhase);
   if (data.memberLookup !== undefined) {
     applyCppMemberLookupSideChannel(parsed.filePath, data.memberLookup);
+  }
+  if (data.ctad !== undefined) {
+    applyCppCtadSideChannel(parsed.filePath, data.ctad);
   }
 }
