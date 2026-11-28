@@ -17,7 +17,8 @@ import {
 import {
   csharpQualifiedHeritageTypePattern,
   csharpTupleTypeOperands,
-  csharpTupleNeedsScope,
+  csharpOverrideTypeNeedsScope,
+  csharpFrameworkTypeNeedsScope,
   populateCsharpNamespacePrefixes,
 } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -29,7 +30,11 @@ import {
   normalizeCsharpNullableSignature,
   specializeCsharpNullableFormal,
 } from './nullable-heritage.js';
-import { canonicalName, CSHARP_PREDEFINED_TYPE_ALIASES } from './identifiers.js';
+import {
+  canonicalName,
+  csharpSystemKeyword,
+  CSHARP_PREDEFINED_TYPE_ALIASES,
+} from './identifiers.js';
 import { csharpProvider } from '../csharp.js';
 import {
   csharpArityCompatibility,
@@ -112,8 +117,9 @@ const csharpScopeResolver: ScopeResolver = {
 
   qualifiedHeritageTypePattern: csharpQualifiedHeritageTypePattern,
   heritageTypeOperands: csharpTupleTypeOperands,
-  needsScopedOverrideType: csharpTupleNeedsScope,
-  needsHeritageTypeNormalization: (type) => type.includes('[') || type.includes('('),
+  needsScopedOverrideType: csharpOverrideTypeNeedsScope,
+  needsHeritageTypeNormalization: (type) =>
+    type.includes('[') || type.includes('(') || csharpFrameworkTypeNeedsScope(type),
   specializeNullableHeritageFormal: specializeCsharpNullableFormal,
   normalizeNullableHeritageSignature: normalizeCsharpNullableSignature,
 
@@ -217,13 +223,6 @@ const csharpScopeResolver: ScopeResolver = {
   },
 };
 
-/** The BCL simple names the keywords alias. A spelling that reduces to one of
- *  these IS the predefined type; anything else that merely happens to sit in
- *  `System` is an ordinary type and keeps its qualifier. */
-const CSHARP_PREDEFINED_TYPE_NAMES: ReadonlySet<string> = new Set(
-  CSHARP_PREDEFINED_TYPE_ALIASES.values(),
-);
-
 const CSHARP_SYSTEM_QUALIFIER = /^(?:global::)?System\./;
 
 /**
@@ -266,7 +265,7 @@ function normalizeCsharpTypeArgument(name: string): string {
   // written instead, which sends it to the identity comparison — the step that
   // can actually tell two declarations apart.
   const bare = named.replace(CSHARP_SYSTEM_QUALIFIER, '');
-  return bare !== named && CSHARP_PREDEFINED_TYPE_NAMES.has(bare) ? bare : named;
+  return bare !== named && csharpSystemKeyword('System.' + bare) !== undefined ? bare : named;
 }
 
 export { csharpScopeResolver };

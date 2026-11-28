@@ -1,15 +1,11 @@
 import type { LanguageProvider } from '../../language-provider.js';
-import { csharpParameterMode, renderCsharpHeritageType } from './heritage-type-shape.js';
 import {
-  canonicalName,
-  CSHARP_PREDEFINED_TYPE_ALIASES,
-  isCsharpReservedTypeKeyword,
-} from './identifiers.js';
+  csharpArraySuffix,
+  csharpParameterMode,
+  renderCsharpHeritageType,
+} from './heritage-type-shape.js';
+import { canonicalName, isCsharpReservedTypeKeyword } from './identifiers.js';
 import { isStableCsharpTypeName } from './qualified-type-names.js';
-
-const systemAliases = new Map(
-  [...CSHARP_PREDEFINED_TYPE_ALIASES].map(([alias, name]) => ['global::System.' + name, alias]),
-);
 
 function formalPositions(formals?: ReadonlySet<string>) {
   if (!formals) return undefined;
@@ -26,8 +22,7 @@ function tupleSignature(spelling: string, formals?: ReadonlyMap<string, string>)
       const formal = formals?.get(canonicalName(name));
       if (formal) return { name: formal };
       if (!isStableCsharpTypeName(name)) grounded = false;
-      const identity = systemAliases.get(name) ?? name;
-      return { name: identity, reference: identity === 'string' || identity === 'object' };
+      return { name, reference: name === 'string' || name === 'object' };
     },
     false,
     {
@@ -50,11 +45,26 @@ function invariantReturn(type: string) {
   );
 }
 
-// Explicit ValueTuple/Nullable constructions may denote the same value type as
-// tuple and nullable syntax. Their projected identities need further evidence.
-function projectedValueType(type: string) {
+function incompatibleReturns(result: string, expected: string): boolean {
+  if (invariantReturn(result) || invariantReturn(expected)) return true;
+  if (!result.endsWith(']') || !expected.endsWith(']')) return false;
+  const from = csharpArraySuffix(result);
+  const to = csharpArraySuffix(expected);
+  if (!from || !to) return false;
+  const depth = Math.min(from.ranks.length, to.ranks.length);
+  for (let i = 0; i < depth; i++) if (from.ranks[i] !== to.ranks[i]) return true;
+  // Equal ranks allow covariance only through reference elements. An array
+  // may itself widen to object at any depth.
+  if (
+    from.ranks.length < to.ranks.length &&
+    (from.element === 'object' ||
+      from.element === 'string' ||
+      from.element === 'global::System.Array')
+  )
+    return true;
   return (
-    type.startsWith('global::System.ValueTuple<') || type.startsWith('global::System.Nullable<')
+    (from.ranks.length === depth && invariantReturn(from.element)) ||
+    (to.ranks.length === depth && invariantReturn(to.element))
   );
 }
 
@@ -122,13 +132,7 @@ export const csharpTupleOverride: NonNullable<LanguageProvider['overrideSignatur
     if (result.type !== expected.type) {
       // CS0508 permits reference covariance. Boxing or converting between
       // distinct value types cannot make the nearer signature overridable.
-      if (
-        !projectedValueType(result.type) &&
-        !projectedValueType(expected.type) &&
-        (invariantReturn(result.type) || invariantReturn(expected.type))
-      )
-        return 'blocked';
-      return undefined;
+      return incompatibleReturns(result.type, expected.type) ? 'blocked' : undefined;
     }
     // CS8139 permits omitting every name in the overriding signature. Once
     // any name is present, all element positions in parameters and return agree.

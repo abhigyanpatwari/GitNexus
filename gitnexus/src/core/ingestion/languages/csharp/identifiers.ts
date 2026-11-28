@@ -31,6 +31,15 @@ export const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new M
   ['string', 'String'],
 ]);
 
+const systemKeywords = new Map(
+  Array.from(CSHARP_PREDEFINED_TYPE_ALIASES, ([keyword, name]) => ['System.' + name, keyword]),
+);
+
+/** Framework identity only after resolving any workspace declaration of this name. */
+export function csharpSystemKeyword(qualifiedName: string): string | undefined {
+  return systemKeywords.get(qualifiedName);
+}
+
 /** Native-sized integer aliases are contextual and can name workspace declarations. */
 export function isCsharpReservedTypeKeyword(name: string): boolean {
   return (

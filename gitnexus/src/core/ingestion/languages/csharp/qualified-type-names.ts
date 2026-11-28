@@ -11,7 +11,7 @@
  * `A.Foo` and `B.Foo`) by matching the explicit qualifier against the sidecar.
  */
 import { csharpParameterMode, renderCsharpHeritageType } from './heritage-type-shape.js';
-import { isCsharpReservedTypeKeyword } from './identifiers.js';
+import { csharpSystemKeyword, isCsharpReservedTypeKeyword } from './identifiers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
@@ -100,7 +100,8 @@ export function csharpQualifiedHeritageTypePattern(
   bindings: ReadonlyMap<string, string | null>,
   shadowed?: ReadonlySet<string>,
 ): RegExp | undefined {
-  return type.includes('::') && stableType(type, bindings, shadowed)
+  return (type.includes('::') || (type.includes('[') && type.includes('?'))) &&
+    stableType(type, bindings, shadowed)
     ? nullableQualifiedNames
     : undefined;
 }
@@ -132,7 +133,24 @@ export const csharpTupleTypeOperands: NonNullable<ScopeResolver['heritageTypeOpe
   });
 };
 
-export function csharpTupleNeedsScope(type: string): boolean {
+export function csharpFrameworkTypeNeedsScope(type: string): boolean {
+  if (type.includes('System')) {
+    for (const name of type.matchAll(/\bSystem\s*\.\s*(\w+)/gu)) {
+      if (
+        name[1] === 'ValueTuple' ||
+        name[1] === 'Nullable' ||
+        csharpSystemKeyword('System.' + name[1])
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
+export function csharpOverrideTypeNeedsScope(type: string): boolean {
+  if (csharpFrameworkTypeNeedsScope(type)) return true;
+  if (type.includes('?') && /(?<![\p{ID_Continue}.@:])\b(?:string|object)\s*\?/u.test(type))
+    return true;
   if (!type.includes('(')) return false;
   const mode = csharpParameterMode.exec(type)?.[0] ?? '';
   let localName = false;

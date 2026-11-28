@@ -1427,11 +1427,19 @@ export function runScopeResolution(
       let scopedTypes: string[] | null | undefined;
       let scopedResult: string | null | undefined;
       const overrideOwner = def.ownerId !== undefined && scopedOverrideOwners?.has(def.ownerId);
+      // Some providers keep the complete return spelling on the graph method.
+      // Only compare declarations belonging to an actual class inheritance edge.
+      const graphMethod =
+        scopedOverrideType && overrideOwner && !def.returnType
+          ? resolveDefGraphId(def.filePath, def, nodeLookup)
+          : undefined;
+      const returnType =
+        def.returnType ??
+        (graphMethod ? graph.getNode(graphMethod)?.properties.returnType : undefined);
       const scopeOverride =
         scopedOverrideType &&
         overrideOwner &&
-        (declared?.some(scopedOverrideType) ||
-          (def.returnType && scopedOverrideType(def.returnType)));
+        (declared?.some(scopedOverrideType) || (returnType && scopedOverrideType(returnType)));
       const normalizeHere = scopeOverride
         ? provider.normalizeNullableHeritageSignature
         : normalize && def.ownerId && participates(def.ownerId)
@@ -1453,9 +1461,9 @@ export function runScopeResolution(
               }
               if (normalized !== type) (scopedTypes ??= [...declared])[i] = normalized;
             }
-          if (scopeOverride && def.returnType) {
-            const normalized = normalizeHere(def.returnType, { scope, indexes });
-            if (normalized !== def.returnType) scopedResult = normalized;
+          if (scopeOverride && returnType) {
+            const normalized = normalizeHere(returnType, { scope, indexes });
+            if (normalized !== returnType) scopedResult = normalized;
           }
         }
       }
@@ -1463,7 +1471,7 @@ export function runScopeResolution(
         def.typeParameters?.length &&
         (hasHeritageBindings ||
           (overrideOwner &&
-            provider.languageProvider.overrideSignature?.applies(declared ?? [], def.returnType)));
+            provider.languageProvider.overrideSignature?.applies(declared ?? [], returnType)));
       if (
         !retainFormals &&
         !useDeclaredTypes &&
@@ -1471,7 +1479,7 @@ export function runScopeResolution(
         scopedResult === undefined
       )
         continue;
-      const id = resolveDefGraphId(def.filePath, def, nodeLookup);
+      const id = graphMethod ?? resolveDefGraphId(def.filePath, def, nodeLookup);
       if (id) {
         input.heritageSubstitutions.registerMethod(
           id,

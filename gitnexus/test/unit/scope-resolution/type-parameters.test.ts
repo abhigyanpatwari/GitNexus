@@ -106,11 +106,16 @@ describe('parseTypeParameterList', () => {
   });
 });
 
-it('retains proven C++ template parameters when a comparison splits the captured list', () => {
+it('retains C++ template parameters around comparison operators in defaults', () => {
   const source = `
 template<int N, bool Prior = true, bool B = N >= 1, class Lost = int> struct Compared { static constexpr bool value = B; };
 template<int N, bool B = N >= 1> constexpr bool compare() { return B; }
 template<int N, bool B = (N >= 1), class Kept = int> struct Grouped {};
+template<int N, bool B = N <= 1, class Tail = int> struct AtMost { static constexpr bool value = B; };
+template<int N, bool B = N<=1, class Tail = int> constexpr bool atMost() { return B; }
+struct Rank { int value; constexpr int operator<=>(Rank other) const { return value - other.value; } };
+template<int N, int Order = Rank{N}<=>Rank{1}, class Tail = int> struct Ordered { static constexpr int value = Order; };
+static_assert(AtMost<0>::value && !atMost<2>() && Ordered<0>::value == -1);
 static_assert(!Compared<-1>::value && !compare<-1>() && static_cast<bool>(-1));
 `;
   const parsed = extractParsedFile(cppProvider, source, 'defaults.cpp')!;
@@ -123,6 +128,19 @@ static_assert(!Compared<-1>::value && !compare<-1>() && static_cast<bool>(-1));
     expect(list).toEqual([{ name: 'N' }, { name: 'Prior', defaultType: 'true' }, { name: 'B' }]);
   }
   for (const list of parameters('compare')) expect(list).toEqual([{ name: 'N' }, { name: 'B' }]);
+  for (const [name, formal, defaultType] of [
+    ['AtMost', 'B', 'N <= 1'],
+    ['atMost', 'B', 'N<=1'],
+    ['Ordered', 'Order', 'Rank{N}<=>Rank{1}'],
+  ] as const) {
+    for (const list of parameters(name)) {
+      expect(list).toEqual([
+        { name: 'N' },
+        { name: formal, defaultType },
+        { name: 'Tail', defaultType: 'int' },
+      ]);
+    }
+  }
   for (const list of parameters('Grouped')) {
     expect(list).toEqual([
       { name: 'N' },

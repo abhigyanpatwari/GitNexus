@@ -42,13 +42,13 @@ function referenceSite(edge) {
   }
   const match = /^:(0|[1-9]\d*):(0|[1-9]\d*)(?::(0|[1-9]\d*):(0|[1-9]\d*))?$/.exec(tail);
   if (!match) return;
-  const coordinates = match
-    .slice(1)
-    .filter((v) => v !== undefined)
-    .map(Number);
+  const coordinates = match.slice(1).filter(Boolean).map(Number);
   if (!coordinates.every(Number.isSafeInteger)) return;
   const [line, col, endLine, endCol] = coordinates;
-  if (line < 1 || (endLine !== undefined && (endLine < line || (endLine === line && endCol < col))))
+  if (
+    line < 1 ||
+    (coordinates.length === 4 && (endLine < line || (endLine === line && endCol < col)))
+  )
     return;
   return { pointId: `${prefix}${access}:${line}:${col}`, line, col, endLine, endCol, access };
 }

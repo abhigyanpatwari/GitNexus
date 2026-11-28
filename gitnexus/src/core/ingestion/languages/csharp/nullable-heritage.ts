@@ -2,7 +2,7 @@ import { makeScopeId, type SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { specializeNamedNullableOperand } from '../../heritage-substitutions.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { canonicalName, isCsharpReservedTypeKeyword } from './identifiers.js';
+import { canonicalName, csharpSystemKeyword, isCsharpReservedTypeKeyword } from './identifiers.js';
 
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { bindsTypeParameter, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
@@ -146,7 +146,11 @@ export const normalizeCsharpNullableSignature: NonNullable<
   const mode = csharpParameterMode.exec(builtin)?.[0] ?? '';
   const operand = builtin.slice(mode.length);
   const { scope, indexes } = declaration;
-  const resolveName = (spelling: string, includeValues: boolean): NominalName | undefined => {
+  const resolveName = (
+    spelling: string,
+    includeValues: boolean,
+    arity = 0,
+  ): NominalName | undefined => {
     if (isCsharpReservedTypeKeyword(spelling)) {
       return { name: spelling, reference: spelling === 'string' || spelling === 'object' };
     }
@@ -159,30 +163,50 @@ export const normalizeCsharpNullableSignature: NonNullable<
         const head = canonicalName(path.slice(0, dot));
         if (bindsTypeParameter(scope, head, indexes)) return undefined;
         const claim = lookupNameClaim(scope, head, indexes, { purpose: 'type' });
-        if (claim.status !== 'resolved' || !claim.bindings.length) return undefined;
-        // The first component may be a file-local namespace alias. All selected
-        // bindings must agree on the namespace before its members can be used.
-        let namespace: string | undefined;
-        for (const { def } of claim.bindings) {
-          if (def.type !== 'Namespace') return undefined;
-          const candidate = declaringNamespace(def, indexes);
-          if (!candidate || (namespace && namespace !== candidate)) return undefined;
-          namespace = candidate;
+        // External framework namespaces need not be part of the indexed sources.
+        if (claim.status !== 'absent' || head !== 'System') {
+          if (claim.status !== 'resolved' || !claim.bindings.length) return undefined;
+          // The first component may be a file-local namespace alias. All selected
+          // bindings must agree on the namespace before its members can be used.
+          let namespace: string | undefined;
+          for (const { def } of claim.bindings) {
+            if (def.type !== 'Namespace') return undefined;
+            const candidate = declaringNamespace(def, indexes);
+            if (!candidate || (namespace && namespace !== candidate)) return undefined;
+            namespace = candidate;
+          }
+          absolute = namespace + path.slice(dot);
         }
-        absolute = namespace + path.slice(dot);
       }
       // C# keeps simple type names in this index. Select only declarations
       // whose complete namespace and type match the written path.
       const tail = absolute.slice(absolute.lastIndexOf('.') + 1);
+      const keyword = csharpSystemKeyword(absolute);
+      const projected = absolute === 'System.ValueTuple' || absolute === 'System.Nullable';
       let identity: NominalName | undefined;
       for (const id of indexes.qualifiedNames.get(tail)) {
         const def = indexes.defs.get(id);
+        if ((projected || keyword) && (def?.typeParameters?.length ?? 0) !== arity) continue;
         const candidate = def && nominalIdentity(def, includeValues, indexes);
         if (!candidate || candidate.name !== 'global::' + absolute) continue;
         if (identity && identity.reference !== candidate.reference) return undefined;
         identity = candidate;
       }
-      return identity;
+      if (identity) {
+        // C# binds tuple syntax to a ValueTuple struct in the compilation,
+        // which can be supplied by source. Predefined keyword aliases and
+        // Nullable<T> instead denote types from the runtime assembly.
+        if (absolute === 'System.ValueTuple' && identity.reference === false)
+          return { ...identity, projection: 'tuple' };
+        return identity;
+      }
+      if (arity === 0 && keyword && isCsharpReservedTypeKeyword(keyword))
+        return { name: keyword, reference: keyword === 'string' || keyword === 'object' };
+      if (absolute === 'System.ValueTuple' && arity >= 1 && arity <= 8)
+        return { name: 'global::' + absolute, reference: false, projection: 'tuple' };
+      if (absolute === 'System.Nullable' && arity === 1)
+        return { name: 'global::' + absolute, reference: false, projection: 'nullable' };
+      return undefined;
     }
     const name = canonicalName(path);
     if (bindsTypeParameter(scope, name, indexes)) return undefined;
@@ -239,8 +263,8 @@ export const normalizeCsharpNullableSignature: NonNullable<
     let grounded = true;
     const constructed = renderCsharpHeritageType(
       operand,
-      (name) => {
-        const resolved = resolveName(name, true);
+      (name, arity) => {
+        const resolved = resolveName(name, true, arity);
         if (resolved) return resolved;
         if (
           !name.startsWith('global::') &&

@@ -153,8 +153,8 @@ function parseEntry(entry: string): TypeParameter | undefined {
   return { name, ...(bound && { bound }), ...(defaultType && { defaultType }) };
 }
 
-/** `entry` up to a top-level `=`, which introduces a DEFAULT rather than a
- *  bound. `=>` and `>=`/`<=` are not defaults; only a bare `=` at depth 0 is. */
+/** Return the prefix before the default's top-level `=`. A generic bound
+ *  can close immediately before that delimiter, as in `T extends Box<U>=V`. */
 function beforeTopLevelDefault(entry: string): string {
   let depth = 0;
   for (const i of ungroupedOffsets(entry)) {
@@ -236,6 +236,10 @@ function* opaqueSpans(text: string, start: number) {
       yield { start: i, end, comment: true };
       lastCommentEnd = end;
       cursor = end;
+    } else if (ch === '<' && text[i + 1] === '=') {
+      // Both <= and <=> are single operators. Their angles do not delimit a list.
+      cursor = text[i + 2] === '>' ? i + 3 : i + 2;
+      yield { start: i, end: cursor, comment: false };
     } else if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
       yield { start: i, end: i + 2, comment: false };
       cursor = i + 2;
