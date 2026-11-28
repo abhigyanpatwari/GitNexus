@@ -25,5 +25,6 @@ export type SidecarRequestBody = DistributiveOmit<SidecarRequest, 'id'>;
 export type SidecarResponse =
   | { id: number; type: 'ready'; device: EmbeddingSidecarDevice }
   | { id: number; type: 'progress'; progress: number; status: ModelProgress['status'] }
+  | { id: number; type: 'warning'; message: string }
   | { id: number; type: 'vectors'; vectors: number[][] }
   | { id: number; type: 'error'; message: string };
