@@ -1763,6 +1763,10 @@ export async function runFullAnalysis(
   if (options.repairFts && resolveFtsDisableReason(options.skipFts)) {
     throw new Error('--repair-fts cannot be used with --skip-fts or GITNEXUS_SKIP_FTS=1.');
   }
+  // --drop-embeddings forces a full rebuild, which the FTS-only path never runs.
+  if (options.repairFts && options.dropEmbeddings) {
+    throw new Error('--repair-fts cannot be used with --drop-embeddings.');
+  }
   initialiseSearchFTSStemmer();
   initialiseSearchFTSCjkSegmentation();
   const contentRetention = contentRetentionFromEnvironment();
