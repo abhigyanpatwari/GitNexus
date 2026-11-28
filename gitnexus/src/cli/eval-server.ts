@@ -26,6 +26,8 @@
  *
  * API:
  *   POST /tool/:name   — Call a tool. Body is JSON arguments. Returns formatted text.
+ *   POST /reindex      — Opt-in index refresh. Body: { repo }. Returns status, repo,
+ *                        duration_ms, indexedAt, lastCommit, staleness, and stats.
  *   GET  /health       — Health check. Returns {"status":"ok","repos":[...]}
  *   POST /shutdown     — Graceful shutdown.
  */
@@ -46,6 +48,7 @@ import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
 import { formatSymbolLine } from './format-symbol.js';
+import { MCP_REFRESH_TOOL, resolveMcpRefreshMode } from '../mcp/refresh-policy.js';
 
 export { formatDetectChangesResult } from './detect-changes-format.js';
 
@@ -171,6 +174,82 @@ export function isEvalServerBearerAuthorized(
   const sameLength = supplied?.length === expected.length;
   const candidate = sameLength && supplied ? supplied : Buffer.alloc(expected.length);
   return crypto.timingSafeEqual(candidate, expected) && sameLength;
+}
+
+export function rejectUnauthorizedRequest(
+  authorization: string | string[] | undefined,
+  authToken: string | undefined,
+  res: Pick<http.ServerResponse, 'setHeader' | 'writeHead' | 'end'>,
+): boolean {
+  if (isEvalServerBearerAuthorized(authorization, authToken)) return false;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('WWW-Authenticate', 'Bearer');
+  res.writeHead(401);
+  res.end(JSON.stringify({ error: 'Unauthorized' }));
+  return true;
+}
+
+export function reindexErrorStatus(error: string): number {
+  if (/already running/i.test(error)) return 409;
+  if (/unknown repo|no repository found|repository .*not found/i.test(error)) return 404;
+  if (/refresh limit|GITNEXUS_MCP_REFRESH_MAX_FILES/i.test(error)) return 422;
+  return 500;
+}
+
+export async function reindexRepository(
+  backend: LocalBackend,
+  body: string,
+  refreshEnabled: boolean,
+): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
+  if (!refreshEnabled) {
+    return {
+      statusCode: 403,
+      payload: {
+        error: 'Reindex is disabled. Set GITNEXUS_MCP_ENABLE_REFRESH=1 to enable it.',
+      },
+    };
+  }
+
+  let args: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+    args = parsed as Record<string, unknown>;
+  } catch {
+    return { statusCode: 400, payload: { error: 'Invalid JSON body' } };
+  }
+  const unsupported = Object.keys(args).find((key) => key !== 'repo');
+  if (unsupported !== undefined) {
+    return {
+      statusCode: 400,
+      payload: { error: `The ${unsupported} option is not supported yet.` },
+    };
+  }
+  if (typeof args.repo !== 'string' || !args.repo.trim()) {
+    return { statusCode: 400, payload: { error: 'A string "repo" is required.' } };
+  }
+
+  const repos = await backend.listRepos();
+  if (!repos.some((repo) => repo.name === args.repo)) {
+    return { statusCode: 404, payload: { error: `Unknown repository: ${args.repo}` } };
+  }
+
+  const result = await backend.callTool(MCP_REFRESH_TOOL, { repo: args.repo });
+  if (result && typeof result === 'object' && typeof result.error === 'string') {
+    return { statusCode: reindexErrorStatus(result.error), payload: { error: result.error } };
+  }
+  return {
+    statusCode: 200,
+    payload: {
+      status: result.status,
+      repo: result.repo,
+      duration_ms: result.durationMs,
+      indexedAt: result.indexedAt,
+      lastCommit: result.lastCommit,
+      staleness: result.staleness,
+      stats: result.stats,
+    },
+  };
 }
 
 // ─── Text Formatters ──────────────────────────────────────────────────
@@ -852,11 +931,16 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   );
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeReindexRequests = 0;
 
   function resetIdleTimer() {
     if (idleTimeoutSec <= 0) return;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(async () => {
+      if (activeReindexRequests > 0) {
+        resetIdleTimer();
+        return;
+      }
       logger.info({ idleTimeoutSec }, 'GitNexus eval-server: idle timeout reached, shutting down');
       await backend.disconnect();
       process.exit(0);
@@ -872,13 +956,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   const shutdownToken = crypto.randomBytes(24).toString('hex');
 
   const server = http.createServer(async (req, res) => {
-    if (!isEvalServerBearerAuthorized(req.headers.authorization, authToken)) {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('WWW-Authenticate', 'Bearer');
-      res.writeHead(401);
-      res.end(JSON.stringify({ error: 'Unauthorized' }));
-      return;
-    }
+    if (rejectUnauthorizedRequest(req.headers.authorization, authToken, res)) return;
 
     resetIdleTimer();
 
@@ -908,6 +986,24 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
           process.exit(0);
         }, 100);
         return;
+      }
+
+      if (req.method === 'POST' && req.url === '/reindex') {
+        activeReindexRequests++;
+        try {
+          const result = await reindexRepository(
+            backend,
+            await readBody(req),
+            resolveMcpRefreshMode(),
+          );
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(result.statusCode);
+          res.end(JSON.stringify(result.payload));
+          return;
+        } finally {
+          activeReindexRequests--;
+          resetIdleTimer();
+        }
       }
 
       // Tool calls: POST /tool/:name
@@ -950,7 +1046,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       // 404
       res.setHeader('Content-Type', 'text/plain');
       res.writeHead(404);
-      res.end('Not found. Use POST /tool/:name or GET /health');
+      res.end('Not found. Use POST /tool/:name, POST /reindex, or GET /health');
     } catch (err: any) {
       res.setHeader('Content-Type', 'text/plain');
       res.writeHead(500);
@@ -1028,6 +1124,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       `  POST /tool/context  — 360-degree symbol view`,
       `  POST /tool/impact   — blast radius analysis`,
       `  POST /tool/cypher   — raw Cypher query`,
+      `  POST /reindex       — opt-in index refresh`,
       `  GET  /health        — health check`,
       `  POST /shutdown      — graceful shutdown`,
     ];
@@ -1047,6 +1144,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         'POST /tool/context',
         'POST /tool/impact',
         'POST /tool/cypher',
+        'POST /reindex',
         'GET  /health',
         'POST /shutdown',
       ],
