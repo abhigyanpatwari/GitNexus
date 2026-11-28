@@ -32,6 +32,7 @@ import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
 import { loadNodeWorkspacePackages, type NodeWorkspacePackages } from './workspace-packages.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { typescriptArityCompatibility, typescriptMergeBindings, resolveTsTarget } from './index.js';
+import { collectEcmaScopeContextPaths } from './collect-ecma-scope-context.js';
 import {
   getNuxtAutoImportEntry,
   hasNuxtAutoImports,
@@ -87,6 +88,8 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
   };
 }
 
+const resolveTsImportTarget = makeTsResolveImportTarget();
+
 const typescriptScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
   // One hook, both routes. TypeScript exposes collection views as METHOD calls
@@ -104,8 +107,18 @@ const typescriptScopeResolver: ScopeResolver = {
   importsBindAtLexicalScope: true,
   ownedMembersBindAtModuleScope: false,
 
-  resolveImportTarget: makeTsResolveImportTarget(),
+  resolveImportTarget: resolveTsImportTarget,
   moduleExports: typescriptModuleExports,
+
+  // Pull import-reachable `.js`/`.jsx`/`.mjs`/`.cjs` (and sibling TS) into the
+  // TypeScript pass so mixed allowJs / migration repos emit IMPORTS/CALLS
+  // across the language boundary (#4252). Same hook shape as Vue.
+  collectScopeContextPaths(options) {
+    return collectEcmaScopeContextPaths({
+      ...options,
+      resolveImportTarget: resolveTsImportTarget,
+    });
+  },
 
   // Threaded into `resolveImportTarget` so tsconfig path aliases
   // (`@/services/user`, `~/x`, ...) resolve through the same standard
