@@ -427,9 +427,10 @@ const RANGE_SUBSCRIPT_ARGUMENT_TYPES = new Set([
 function isRangeSubscriptCall(node: SyntaxNode): boolean {
   const argumentList = node.lastNamedChild?.firstNamedChild;
   return (
-    argumentList?.namedChildren.some((argument) =>
-      RANGE_SUBSCRIPT_ARGUMENT_TYPES.has((argument.childForFieldName('value') ?? argument).type),
-    ) ?? false
+    argumentList?.namedChildren.some((argument) => {
+      const value = argument.childForFieldName('value') ?? argument;
+      return RANGE_SUBSCRIPT_ARGUMENT_TYPES.has(unwrapTransparentReceiver(value).type);
+    }) ?? false
   );
 }
 
