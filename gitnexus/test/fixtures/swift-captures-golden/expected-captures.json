@@ -247,6 +247,10 @@
     "captureGroups": 8,
     "digest": "bbb3d04da1054e094206650be5d36a5ceb0958b8d6e8660dd00e589c5df4ea58"
   },
+  "swift-nested-tail-collision/Models.swift": {
+    "captureGroups": 15,
+    "digest": "9a2ddf867768fa6acb2d79435bd4ed03778c05f24844ed04a9496b7f27b83d76"
+  },
   "swift-overload-dispatch/App.swift": {
     "captureGroups": 8,
     "digest": "da644f9163f61ef3ec0a000d31dd93b5f0dd11b33def9d96ffe425ff4288b922"

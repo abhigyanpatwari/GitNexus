@@ -407,6 +407,10 @@
     "captureGroups": 7,
     "digest": "49ec4930562a8e12040010b12535a1620aa5ab86e2aab3cad2623e8aec106518"
   },
+  "csharp-nested-tail-collision/Models.cs": {
+    "captureGroups": 15,
+    "digest": "632bbfe9b93afefbe3eb0ab022a32700b09d4b04f064a0a57534aa057b66dda0"
+  },
   "csharp-no-csproj/Models/User.cs": {
     "captureGroups": 11,
     "digest": "a498ba55ee638fdbec275c693bcd18999ee2acfcb477a28c27eec8ff4e70a05d"
