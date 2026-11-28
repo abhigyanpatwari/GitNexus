@@ -1608,6 +1608,7 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
 
   // Capture MCP configuration results before installing skills and hooks.
   const mcpConfigured = [...result.configured];
+  const mcpConfigurationFailed = mcpConfigured.length === 0 && result.errors.length > 0;
 
   // Install global skills for platforms that support them
   if (selected.has('claude')) {
@@ -1665,7 +1666,7 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
     `    Skills installed to: ${result.configured.filter((c) => c.includes('skills')).length > 0 ? result.configured.filter((c) => c.includes('skills')).join(', ') : 'none'}`,
   );
   const configurationSucceeded = result.configured.length > 0;
-  if (explicitSelection && !configurationSucceeded) {
+  if (explicitSelection && (!configurationSucceeded || mcpConfigurationFailed)) {
     process.stderr.write('None of the explicitly selected coding agents were configured.\n');
     process.exitCode = 1;
   }

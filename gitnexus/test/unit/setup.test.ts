@@ -278,6 +278,8 @@ describe('setupClaudeCode', () => {
       setPlatform('linux');
       vi.stubEnv('WSL_DISTRO_NAME', 'Ubuntu');
       vi.stubEnv('WSL_INTEROP', undefined);
+      const originalExitCode = process.exitCode;
+      process.exitCode = undefined;
 
       try {
         const createInstallation = async (name: string, binary: Buffer) => {
@@ -354,6 +356,7 @@ describe('setupClaudeCode', () => {
         }
 
         await setupCommand({ codingAgent: 'claude' });
+        expect(process.exitCode).toBe(onlyWindows ? 1 : undefined);
 
         const opens = vi.mocked(fsSync.openSync).mock.calls;
         const windowsInputs = opens.filter(
@@ -393,6 +396,7 @@ describe('setupClaudeCode', () => {
           });
         }
       } finally {
+        process.exitCode = originalExitCode;
         vi.unstubAllEnvs();
       }
     },
