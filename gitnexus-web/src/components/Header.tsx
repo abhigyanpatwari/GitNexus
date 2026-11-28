@@ -114,12 +114,17 @@ export const Header = ({
   // Server-side analyze jobs, polled while the switcher is open (#1584). The
   // server runs one job at a time, so any running job blocks a new analyze.
   const { jobs: runningJobs, readyRepoIds } = useActiveAnalyzeJobs(isRepoDropdownOpen, () => {
-    setAnalyzeError((error) => (error?.busy ? null : error));
     fetchRepos()
       .then((repos) => onReposChanged?.(repos))
       .catch(() => {});
   });
   const analyzeBlocked = !!reanalyzing || runningJobs.length > 0;
+
+  useEffect(() => {
+    if (runningJobs.length === 0) {
+      setAnalyzeError((error) => (error?.busy ? null : error));
+    }
+  }, [runningJobs]);
 
   // Handle clicking outside search or repo dropdown to close them
   useEffect(() => {

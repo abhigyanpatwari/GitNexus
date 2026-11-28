@@ -526,6 +526,26 @@ describe('Header', () => {
       expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
     });
 
+    it('clears a 409 after a poll finds that the slot is free', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockImplementation(async () => []);
+      vi.mocked(startAnalyze).mockRejectedValue(
+        new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
+      );
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      fireEvent.click(screen.getByTitle('Re-analyze repo-1'));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(getAnalyzeStatus).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
     it('names the competing job after a 409 and clears the alert when it completes', async () => {
       vi.useFakeTimers();
       const competingJob = runningJob({ repoName: 'other-repo', repoId: 'id-x' });
