@@ -179,6 +179,7 @@ export const hybridSearch = async (
   results: HybridSearchResult[];
   ftsAvailable: boolean;
   ftsQueryErrors: readonly string[];
+  ftsMissingIndexes: readonly string[];
 }> => {
   // Use LadybugDB FTS for fresh BM25 results — skipped entirely when this
   // index recorded an explicit FTS opt-out (`disabledReason`, #3091).
@@ -216,5 +217,6 @@ export const hybridSearch = async (
     results: mergeWithRRF(fts.results, semantic.value, limit),
     ftsAvailable: fts.ftsAvailable,
     ftsQueryErrors: fts.nonBenignErrors ?? [],
+    ftsMissingIndexes: fts.missingIndexes ?? [],
   };
 };

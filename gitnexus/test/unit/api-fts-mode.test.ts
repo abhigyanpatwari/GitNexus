@@ -714,6 +714,31 @@ describe('/api/search search-lane degradation', () => {
     expect(body.warning).not.toContain('connection reset');
   });
 
+  it.each([
+    { mode: 'hybrid', embedderReady: true, enrich: false, queryErrors: [] },
+    { mode: 'hybrid', embedderReady: false, enrich: true, queryErrors: [] },
+    { mode: 'bm25', embedderReady: false, enrich: false, queryErrors: ['connection reset'] },
+  ])(
+    'reports missing indexes and keeps available results in $mode (embedder $embedderReady)',
+    async ({ mode, embedderReady, enrich, queryErrors }) => {
+      mocks.isEmbedderReady.mockReturnValue(embedderReady);
+      mocks.search.mockResolvedValue({
+        results: [{ filePath: 'keyword.ts', score: 2, rank: 1 }],
+        ftsAvailable: true,
+        missingIndexes: ['Function.function_fts'],
+        nonBenignErrors: queryErrors,
+      });
+      const { body } = await invoke('/api/search', {}, { mode, enrich });
+      expect(body.results).toContainEqual(expect.objectContaining({ filePath: 'keyword.ts' }));
+      expect(body.warning).toContain('Function.function_fts');
+      expect(body.warning).toContain('gitnexus analyze --repair-fts');
+      if (queryErrors.length) {
+        expect(body.warning).toMatch(/keyword search partially failed/i);
+        expect(body.warning).not.toContain(queryErrors[0]);
+      }
+    },
+  );
+
   it('distinguishes an unready embedder from a healthy empty semantic query', async () => {
     mocks.isEmbedderReady.mockReturnValue(false);
     const unavailable = await invoke('/api/search', {}, { mode: 'semantic' });
