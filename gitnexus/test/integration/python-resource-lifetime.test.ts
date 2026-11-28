@@ -87,13 +87,27 @@ it('records asynchronous close only when the coroutine is awaited', async () => 
         '        yield connection',
         '    finally:',
         '        await connection.aclose()',
+        '',
+        'async def unawaited_close():',
+        '    connection = connect()',
+        '    try:',
+        '        yield connection',
+        '    finally:',
+        '        connection.close()',
+        '',
+        'def sync_cleanup():',
+        '    connection = connect_sync()',
+        '    try:',
+        '        yield connection',
+        '    finally:',
+        '        connection.close()',
       ].join('\n'),
     );
     const { graph } = await runPipelineFromRepo(repo, () => {}, {});
     const owners = graph.relationships
       .filter((edge) => edge.type === 'OWNS_RESOURCE')
       .map((edge) => graph.getNode(edge.sourceId)?.properties.name);
-    expect(owners).toEqual(['awaited_cleanup']);
+    expect(owners.sort()).toEqual(['awaited_cleanup', 'sync_cleanup']);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

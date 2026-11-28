@@ -28,7 +28,11 @@ function yieldsBinding(block: SyntaxNode | null, name: string): boolean {
   );
 }
 
-function cleanupCall(statement: SyntaxNode | undefined, name: string): SyntaxNode | undefined {
+function cleanupCall(
+  statement: SyntaxNode | undefined,
+  name: string,
+  isAsyncGenerator: boolean,
+): SyntaxNode | undefined {
   if (statement?.type !== 'expression_statement') return;
   const expression = statement.firstNamedChild;
   const awaited = expression?.type === 'await';
@@ -41,7 +45,8 @@ function cleanupCall(statement: SyntaxNode | undefined, name: string): SyntaxNod
   if (
     object?.type === 'identifier' &&
     object.text === name &&
-    (attribute === 'close' || (attribute === 'aclose' && awaited))
+    (attribute === 'close' || attribute === 'aclose') &&
+    (awaited || (attribute === 'close' && !isAsyncGenerator))
   )
     return call;
 }
@@ -99,7 +104,10 @@ export function pythonResourceLifetime(fn: SyntaxNode): PythonResourceLifetime |
   )
     return;
   const teardown = statements(guarded[1].lastNamedChild);
-  const close = teardown.length === 1 ? cleanupCall(teardown[0], binding.text) : undefined;
+  // A bare close in an async generator may only create a coroutine.
+  const isAsyncGenerator = fn.firstChild?.type === 'async';
+  const close =
+    teardown.length === 1 ? cleanupCall(teardown[0], binding.text, isAsyncGenerator) : undefined;
   if (close)
     return {
       ...owner,
