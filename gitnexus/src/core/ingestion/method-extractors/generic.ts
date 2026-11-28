@@ -237,8 +237,9 @@ function buildMethod(
   context: MethodExtractorContext,
   config: MethodExtractionConfig,
 ): MethodInfo | null {
-  const name = config.extractName(node);
-  if (!name) return null;
+  const name =
+    config.extractLiteralName?.(node, context.filePath) ?? (config.extractName(node) || undefined);
+  if (name === undefined) return null;
 
   const isAbstract = config.isAbstract(node, ownerNode);
   let isFinal = config.isFinal(node);

@@ -752,6 +752,7 @@ function calleeMemberName(funcNode: SyntaxNode): string | undefined {
 
 export function extractMixedChain(
   receiverNode: SyntaxNode,
+  literalIndexName?: (index: SyntaxNode | null) => string | undefined,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
   const chain: MixedChainStep[] = [];
   let current: SyntaxNode = receiverNode;
@@ -776,9 +777,11 @@ export function extractMixedChain(
       let methodName: string | undefined;
       let innerReceiver: SyntaxNode | null = null;
 
-      if (funcNode) {
-        methodName = calleeMemberName(funcNode);
-      }
+      if (funcNode)
+        methodName =
+          literalIndexName && funcNode.type === 'subscript_expression'
+            ? literalIndexName(funcNode.childForFieldName('index'))
+            : calleeMemberName(funcNode);
       // Kotlin/Swift: call_expression → navigation_expression
       if (!funcNode && current.type === 'call_expression') {
         const callee = current.firstNamedChild;

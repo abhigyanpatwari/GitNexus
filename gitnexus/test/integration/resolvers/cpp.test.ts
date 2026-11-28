@@ -13,8 +13,35 @@ import {
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
+
+describe('C++ numeric template arguments in override signatures', () => {
+  const fixture = useFixture('cpp-numeric-template-overrides', {
+    'example.cpp': `struct Payload {};
+struct Other {};
+template<int A, int B, typename T> struct Bag { virtual void put(T) {} };
+struct Decimal : Bag<1'000, 2'000, Payload> { void put(Payload) override {} };
+struct MixedRadix : Bag<0xA'F, 0b10'01, Payload> { void put(Payload) override {} };
+struct Characters : Bag<u8',', '1', Payload> { void put(Payload) override {} };
+struct Plain : Bag<1000, 2000, Payload> { void put(Payload) override {} };
+struct Changed : Bag<1'000, 2'000, Payload> { void put(Other) {} };`,
+  });
+
+  it('retains digit separators and quoted characters when specializing the base method', () => {
+    expect(
+      getRelationships(fixture(), 'METHOD_OVERRIDES')
+        .map(({ source, target }) => [source, target])
+        .sort(),
+    ).toEqual([
+      ['Characters', 'put'],
+      ['Decimal', 'put'],
+      ['MixedRadix', 'put'],
+      ['Plain', 'put'],
+    ]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // C++ overloaded operators (#1636)
