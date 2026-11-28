@@ -883,21 +883,21 @@ function unquoteCStyleGitToken(quoted: string): string | undefined {
   if (quoted.length < 2 || quoted[0] !== '"' || quoted[quoted.length - 1] !== '"') {
     return undefined;
   }
-  // Git C-quotes are byte-oriented: non-ASCII is `\nnn` octal of the UTF-8
-  // code units, not JS UTF-16 characters.
+  // Octal escapes represent bytes; core.quotePath=false leaves Unicode code points literal.
+  const chars = Array.from(quoted);
   const bytes: number[] = [];
   const pushChar = (ch: string): void => {
     const code = ch.charCodeAt(0);
     if (code < 0x80) bytes.push(code);
     else bytes.push(...new TextEncoder().encode(ch));
   };
-  for (let i = 1; i < quoted.length - 1; i++) {
-    const ch = quoted[i];
+  for (let i = 1; i < chars.length - 1; i++) {
+    const ch = chars[i];
     if (ch !== '\\') {
       pushChar(ch);
       continue;
     }
-    const next = quoted[++i];
+    const next = chars[++i];
     if (next === undefined) return undefined;
     switch (next) {
       case '\\':
@@ -931,8 +931,8 @@ function unquoteCStyleGitToken(quoted: string): string | undefined {
           break;
         }
         let oct = next;
-        while (oct.length < 3 && i + 1 < quoted.length - 1) {
-          const digit = quoted[i + 1];
+        while (oct.length < 3 && i + 1 < chars.length - 1) {
+          const digit = chars[i + 1];
           if (digit < '0' || digit > '7') break;
           oct += digit;
           i++;
