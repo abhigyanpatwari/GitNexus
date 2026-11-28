@@ -12,6 +12,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
+import type { ScopeResolutionOutput } from '../scope-resolution/pipeline/phase.js';
 import { computeMRO } from '../mro-processor.js';
 import { isDev } from '../utils/env.js';
 
@@ -40,7 +41,14 @@ export const mroPhase: PipelinePhase<MROOutput> = {
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
-    const mroResult = computeMRO(ctx.graph);
+    const { heritageSubstitutions } = getPhaseOutput<ScopeResolutionOutput>(
+      deps,
+      'scopeResolution',
+    );
+    const mroResult = computeMRO(
+      ctx.graph,
+      heritageSubstitutions?.hasOverrideTypes ? heritageSubstitutions : undefined,
+    );
 
     if (isDev && mroResult.entries.length > 0) {
       logger.info(

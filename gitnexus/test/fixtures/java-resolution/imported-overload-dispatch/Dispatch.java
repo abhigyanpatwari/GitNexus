@@ -12,4 +12,6 @@ interface Parent { void task(); } interface Child extends Parent {}
           void anonymousDispatch() { Child child = new Child() { public void task() {} }; child.task(); }
           void runnableGood() { Runnable r = new Runnable() { public void run() {} public void run(String x) {} }; r.run(); }
           void runnableBad() { Runnable r = new Runnable() { public void run() {} public void run(String x) {} }; r.run("x"); }
+          static Child create(int n) { return new ChildImpl(); }
+          void returnedChild() { create(1).task(); }
         }
