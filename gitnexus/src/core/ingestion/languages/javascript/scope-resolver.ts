@@ -51,6 +51,7 @@ import {
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
+import { collectJsFamilyScopeContextPaths } from '../js-family-scope-context.js';
 
 async function loadResolutionConfig(repoPath: string, fresh = false) {
   return {
@@ -72,6 +73,21 @@ const javascriptScopeResolver: ScopeResolver = {
 
   resolveImportTarget: makeJsResolveImportTarget(),
   moduleExports: typescriptModuleExports,
+
+  /**
+   * Expand the scope-resolution file universe with TypeScript files
+   * imported from JavaScript files (and transitively from those), so
+   * JS → TS imports resolve to IMPORTS/CALLS edges instead of staying
+   * unresolved (#4252). Same closure as the TypeScript provider's
+   * hook, in the other direction. Mirrors Vue's `.vue` → TS/JS closure.
+   */
+  collectScopeContextPaths: (options) =>
+    collectJsFamilyScopeContextPaths({
+      resolveImportTarget: javascriptScopeResolver.resolveImportTarget,
+      provider: javascriptProvider,
+      siblingLanguage: SupportedLanguages.TypeScript,
+      ...options,
+    }),
 
   // JavaScript resolution reads the same declared inputs TypeScript does —
   // `jsconfig.json` is a tsconfig by another name, and `package.json` is shared

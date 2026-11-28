@@ -38,6 +38,7 @@ import {
   loadNuxtAutoImports,
   type NuxtAutoImportConfig,
 } from './nuxt-auto-imports.js';
+import { collectJsFamilyScopeContextPaths } from '../js-family-scope-context.js';
 
 /** Shape the orchestrator threads in via `RunScopeResolutionInput.resolutionConfig`. */
 interface TypescriptResolutionConfig {
@@ -106,6 +107,24 @@ const typescriptScopeResolver: ScopeResolver = {
 
   resolveImportTarget: makeTsResolveImportTarget(),
   moduleExports: typescriptModuleExports,
+
+  /**
+   * Expand the scope-resolution file universe with JavaScript files
+   * imported from TypeScript files (and transitively from those), so
+   * TS → JS imports resolve to IMPORTS/CALLS edges instead of staying
+   * unresolved (#4252). Mixed TS/JS codebases (`allowJs`, gradual
+   * migrations, TS apps consuming untyped JS utilities) import across
+   * the boundary constantly, but the phase partitions files by
+   * language, so without this hook the TS pass never sees the `.js`
+   * target. Mirrors Vue's `.vue` → TS/JS closure.
+   */
+  collectScopeContextPaths: (options) =>
+    collectJsFamilyScopeContextPaths({
+      resolveImportTarget: typescriptScopeResolver.resolveImportTarget,
+      provider: typescriptProvider,
+      siblingLanguage: SupportedLanguages.JavaScript,
+      ...options,
+    }),
 
   // Threaded into `resolveImportTarget` so tsconfig path aliases
   // (`@/services/user`, `~/x`, ...) resolve through the same standard
