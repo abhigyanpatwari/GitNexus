@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "strict": true, "module": "NodeNext", "noEmit": true },
+  "include": ["*.ts"]
+}

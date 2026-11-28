@@ -15,7 +15,10 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadNodeWorkspacePackages } from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
+import {
+  loadNodeWorkspacePackages,
+  nodePackageIsEsm,
+} from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 
 const roots: string[] = [];
 
@@ -38,6 +41,95 @@ afterAll(() => {
 });
 
 describe('workspace boundary', () => {
+  it('uses the nearest package format beyond the workspace discovery depth', async () => {
+    const deep = Array.from({ length: 25 }, (_, i) => `d${i}`).join('/');
+    const root = repo({
+      'package.json': JSON.stringify({ type: 'module', workspaces: ['packages/*'] }),
+      [`${deep}/common/package.json`]: JSON.stringify({ type: 'commonjs', name: 'deep-common' }),
+      [`${deep}/common/nested/package.json`]: JSON.stringify({ type: 'module' }),
+      [`${deep}/untyped/package.json`]: '{}',
+    });
+    const packages = await loadNodeWorkspacePackages(root);
+    expect(nodePackageIsEsm(`${deep}/common/src/x.js`, packages)).toBe(false);
+    expect(nodePackageIsEsm(`${deep}/common/nested/x.ts`, packages)).toBe(true);
+    expect(nodePackageIsEsm(`${deep}/untyped/x.js`, packages)).toBe(false);
+    expect(nodePackageIsEsm(`${deep}/other/x.js`, packages)).toBe(true);
+    expect(packages?.byName.has('deep-common')).toBe(false);
+  });
+
+  it('finds a deeply nested module even when no shallow package uses ESM', async () => {
+    const deep = Array.from({ length: 26 }, () => 'level').join('/');
+    const root = repo({ [`${deep}/package.json`]: JSON.stringify({ type: 'module' }) });
+    const packages = await loadNodeWorkspacePackages(root);
+    expect(nodePackageIsEsm(`${deep}/x.js`, packages)).toBe(true);
+    expect(nodePackageIsEsm('outside/x.js', packages)).toBe(false);
+  });
+
+  it('skips a linked package directory beyond the discovery depth', async () => {
+    const deep = Array.from({ length: 25 }, () => 'level').join('/');
+    const root = repo({ [`${deep}/ordinary/package.json`]: '{"type":"module"}' });
+    const other = repo({ 'package.json': '{"type":"module"}' });
+    fs.symlinkSync(other, path.join(root, deep, 'linked'), 'junction');
+    const packages = await loadNodeWorkspacePackages(root);
+    expect(nodePackageIsEsm(`${deep}/ordinary/x.js`, packages)).toBe(true);
+    expect(nodePackageIsEsm(`${deep}/missing/x.js`, packages)).toBe(false);
+    expect(nodePackageIsEsm(`${deep}/linked/x.js`, packages)).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'skips a linked manifest beyond the discovery depth',
+    async () => {
+      const deep = Array.from({ length: 25 }, () => 'level').join('/');
+      const root = repo({ [`${deep}/target.json`]: '{"type":"module"}' });
+      fs.symlinkSync('target.json', path.join(root, deep, 'package.json'));
+      const packages = await loadNodeWorkspacePackages(root);
+      expect(nodePackageIsEsm(`${deep}/x.js`, packages)).toBe(false);
+    },
+  );
+
+  it('captures only governing input formats and observes edits on a fresh capture', async () => {
+    const deep = Array.from({ length: 25 }, () => 'level').join('/');
+    const root = repo({
+      [`${deep}/used/package.json`]: '{"type":"module"}',
+      [`${deep}/unused/package.json`]: '{"type":"module"}',
+      [`${deep}/node_modules/ignored/package.json`]: '{"type":"module"}',
+    });
+    const used = `${deep}/used/src/index.js`;
+    const unused = `${deep}/unused/index.js`;
+    const ignored = `${deep}/node_modules/ignored/src/index.ts`;
+    const unseeded = await loadNodeWorkspacePackages(root);
+    expect(nodePackageIsEsm(unused, unseeded)).toBe(true);
+    const filePaths = [used, `${deep}/unused/asset.svg`, ignored];
+    const captured = await loadNodeWorkspacePackages(root, { scanFiles: filePaths });
+    expect(nodePackageIsEsm(used, captured)).toBe(true);
+    expect(captured?.packageModules?.has(`${deep}/unused`)).toBe(false);
+    expect(captured?.packageModules?.has(`${deep}/node_modules/ignored`)).toBe(false);
+    fs.writeFileSync(path.join(root, deep, 'used/package.json'), '{}');
+    expect(nodePackageIsEsm(used, captured)).toBe(true);
+    const fresh = await loadNodeWorkspacePackages(root, { fresh: true, filePaths });
+    expect(nodePackageIsEsm(used, fresh)).toBe(false);
+    expect(await loadNodeWorkspacePackages(root, { scanFiles: filePaths })).toBe(captured);
+    const nextScan = await loadNodeWorkspacePackages(root, { scanFiles: [...filePaths] });
+    expect(nodePackageIsEsm(used, nextScan)).toBe(false);
+  });
+
+  it('inherits the nearest parent module format without admitting packages outside the checkout', async () => {
+    const parent = repo({
+      'package.json': JSON.stringify({ name: 'outside', type: 'module' }),
+      'app/repo/src/index.ts': '',
+      'app/repo/nested/package.json': '{}',
+      'app/node_modules/dependency/src/index.ts': '',
+    });
+    const packages = await loadNodeWorkspacePackages(path.join(parent, 'app/repo'));
+    expect(nodePackageIsEsm('src/index.ts', packages)).toBe(true);
+    expect(nodePackageIsEsm('nested/index.ts', packages)).toBe(false);
+    expect(packages?.byName.has('outside')).toBe(false);
+    const dependency = await loadNodeWorkspacePackages(
+      path.join(parent, 'app/node_modules/dependency'),
+    );
+    expect(nodePackageIsEsm('src/index.ts', dependency)).toBe(false);
+  });
+
   it('captures fresh rename configuration without replacing the indexing memo', async () => {
     const root = repo({ 'package.json': pkg('original') });
     const indexed = await loadNodeWorkspacePackages(root);

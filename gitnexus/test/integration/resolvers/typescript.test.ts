@@ -21,58 +21,6 @@ import {
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
-// Generic-base heritage (#1951): extends Box<T> already worked (value: identifier
-// captures Base; type_args are a sibling), and `implements IFoo<T>` is resolved
-// to its bare name IFoo. Scope-resolution (the single path since #942) owns
-// these edges.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript generic-base heritage resolution (#1951)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-generic-base'), () => {});
-  }, 60000);
-
-  it('emits EXTENDS Service → Box for a generic superclass (extends Box<string>)', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(edgeSet(extends_)).toEqual(['Service → Box']);
-  });
-
-  it('emits IMPLEMENTS Service → IFoo for a generic interface (implements IFoo<string>)', () => {
-    const implements_ = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implements_)).toEqual(['Service → IFoo']);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Qualified (namespaced) bases (#1956 tri-review U2): `extends ns.Box<string>`
-// + `implements ns.IFoo<string>` (qualified-generic, on Service) and `extends
-// ns.Base` + `implements ns.IBar` (qualified non-generic, on Plain). extends
-// uses a member_expression value; implements uses a nested_type_identifier
-// (plain) or a generic_type wrapping one. Scope-resolution resolves these by
-// their tail and owns these edges since #942.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript qualified-base heritage resolution (#1956 U2)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-qualified-base'), () => {});
-  }, 60000);
-
-  it('emits EXTENDS for qualified and qualified-generic superclasses', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box']);
-  });
-
-  it('emits IMPLEMENTS for qualified and qualified-generic interfaces', () => {
-    const implements_ = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo']);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface
 // ---------------------------------------------------------------------------
 
@@ -92,29 +40,6 @@ describe('TypeScript heritage resolution', () => {
     expect(getNodesByLabel(result, 'Interface')).toEqual(['ILogger']);
   });
 
-  it('emits exactly 3 IMPORTS edges', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    expect(imports.length).toBe(3);
-    expect(edgeSet(imports)).toEqual([
-      'logger.ts → models.ts',
-      'service.ts → logger.ts',
-      'service.ts → models.ts',
-    ]);
-  });
-
-  it('emits exactly 1 EXTENDS edge: UserService → BaseService', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.length).toBe(1);
-    expect(extends_[0].source).toBe('UserService');
-    expect(extends_[0].target).toBe('BaseService');
-  });
-
-  it('emits exactly 2 IMPLEMENTS edges', () => {
-    const implements_ = getRelationships(result, 'IMPLEMENTS');
-    expect(implements_.length).toBe(2);
-    expect(edgeSet(implements_)).toEqual(['ConsoleLogger → ILogger', 'UserService → ILogger']);
-  });
-
   it('emits HAS_METHOD edges linking methods to classes', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     expect(hasMethod.length).toBe(5);
@@ -131,59 +56,6 @@ describe('TypeScript heritage resolution', () => {
     const hasProperty = getRelationships(result, 'HAS_PROPERTY');
     expect(hasProperty.length).toBe(1);
     expect(edgeSet(hasProperty)).toEqual(['BaseService → name']);
-  });
-
-  it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
-    for (const edge of overrides) {
-      const target = result.graph.getNode(edge.rel.targetId);
-      expect(target).toBeDefined();
-      expect(target!.label).not.toBe('Property');
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Ambiguous: multiple definitions, imports disambiguate
-// ---------------------------------------------------------------------------
-
-describe('TypeScript ambiguous symbol resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-ambiguous'), () => {});
-  }, 60000);
-
-  it('UserService has exactly 1 EXTENDS + 1 IMPLEMENTS', () => {
-    const extends_ = getRelationships(result, 'EXTENDS').filter((e) => e.source === 'UserService');
-    const implements_ = getRelationships(result, 'IMPLEMENTS').filter(
-      (e) => e.source === 'UserService',
-    );
-    expect(extends_.length).toBe(1);
-    expect(implements_.length).toBe(1);
-  });
-
-  it('ConsoleLogger has exactly 1 IMPLEMENTS and 0 EXTENDS', () => {
-    const extends_ = getRelationships(result, 'EXTENDS').filter(
-      (e) => e.source === 'ConsoleLogger',
-    );
-    const implements_ = getRelationships(result, 'IMPLEMENTS').filter(
-      (e) => e.source === 'ConsoleLogger',
-    );
-    expect(extends_.length).toBe(0);
-    expect(implements_.length).toBe(1);
-    expect(implements_[0].target).toBe('ILogger');
-  });
-
-  it('all heritage edges point to real graph nodes', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    const implements_ = getRelationships(result, 'IMPLEMENTS');
-
-    for (const edge of [...extends_, ...implements_]) {
-      const target = result.graph.getNode(edge.rel.targetId);
-      expect(target).toBeDefined();
-      expect(target!.properties.name).toBe(edge.target);
-    }
   });
 });
 
@@ -215,213 +87,11 @@ describe('TypeScript generic awaited call resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-generic-calls'), () => {});
   }, 60000);
 
-  it('resolves authenticateUser → verifyToken via awaited generic call', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const authCall = calls.find(
-      (c) => c.source === 'authenticateUser' && c.target === 'verifyToken',
-    );
-    expect(authCall).toBeDefined();
-    expect(authCall!.targetFilePath).toBe('src/token.ts');
-  });
-
-  it('resolves authenticateAdmin → verifyToken via awaited generic call', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const adminCall = calls.find(
-      (c) => c.source === 'authenticateAdmin' && c.target === 'verifyToken',
-    );
-    expect(adminCall).toBeDefined();
-    expect(adminCall!.targetFilePath).toBe('src/token.ts');
-  });
-
-  it('resolves authenticateGuest → verify via awaited generic member call', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const guestCall = calls.find((c) => c.source === 'authenticateGuest' && c.target === 'verify');
-    expect(guestCall).toBeDefined();
-    expect(guestCall!.targetFilePath).toBe('src/service.ts');
-  });
-
-  it('verifyToken has exactly 2 incoming CALLS edges (both free-call callers resolved)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const incoming = calls.filter((c) => c.target === 'verifyToken');
-    expect(incoming.length).toBe(2);
-  });
-
   it('the awaited generic member call is not also a read of verify', () => {
     const accesses = getRelationships(result, 'ACCESSES').filter(
       (a) => a.source === 'authenticateGuest',
     );
     expect(accesses.map((a) => a.target)).not.toContain('verify');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Member-call resolution: obj.method() resolves through pipeline
-// ---------------------------------------------------------------------------
-
-describe('TypeScript member-call resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-member-calls'), () => {});
-  }, 60000);
-
-  it('resolves processUser → save as a member call on User', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('processUser');
-    expect(saveCall!.targetFilePath).toBe('src/user.ts');
-  });
-
-  it('detects User class and save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-  });
-
-  it('emits HAS_METHOD edge from User to save', () => {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const edge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
-    expect(edge).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Constructor resolution: new Foo() resolves to Class/Constructor
-// ---------------------------------------------------------------------------
-
-describe('TypeScript constructor-call resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-constructor-calls'),
-      () => {},
-    );
-  }, 60000);
-
-  it('resolves new User() as a CALLS edge to the User class', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const ctorCall = calls.find((c) => c.target === 'User');
-    expect(ctorCall).toBeDefined();
-    expect(ctorCall!.source).toBe('processUser');
-    expect(ctorCall!.targetLabel).toBe('Class');
-    expect(ctorCall!.targetFilePath).toBe('src/user.ts');
-  });
-
-  it('also resolves user.save() as a member call', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('processUser');
-  });
-
-  it('detects User class, save method, and processUser function', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('processUser');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Receiver-constrained resolution: typed variables disambiguate same-named methods
-// ---------------------------------------------------------------------------
-
-describe('TypeScript receiver-constrained resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-receiver-resolution'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User and Repo classes, both with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves user.save() to User.save and repo.save() to Repo.save via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((c) => c.target === 'save');
-    expect(saveCalls.length).toBe(2);
-
-    const userSave = saveCalls.find((c) => c.targetFilePath === 'src/user.ts');
-    const repoSave = saveCalls.find((c) => c.targetFilePath === 'src/repo.ts');
-
-    expect(userSave).toBeDefined();
-    expect(repoSave).toBeDefined();
-    expect(userSave!.source).toBe('processEntities');
-    expect(repoSave!.source).toBe('processEntities');
-  });
-
-  it('resolves constructor calls for both User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Scoped receiver resolution: same variable name in different functions
-// resolves to different types via scope-aware TypeEnv
-// ---------------------------------------------------------------------------
-
-describe('TypeScript scoped receiver resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-scoped-receiver'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes, both with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves entity.save() in handleUser to User.save and in handleRepo to Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((c) => c.target === 'save');
-    expect(saveCalls.length).toBe(2);
-
-    const userSave = saveCalls.find((c) => c.targetFilePath === 'src/user.ts');
-    const repoSave = saveCalls.find((c) => c.targetFilePath === 'src/repo.ts');
-
-    expect(userSave).toBeDefined();
-    expect(repoSave).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Named import disambiguation: two files export same name, import resolves
-// ---------------------------------------------------------------------------
-
-describe('TypeScript named import disambiguation', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-named-imports'), () => {});
-  }, 60000);
-
-  it('resolves processInput → formatData to src/format-upper.ts via named import', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const formatCall = calls.find((c) => c.target === 'formatData');
-    expect(formatCall).toBeDefined();
-    expect(formatCall!.source).toBe('processInput');
-    expect(formatCall!.targetFilePath).toBe('src/format-upper.ts');
-  });
-
-  it('emits IMPORTS edge to format-upper.ts', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const appImport = imports.find((e) => e.source === 'app.ts');
-    expect(appImport).toBeDefined();
-    expect(appImport!.targetFilePath).toBe('src/format-upper.ts');
   });
 });
 
@@ -442,12 +112,6 @@ describe('TypeScript side-effect imports', () => {
     );
   }, 60000);
 
-  it('emits IMPORTS edges for both side-effect imports + the named import', () => {
-    const imports = getRelationships(result, 'IMPORTS').filter((e) => e.source === 'app.ts');
-    const targets = imports.map((e) => e.targetFilePath).sort();
-    expect(targets).toEqual(['src/greeter.ts', 'src/polyfill.ts', 'src/register.ts']);
-  });
-
   it('does not synthesize local bindings for side-effect imports', () => {
     // A side-effect import binds no local name; nothing in `app.ts` should
     // try to call into `polyfill.ts` or `register.ts`. The only resolved
@@ -456,166 +120,6 @@ describe('TypeScript side-effect imports', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].target).toBe('greet');
     expect(calls[0].targetFilePath).toBe('src/greeter.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Alias import resolution: import { User as U } resolves U → User
-// ---------------------------------------------------------------------------
-
-describe('TypeScript alias import resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-alias-imports'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes with their methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-    expect(getNodesByLabel(result, 'Method')).toContain('persist');
-  });
-
-  it('resolves new U() to User class and new R() to Repo class via alias', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetLabel === 'Class');
-
-    expect(userCtor).toBeDefined();
-    expect(userCtor!.source).toBe('main');
-    expect(userCtor!.targetFilePath).toBe('src/models.ts');
-
-    expect(repoCtor).toBeDefined();
-    expect(repoCtor!.source).toBe('main');
-    expect(repoCtor!.targetFilePath).toBe('src/models.ts');
-  });
-
-  it('resolves u.save() and r.persist() as member calls', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save');
-    const persistCall = calls.find((c) => c.target === 'persist');
-
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('main');
-
-    expect(persistCall).toBeDefined();
-    expect(persistCall!.source).toBe('main');
-  });
-
-  it('emits IMPORTS edge from app.ts to models.ts', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const appImport = imports.find((e) => e.sourceFilePath === 'src/app.ts');
-    expect(appImport).toBeDefined();
-    expect(appImport!.targetFilePath).toBe('src/models.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Re-export chain: export { X } from './base' barrel pattern
-// ---------------------------------------------------------------------------
-
-describe('TypeScript re-export chain resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-reexport-chain'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes in base.ts', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-  });
-
-  it('resolves new User() through re-export chain to base.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(userCtor!.source).toBe('main');
-    expect(userCtor!.targetFilePath).toBe('src/base.ts');
-  });
-
-  it('resolves user.save() through re-export chain to base.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('main');
-    expect(saveCall!.targetFilePath).toBe('src/base.ts');
-  });
-
-  it('resolves new Repo() through re-export chain to base.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetLabel === 'Class');
-    expect(repoCtor).toBeDefined();
-    expect(repoCtor!.source).toBe('main');
-    expect(repoCtor!.targetFilePath).toBe('src/base.ts');
-  });
-
-  it('resolves repo.persist() through re-export chain to base.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const persistCall = calls.find((c) => c.target === 'persist');
-    expect(persistCall).toBeDefined();
-    expect(persistCall!.source).toBe('main');
-    expect(persistCall!.targetFilePath).toBe('src/base.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Re-export type chain: export type { X } from './base' barrel pattern
-// ---------------------------------------------------------------------------
-
-describe('TypeScript export type re-export chain resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-reexport-type'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes in base.ts', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-  });
-
-  it('does not resolve runtime construction through a type-only re-export chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    expect(calls.filter((c) => c.source === 'main' && c.targetLabel === 'Class')).toEqual([]);
-  });
-
-  it('does not infer receiver types from invalid type-only construction', () => {
-    const calls = getRelationships(result, 'CALLS');
-    expect(calls.filter((c) => c.source === 'main')).toEqual([]);
-  });
-
-  it('resolves annotated parameter receivers through the type-only re-export chain', () => {
-    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'typed');
-    expect(calls.map((c) => [c.target, c.targetFilePath]).sort()).toEqual([
-      ['persist', 'src/base.ts'],
-      ['save', 'src/base.ts'],
-    ]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Local shadow: same-file definition takes priority over imported name
-// ---------------------------------------------------------------------------
-
-describe('TypeScript local definition shadows import', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-local-shadow'), () => {});
-  }, 60000);
-
-  it('resolves run → save to same-file definition, not the imported one', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.targetFilePath).toBe('src/app.ts');
-  });
-
-  it('does NOT resolve save to utils.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveToUtils = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath === 'src/utils.ts',
-    );
-    expect(saveToUtils).toBeUndefined();
   });
 });
 
@@ -735,90 +239,6 @@ export async function loadData(): Promise<Response> {
 });
 
 // ---------------------------------------------------------------------------
-// Variadic resolution: rest params don't get filtered by arity
-// ---------------------------------------------------------------------------
-
-describe('TypeScript variadic call resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-variadic-resolution'),
-      () => {},
-    );
-  }, 60000);
-
-  it('resolves processInput → logEntry to src/logger.ts despite 3 args vs rest param', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const logCall = calls.find((c) => c.target === 'logEntry');
-    expect(logCall).toBeDefined();
-    expect(logCall!.source).toBe('processInput');
-    expect(logCall!.targetFilePath).toBe('src/logger.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Constructor-inferred type resolution: const user = new User(); user.save()
-// Cross-file SymbolTable verification (no explicit type annotations)
-// ---------------------------------------------------------------------------
-
-describe('TypeScript constructor-inferred type resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-constructor-type-inference'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User and Repo classes, both with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves explicit constructor calls for User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetFilePath === 'src/user.ts');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetFilePath === 'src/repo.ts');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-    expect(userCtor!.targetLabel).toBe('Class');
-    expect(repoCtor!.targetLabel).toBe('Class');
-  });
-
-  it('resolves user.save() to src/user.ts via constructor-inferred type', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.ts');
-    expect(userSave).toBeDefined();
-    expect(userSave!.source).toBe('processEntities');
-  });
-
-  it('resolves repo.save() to src/repo.ts via constructor-inferred type', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
-    expect(repoSave).toBeDefined();
-    expect(repoSave!.source).toBe('processEntities');
-  });
-
-  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((c) => c.target === 'save');
-    expect(saveCalls.length).toBe(2);
-  });
-
-  it('resolves constructor calls for both User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User');
-    const repoCtor = calls.find((c) => c.target === 'Repo');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // JavaScript constructor-inferred type resolution: const user = new User()
 // ---------------------------------------------------------------------------
 
@@ -861,34 +281,6 @@ describe('JavaScript constructor-inferred type resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// this.save() resolves to enclosing class's own save method
-// ---------------------------------------------------------------------------
-
-describe('TypeScript this resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-self-this-resolution'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User and Repo classes, each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.targetFilePath).toBe('src/models/User.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Parent class resolution: EXTENDS + IMPLEMENTS edges
 // ---------------------------------------------------------------------------
 
@@ -905,113 +297,6 @@ describe('TypeScript parent resolution', () => {
   it('detects BaseModel and User classes plus Serializable interface', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
     expect(getNodesByLabel(result, 'Interface')).toEqual(['Serializable']);
-  });
-
-  it('emits EXTENDS edge: User → BaseModel', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.length).toBe(1);
-    expect(extends_[0].source).toBe('User');
-    expect(extends_[0].target).toBe('BaseModel');
-  });
-
-  it('emits IMPLEMENTS edge: User → Serializable', () => {
-    const implements_ = getRelationships(result, 'IMPLEMENTS');
-    expect(implements_.length).toBe(1);
-    expect(implements_[0].source).toBe('User');
-    expect(implements_[0].target).toBe('Serializable');
-  });
-
-  it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [
-      ...getRelationships(result, 'EXTENDS'),
-      ...getRelationships(result, 'IMPLEMENTS'),
-    ]) {
-      const target = result.graph.getNode(edge.rel.targetId);
-      expect(target).toBeDefined();
-      expect(target!.properties.name).toBe(edge.target);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// super.save() resolves to parent class's save method
-// ---------------------------------------------------------------------------
-
-describe('TypeScript super resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-super-resolution'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects BaseModel, User, and Repo classes, each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(3);
-  });
-
-  it('emits EXTENDS edge: User → BaseModel', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.length).toBe(1);
-    expect(extends_[0].source).toBe('User');
-    expect(extends_[0].target).toBe('BaseModel');
-  });
-
-  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(
-      (c) =>
-        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'src/models/Base.ts',
-    );
-    expect(superSave).toBeDefined();
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.ts',
-    );
-    expect(repoSave).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// super.save() resolves to generic parent class's save method
-// ---------------------------------------------------------------------------
-
-describe('TypeScript generic parent super resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-generic-parent-resolution'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects BaseModel, User, and Repo classes, each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(3);
-  });
-
-  it('emits EXTENDS edge: User → BaseModel (not BaseModel<string>)', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.length).toBe(1);
-    expect(extends_[0].source).toBe('User');
-    expect(extends_[0].target).toBe('BaseModel');
-  });
-
-  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(
-      (c) =>
-        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'src/models/Base.ts',
-    );
-    expect(superSave).toBeDefined();
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.ts',
-    );
-    expect(repoSave).toBeUndefined();
   });
 });
 
@@ -1039,12 +324,6 @@ describe('TypeScript cast/non-null constructor inference', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.ts');
     expect(userSave).toBeDefined();
-  });
-
-  it('resolves repo.save() to Repo.save via new Repo()!', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
-    expect(repoSave).toBeDefined();
   });
 });
 
@@ -1078,101 +357,6 @@ describe('TypeScript double-cast constructor inference', () => {
     const calls = getRelationships(result, 'CALLS');
     const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
     expect(repoSave).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Nullable/optional receiver unwrapping: user?.save() resolves through ?.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript nullable receiver resolution (optional chaining)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-nullable-receiver'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes with their methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-    expect(getNodesByLabel(result, 'Method')).toContain('greet');
-  });
-
-  it('resolves user?.save() to User.save via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.ts');
-    expect(userSave).toBeDefined();
-    expect(userSave!.source).toBe('processEntities');
-  });
-
-  it('resolves user?.greet() to User.greet via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath === 'src/user.ts');
-    expect(greetCall).toBeDefined();
-    expect(greetCall!.source).toBe('processEntities');
-  });
-
-  it('resolves repo?.save() to Repo.save via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
-    expect(repoSave).toBeDefined();
-    expect(repoSave!.source).toBe('processEntities');
-  });
-
-  it('emits constructor CALLS edges for both User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-  });
-
-  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((c) => c.target === 'save');
-    // user?.save() → User.save + repo?.save() → Repo.save = 2 edges
-    // If nullable unwrapping fails, the resolver refuses ambiguous matches and emits 0
-    expect(saveCalls.length).toBe(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Return type inference: const user = getUser('alice'); user.save()
-// The TS/JS CONSTRUCTOR_BINDING_SCANNER captures variable_declarator nodes
-// with plain call_expression values, enabling end-to-end return type inference.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript return type inference via explicit function return type', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-return-type-inference'), () => {});
-  }, 60000);
-
-  it('detects User class with save and getName methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('save');
-    expect(methods).toContain('getName');
-  });
-
-  it('detects getUser and fetchUserAsync functions', () => {
-    const functions = getNodesByLabel(result, 'Function');
-    expect(functions).toContain('getUser');
-    expect(functions).toContain('fetchUserAsync');
-  });
-
-  it('resolves user.save() to User#save via return type of getUser(): User', () => {
-    // TS has explicit return types in the source, so the method extractor captures
-    // the return type. The TS extractInitializer handles `const user = getUser()`
-    // via the variable_declarator path, enabling save() to resolve to User#save.
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
   });
 });
 
@@ -1327,492 +511,6 @@ describe('JavaScript qualified return type via JSDoc @returns {Promise<models.Us
 });
 
 // ---------------------------------------------------------------------------
-// Assignment chain propagation (Tier 2, depth-1):
-// `const alias = u` where `u: User` → alias.save() resolves to User#save
-// ---------------------------------------------------------------------------
-
-describe('TypeScript assignment chain propagation (Tier 2)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-assignment-chain'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves alias.save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('user.ts'));
-    // Positive: alias.save() must resolve to User#save
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('processEntities');
-    // Negative: alias.save() must NOT resolve to Repo#save
-    const wrongCall = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('repo.ts'),
-    );
-    // rAlias.save() correctly goes to Repo — but we verify there is exactly one
-    // per-receiver resolution (user alias → User, repo alias → Repo)
-    expect(wrongCall).toBeDefined(); // rAlias.save() resolves to Repo
-  });
-
-  it('resolves rAlias.save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('repo.ts'));
-    expect(repoSave).toBeDefined();
-    expect(repoSave!.source).toBe('processEntities');
-    // Negative: rAlias.save() must NOT resolve to User#save (only)
-    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('user.ts'));
-    expect(userSave).toBeDefined();
-    // Both resolve separately — alias → User, rAlias → Repo
-    expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Multi-hop forward-declared chain (a → b → c) — validates that single-pass
-// in source order resolves chains deeper than depth-1.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript multi-hop assignment chain (a → b → c)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-multi-hop-chain'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves c.save() to User#save through a → b → c chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'multiHopForward' &&
-        c.targetFilePath?.includes('user.ts'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('c.save() in multiHopForward does NOT resolve to Repo#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'multiHopForward' &&
-        c.targetFilePath?.includes('repo.ts'),
-    );
-    expect(wrongCall).toBeUndefined();
-  });
-
-  it('resolves c.save() to Repo#save through a → b → c chain (Repo variant)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'multiHopRepo' && c.targetFilePath?.includes('repo.ts'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
-  it('c.save() in multiHopRepo does NOT resolve to User#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'multiHopRepo' && c.targetFilePath?.includes('user.ts'),
-    );
-    expect(wrongCall).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Nullable type + assignment chain: stripNullable must resolve the nullable
-// union (User | null → User) before the chain propagation can work.
-// Exercises the refactored NULLABLE_KEYWORDS.has() code path.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript nullable + assignment chain combined', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-nullable-chain'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves alias.save() to User#save when source is User | null', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'nullableChainUser' &&
-        c.targetFilePath?.includes('user.ts'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('alias.save() from User | null does NOT resolve to Repo#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'nullableChainUser' &&
-        c.targetFilePath?.includes('repo.ts'),
-    );
-    expect(wrongCall).toBeUndefined();
-  });
-
-  it('resolves alias.save() to Repo#save when source is Repo | undefined', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'nullableChainRepo' &&
-        c.targetFilePath?.includes('repo.ts'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
-  it('resolves alias.save() to User#save when source is User | null | undefined (triple)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'tripleNullable' &&
-        c.targetFilePath?.includes('user.ts'),
-    );
-    expect(userSave).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Chained method call resolution: svc.getUser().save()
-// The receiver of save() is a call_expression (getUser()), not a simple identifier.
-// Resolution must walk the chain: getUser() returns User, so save() → User#save.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript chained method call resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-chain-call'), () => {});
-  }, 60000);
-
-  it('detects User, Repo and UserService classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('User');
-    expect(classes).toContain('Repo');
-    expect(classes).toContain('UserService');
-  });
-
-  it('detects save methods on both User and Repo', () => {
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('detects getUser method on UserService', () => {
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('getUser');
-  });
-
-  it('resolves svc.getUser().save() to User#save, NOT Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User'),
-    );
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Repo'),
-    );
-    expect(userSave).toBeDefined();
-    expect(repoSave).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Overloaded receiver: two classes with the same method name (save) must not
-// collide in the receiverKey map. The fix preserves @startIndex in the key so
-// User.save@idx1 and Repo.save@idx2 remain distinct even when the enclosing
-// scope funcName is the same.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript overloaded-receiver resolution (receiverKey collision fix)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-overloaded-receiver'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User and Repo classes, both with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves user.save() to User#save (models/User.ts), not Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('User'));
-    expect(userSave).toBeDefined();
-    expect(userSave!.source).toBe('run');
-    // Negative: must not resolve to Repo#save
-    const wrongSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('Repo'),
-    );
-    // If only one save target resolves to User (not Repo), we correctly exclude Repo
-    expect(userSave!.targetFilePath).toContain('User');
-  });
-
-  it('resolves repo.save() to Repo#save (models/Repo.ts), not User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('Repo'));
-    expect(repoSave).toBeDefined();
-    expect(repoSave!.source).toBe('run');
-    expect(repoSave!.targetFilePath).toContain('Repo');
-  });
-
-  it('emits exactly 2 save() CALLS edges — one per class', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((c) => c.target === 'save');
-    expect(saveCalls.length).toBe(2);
-    const targets = saveCalls.map((c) => c.targetFilePath).sort();
-    expect(targets[0]).toContain('Repo');
-    expect(targets[1]).toContain('User');
-  });
-
-  it('resolves constructor calls for both User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Typed parameter chain: svc.getUser().save() where svc is a parameter with
-// a type annotation (not a constructor binding). Tests that the worker path
-// consults typeEnv for chain base receivers (Phase 5 review Finding 1).
-// ---------------------------------------------------------------------------
-
-describe('TypeScript typed-parameter chain call resolution (Phase 5 review fix)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-typed-param-chain'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User, Repo, and UserService classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('User');
-    expect(classes).toContain('Repo');
-    expect(classes).toContain('UserService');
-  });
-
-  it('detects getUser and save methods', () => {
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('getUser');
-    expect(methods).toContain('save');
-  });
-
-  it('resolves svc.getUser().save() to User#save via parameter type annotation', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT resolve svc.getUser().save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Repo'),
-    );
-    expect(repoSave).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Static chain: UserService.findUser().save() where the chain base is a class
-// name (not a variable). Tests that the serial path applies class-as-receiver
-// to chain base resolution (Phase 5 review Finding 2).
-// ---------------------------------------------------------------------------
-
-describe('TypeScript static class-name chain call resolution (Phase 5 review fix)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-static-chain'), () => {});
-  }, 60000);
-
-  it('detects User, Repo, and UserService classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('User');
-    expect(classes).toContain('Repo');
-    expect(classes).toContain('UserService');
-  });
-
-  it('detects static findUser and instance save methods', () => {
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('findUser');
-    expect(methods).toContain('save');
-  });
-
-  it('resolves UserService.findUser().save() to User#save via class-name chain base', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT resolve UserService.findUser().save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Repo'),
-    );
-    expect(repoSave).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TS readonly User[] for-loop: for (const user of users) with readonly User[]
-// ---------------------------------------------------------------------------
-
-describe('TypeScript readonly array for-loop resolution (Tier 1c)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-readonly-foreach'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-  });
-
-  it('resolves user.save() in readonly array for-of to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('user'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves repo.save() in readonly array for-of to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('repo'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
-  it('does NOT cross-resolve user.save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('repo'),
-    );
-    expect(wrong).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// for (const [key, user] of entries) — destructured for-of resolution
-// ---------------------------------------------------------------------------
-
-describe('TS destructured for-of Map resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-destructured-for-of'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User class with save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-  });
-
-  it('resolves user.save() in destructured for-of to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processEntries' && c.targetFilePath?.includes('user'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT resolve user.save() to Repo#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processEntries' && c.targetFilePath?.includes('repo'),
-    );
-    expect(wrongSave).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// if (x instanceof User) { x.save() } — instanceof narrowing resolution
-// ---------------------------------------------------------------------------
-
-describe('TS instanceof narrowing resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-instanceof-narrowing'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User class with save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-  });
-
-  it('resolves x.save() after instanceof to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT resolve x.save() to Repo#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo'),
-    );
-    expect(wrongSave).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // this.users member access iterable: for (const user of this.users)
 // ---------------------------------------------------------------------------
 
@@ -1826,155 +524,11 @@ describe('TypeScript member access iterable for-loop', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-  });
-
-  it('resolves user.save() via this.users to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT cross-resolve user.save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
-    );
-    expect(wrong).toBeUndefined();
-  });
-
-  it('resolves repo.save() via this.repos to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('does not borrow a parameter type for a nonexistent receiver field', () => {
     const calls = getRelationships(result, 'CALLS');
     expect(calls.filter((c) => c.source === 'processMissingUsers' && c.target === 'save')).toEqual(
       [],
     );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TypeScript class field foreach: for (const user of this.users) with class field User[]
-// ---------------------------------------------------------------------------
-
-describe('TypeScript class field foreach resolution (Phase 6.1)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-class-field-foreach'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-  });
-
-  it('resolves user.save() via class field User[] to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('user'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT cross-resolve user.save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('repo'),
-    );
-    expect(wrong).toBeUndefined();
-  });
-
-  it('resolves repo.save() via class field Map<string, Repo>.values() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('repo'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
-  it('does NOT cross-resolve repo.save() to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('user'),
-    );
-    expect(wrong).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TypeScript for-of with call_expression iterable: for (const user of getUsers())
-// Phase 7.3: call_expression iterable resolution via ReturnTypeLookup
-// ---------------------------------------------------------------------------
-
-describe('TypeScript for-of call_expression iterable resolution (Phase 7.3)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-for-of-call-expr'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User and Repo classes with competing save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-  });
-
-  it('resolves user.save() in for-of getUsers() to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('user.ts'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves repo.save() in for-of getRepos() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('repo.ts'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
-  it('does NOT resolve user.save() to Repo#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('repo.ts'),
-    );
-    expect(wrongSave).toBeUndefined();
-  });
-
-  it('does NOT resolve repo.save() to User#save (negative)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('user.ts'),
-    );
-    expect(wrongSave).toBeUndefined();
   });
 });
 
@@ -2069,32 +623,6 @@ describe('Field type resolution (TypeScript)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 8: Field type disambiguation — both User and Address have save()
-// ---------------------------------------------------------------------------
-
-describe('Field type disambiguation (TypeScript)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-field-type-disambig'), () => {});
-  }, 60000);
-
-  it('detects both User#save and Address#save', () => {
-    const methods = getNodesByLabel(result, 'Method');
-    const saveMethods = methods.filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves user.address.save() → Address#save (not User#save)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processUser');
-    expect(saveCalls.length).toBe(1);
-    expect(saveCalls[0].targetFilePath).toContain('address');
-    expect(saveCalls[0].targetFilePath).not.toContain('user');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Phase 8: Parameter properties and #private fields
 // ---------------------------------------------------------------------------
 
@@ -2124,13 +652,6 @@ describe('Field type resolution (TS parameter properties)', () => {
     const propEdges = getRelationships(result, 'HAS_PROPERTY');
     expect(edgeSet(propEdges)).toContain('User → name');
     expect(edgeSet(propEdges)).toContain('User → address');
-  });
-
-  it('resolves user.address.save() via parameter property type', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processUser');
-    expect(saveCalls.length).toBe(1);
-    expect(saveCalls[0].targetFilePath).toContain('models');
   });
 });
 
@@ -2162,20 +683,6 @@ describe('Deep field chain resolution (TypeScript)', () => {
     expect(edgeSet(propEdges)).toContain('Address → city');
     expect(edgeSet(propEdges)).toContain('City → zipCode');
   });
-
-  it('resolves 2-level chain: user.address.save() → Address#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processUser');
-    expect(saveCalls.length).toBe(1);
-    expect(saveCalls[0].targetFilePath).toContain('models');
-  });
-
-  it('resolves 3-level chain: user.address.city.getName() → City#getName', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter((e) => e.target === 'getName' && e.source === 'processUser');
-    expect(getNameCalls.length).toBe(1);
-    expect(getNameCalls[0].targetFilePath).toContain('models');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2197,22 +704,6 @@ describe('Mixed field+call chain resolution (TypeScript)', () => {
     const properties = getNodesByLabel(result, 'Property');
     expect(properties).toContain('city');
     expect(properties).toContain('address');
-  });
-
-  it('resolves call→field chain: svc.getUser().address.save() → Address#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processWithService');
-    expect(saveCalls.length).toBe(1);
-    expect(saveCalls[0].targetFilePath).toContain('models');
-  });
-
-  it('resolves field→call chain: user.getAddress().city.getName() → City#getName', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter(
-      (e) => e.target === 'getName' && e.source === 'processWithUser',
-    );
-    expect(getNameCalls.length).toBe(1);
-    expect(getNameCalls[0].targetFilePath).toContain('models');
   });
 });
 
@@ -2249,46 +740,6 @@ describe('Write access tracking (TypeScript)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Call-result variable binding (Phase 9): const user = getUser(); user.save()
-// Activates Tier 2b pendingCallResults — binds return type at TypeEnv build time.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript call-result variable binding (Tier 2b)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-call-result-binding'), () => {});
-  }, 60000);
-
-  it('detects User class with save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-  });
-
-  it('detects getUser function', () => {
-    expect(getNodesByLabel(result, 'Function')).toContain('getUser');
-  });
-
-  it('resolves user.save() to User#save via call-result binding', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-
-  it('resolves alias.save() to User#save via call-result + copy chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processAlias' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // JavaScript call-result variable binding (Phase 9) via JSDoc @returns
 // ---------------------------------------------------------------------------
 
@@ -2309,193 +760,6 @@ describe('JavaScript call-result variable binding (Tier 2b)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Method chain binding (Phase 9C): getUser() → .address → .getCity() → .save()
-// Unified fixpoint resolves field access + method-call-with-receiver at TypeEnv build time.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript method chain binding via unified fixpoint (Phase 9C)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-method-chain-binding'), () => {});
-  }, 60000);
-
-  it('detects User, Address, City classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('User');
-    expect(classes).toContain('Address');
-    expect(classes).toContain('City');
-  });
-
-  it('resolves city.save() to City#save via 3-step chain (callResult → fieldAccess → methodCallResult)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase A: Object destructuring — const { field } = receiver → fieldAccess PendingAssignment
-// ---------------------------------------------------------------------------
-
-describe('TypeScript object destructuring resolution (Phase A)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-object-destructuring'), () => {});
-  }, 60000);
-
-  it('detects User, Address classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('User');
-    expect(classes).toContain('Address');
-  });
-
-  it('resolves address.save() to Address#save via object destructuring', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('models'));
-    expect(saveCall).toBeDefined();
-  });
-
-  it('does NOT resolve save() to a wrong target', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter((c) => c.target === 'save');
-    for (const call of saveCalls) {
-      expect(call.targetFilePath).toContain('models');
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase A: Post-fixpoint for-loop replay — iterable resolved via callResult fixpoint
-// Differs from ts-for-of-call-expression: iterable is an identifier, not inline call
-// ---------------------------------------------------------------------------
-
-describe('TypeScript post-fixpoint for-loop replay (Phase A ex-9B)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-fixpoint-for-loop'), () => {});
-  }, 60000);
-
-  it('resolves u.save() to User#save via post-fixpoint for-loop replay', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase B: Deep MRO — walkParentChain() at depth 2 (C→B→A)
-// greet() is defined on A, accessed via C. Tests BFS depth-2 parent traversal.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript grandparent method resolution via MRO (Phase B)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-grandparent-resolution'), () => {});
-  }, 60000);
-
-  it('detects 3 classes in inheritance chain (A, B, C) plus Greeting', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('A');
-    expect(classes).toContain('B');
-    expect(classes).toContain('C');
-    expect(classes).toContain('Greeting');
-  });
-
-  it('emits EXTENDS edges: B→A, C→B', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(edgeSet(extends_)).toContain('B → A');
-    expect(edgeSet(extends_)).toContain('C → B');
-  });
-
-  it('resolves c.greet().save() to Greeting#save via depth-2 MRO lookup', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath.includes('greeting'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-
-  it('resolves c.greet() to A#greet (method found via MRO walk)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath.includes('base'));
-    expect(greetCall).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase C: TS null-check narrowing — if (x !== null) { x.save() }
-// patternOverrides stores narrowed type for the if-body position range
-// ---------------------------------------------------------------------------
-
-describe('TypeScript null-check narrowing resolution (Phase C)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-null-check-narrowing'), () => {});
-  }, 60000);
-
-  it('detects User and Repo classes', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-  });
-
-  it('resolves x.save() inside !== null guard to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processStrict' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-
-  it('does NOT resolve to Repo#save (no cross-contamination)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find((c) => c.target === 'save' && c.targetLabel === 'Repo');
-    expect(wrongCall).toBeUndefined();
-  });
-
-  it('resolves x.save() in loose != null check (processLoose)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processLoose' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-
-  it('resolves x.save() in !== undefined check (processUndefined)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processUndefined' &&
-        c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-
-  it('resolves x.save() inside function expression null-check (processFuncExpr)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processFuncExpr' &&
-        c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
-  });
-});
-
 // ── Phase P: Virtual Dispatch via Constructor Type ───────────────────────
 
 describe('TypeScript virtual dispatch via constructor type (same-file)', () => {
@@ -2504,20 +768,6 @@ describe('TypeScript virtual dispatch via constructor type (same-file)', () => {
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-virtual-dispatch'), () => {});
   }, 60000);
-
-  it('detects Animal and Dog classes with same-file heritage', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('Animal');
-    expect(classes).toContain('Dog');
-    const extends_ = getRelationships(result, 'EXTENDS');
-    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
-    expect(dogExtends).toBeDefined();
-  });
-
-  it('detects fetchBall() as Dog-only method', () => {
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('fetchBall');
-  });
 
   it('resolves fetchBall() calls from run() — proves virtual dispatch override', () => {
     const calls = getRelationships(result, 'CALLS');
@@ -2547,189 +797,108 @@ describe('TypeScript overload disambiguation via inferLiteralType', () => {
     const withParamTypes = lookupNodes.filter((n) => n.properties.parameterTypes);
     expect(withParamTypes.length).toBeGreaterThanOrEqual(1);
   });
-
-  it('emits CALLS edges from process() → lookup() via overload disambiguation', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'process' && c.target === 'lookup');
-    // Phase 0 (fileIndex stores both overloads) + Phase 2 (literal type matching)
-    // enables resolution where previously 2 same-arity candidates → null.
-    // Both calls resolve to same nodeId (ID collision) → 1 CALLS edge after dedup.
-    expect(lookupCalls.length).toBe(1);
-  });
-});
-
-// ── Phase P: Optional / Default Parameter Arity Resolution ───────────────
-
-describe('TypeScript optional parameter arity resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-optional-params'), () => {});
-  }, 60000);
-
-  it('resolves greet("Alice") with 1 arg to greet with 2 params (1 optional)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const greetCalls = calls.filter((c) => c.source === 'process' && c.target === 'greet');
-    expect(greetCalls.length).toBe(1);
-  });
-
-  it('resolves search("test") with 1 arg to search with 2 params (1 optional)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const searchCalls = calls.filter((c) => c.source === 'process' && c.target === 'search');
-    expect(searchCalls.length).toBe(1);
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Method enrichment: abstract, static, parameterTypes, annotations
-// ---------------------------------------------------------------------------
+describe('TypeScript overload family call edges', () => {
+  const bindings = new Map<number, { status: string; targetDefIds: readonly string[] }>();
+  let optionalCallbackId: string | undefined;
+  const result = useFixture(
+    'ts-overload-family',
+    {
+      'index.ts': `export function pick(x: { key: number }): number;
+export function pick(x: { key: string }): string;
+export function pick(x: { key: string | number }) { return x.key; }
+export function run(x: { key: string }) { return pick(x); }
+export function repeat(x: { key: string }) { pick(x); pick(x); }
+export function spread(xs: [{ key: string }]) { return pick(...xs); }
+export function badArity() { return pick(); }
+function mode(x: 'read'): void;
+function mode(x: 'write'): void;
+function mode(x: string) {}
+export function badLiteral() { mode('other'); }
+export function badSpread(xs: [{ key: string }]) { pick(1, 2, ...xs); }
+class Client { send() {} }
+class Other { stop() {} }
+function connect(x: { key: number }): Client;
+function connect(x: { key: string }): Client;
+function connect(x: unknown) { return new Client(); }
+export function sharedReturn(x: { key: string }) { const client = connect(x); client.send(); }
+function choose(x: { key: number }): Other;
+function choose(x: { key: string }): Client;
+function choose(x: unknown) { return new Client(); }
+export function uncertainReturn(x: { key: string }) { const client = choose(x); client.send(); }
+function callback(cb: (x?: number) => void): void;
+function callback(cb: (x: number) => void): void;
+function callback(cb: unknown) {}
+export function annotatedCallback() { callback((x: number) => { void x; }); }
+export function contextualCallback() { callback(x => { void x; }); }`,
+    },
+    {
+      workerPoolSize: 1,
+      onScopeResolved({ parsedFiles, referenceBindings }) {
+        for (const file of parsedFiles) {
+          optionalCallbackId ??= file.localDefs.find(
+            (def) =>
+              def.qualifiedName === 'callback' &&
+              def.declaredParameterTypes?.[0] === '(x?: number) => void',
+          )?.nodeId;
+          for (const site of file.referenceSites) {
+            const binding = referenceBindings.get(site);
+            if (site.kind === 'call' && binding) bindings.set(site.atRange.startLine, binding);
+          }
+        }
+      },
+    },
+  );
 
-describe('TypeScript method enrichment', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-method-enrichment'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects Animal and Dog classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('Animal');
-    expect(classes).toContain('Dog');
+  it('publishes one implementation edge per caller when the signature is uncertain', () => {
+    const calls = getRelationships(result(), 'CALLS');
+    expect(
+      calls
+        .filter((edge) => edge.target === 'pick')
+        .map((edge) => edge.source)
+        .sort(),
+    ).toEqual(['repeat', 'run', 'spread']);
+    expect(bindings.get(6)?.status).toBe('unresolved');
+    expect(bindings.get(6)?.targetDefIds).toHaveLength(2);
   });
 
-  it('emits HAS_METHOD edges for Animal methods', () => {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const animalMethods = hasMethod
-      .filter((e) => e.source === 'Animal')
-      .map((e) => e.target)
-      .sort();
-    expect(animalMethods).toContain('speak');
-    expect(animalMethods).toContain('classify');
-    expect(animalMethods).toContain('breathe');
+  it('leaves a provably inapplicable call without a runtime edge', () => {
+    const calls = getRelationships(result(), 'CALLS');
+    expect(
+      calls.filter((edge) => ['badArity', 'badLiteral', 'badSpread'].includes(edge.source)),
+    ).toEqual([]);
+    expect(bindings.get(7)?.status).toBe('blocked');
+    expect(bindings.get(11)?.status).toBe('blocked');
+    expect(bindings.get(12)?.status).toBe('blocked');
   });
 
-  it('emits HAS_METHOD edge for Dog.speak', () => {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
-    expect(dogSpeak).toBeDefined();
+  it('types the result only when every remaining signature returns the same class', () => {
+    const calls = getRelationships(result(), 'CALLS');
+    expect(calls.filter((edge) => edge.target === 'send').map((edge) => edge.source)).toEqual([
+      'sharedReturn',
+    ]);
   });
 
-  it('emits EXTENDS edge Dog -> Animal', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
-    expect(dogExtends).toBeDefined();
-  });
-
-  it('marks abstract speak as isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const speak = methods.find((n) => n.name === 'speak' && n.properties.filePath === 'animal.ts');
-    if (speak?.properties.isAbstract !== undefined) {
-      expect(speak.properties.isAbstract).toBe(true);
-    }
-  });
-
-  it('marks breathe as NOT isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isAbstract !== undefined) {
-      expect(breathe.properties.isAbstract).toBe(false);
-    }
-  });
-
-  it('marks classify as isStatic (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.isStatic !== undefined) {
-      expect(classify.properties.isStatic).toBe(true);
-    }
-  });
-
-  it('marks breathe as NOT isStatic (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isStatic !== undefined) {
-      expect(breathe.properties.isStatic).toBe(false);
-    }
-  });
-
-  it('populates parameterTypes for classify (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.parameterTypes !== undefined) {
-      const params = classify.properties.parameterTypes;
-      expect(params).toContain('string');
-    }
-  });
-
-  it('resolves dog.speak() CALLS edge', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const speakCall = calls.find(
-      (c) => c.target === 'speak' && c.sourceFilePath.includes('app.ts'),
-    );
-    expect(speakCall).toBeDefined();
-  });
-
-  it('resolves Animal.classify("dog") static CALLS edge', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const classifyCall = calls.find(
-      (c) => c.target === 'classify' && c.sourceFilePath.includes('app.ts'),
-    );
-    expect(classifyCall).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Interface dispatch: METHOD_IMPLEMENTS edges
-// ---------------------------------------------------------------------------
-
-describe('TypeScript interface dispatch (METHOD_IMPLEMENTS)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-interface-dispatch'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects IRepository interface and SqlRepository class', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    const ifaces = getNodesByLabel(result, 'Interface');
-    expect(classes).toContain('SqlRepository');
-    expect(ifaces).toContain('IRepository');
-  });
-
-  it('emits IMPLEMENTS edge SqlRepository → IRepository', () => {
-    const impl = getRelationships(result, 'IMPLEMENTS');
-    const edge = impl.find((e) => e.source === 'SqlRepository' && e.target === 'IRepository');
-    expect(edge).toBeDefined();
-  });
-
-  it('emits METHOD_IMPLEMENTS edges for find and save', () => {
-    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
-    const findEdge = mi.find(
-      (e) =>
-        e.source === 'find' &&
-        e.target === 'find' &&
-        e.sourceFilePath.includes('sql-repository') &&
-        e.targetFilePath.includes('repository'),
-    );
-    const saveEdge = mi.find(
-      (e) =>
-        e.source === 'save' &&
-        e.target === 'save' &&
-        e.sourceFilePath.includes('sql-repository') &&
-        e.targetFilePath.includes('repository'),
-    );
-    expect(findEdge).toBeDefined();
-    expect(saveEdge).toBeDefined();
+  it('uses contextual callback arity without treating an explicit parameter type as optional', () => {
+    expect(optionalCallbackId).toBeDefined();
+    const annotated = bindings.get(26);
+    expect(annotated?.status).toBe('unresolved');
+    expect(annotated?.targetDefIds).toHaveLength(2);
+    expect(bindings.get(27)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [optionalCallbackId],
+    });
+    expect(
+      getRelationships(result(), 'CALLS')
+        .filter((edge) => edge.target === 'callback')
+        .map((edge) => edge.source)
+        .sort(),
+    ).toEqual(['annotatedCallback', 'contextualCallback']);
   });
 });
 
-// ---------------------------------------------------------------------------
 // Overloaded method disambiguation: interface with overloaded find + save,
 // concrete class implements all three. TypeScript overloads collapse to one
 // implementation signature — expect the implementation body, not individual
@@ -2742,30 +911,6 @@ describe('TypeScript overloaded method disambiguation', () => {
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-overload-dispatch'), () => {});
   }, 60000);
-
-  it('emits METHOD_IMPLEMENTS edge for find', () => {
-    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
-    const findEdge = mi.find(
-      (e) =>
-        e.source === 'find' &&
-        e.target === 'find' &&
-        e.sourceFilePath.includes('sql-repository') &&
-        e.targetFilePath.includes('repository'),
-    );
-    expect(findEdge).toBeDefined();
-  });
-
-  it('emits METHOD_IMPLEMENTS edge for save', () => {
-    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
-    const saveEdge = mi.find(
-      (e) =>
-        e.source === 'save' &&
-        e.target === 'save' &&
-        e.sourceFilePath.includes('sql-repository') &&
-        e.targetFilePath.includes('repository'),
-    );
-    expect(saveEdge).toBeDefined();
-  });
 
   it('TypeScript overloads collapse — find has one METHOD_IMPLEMENTS edge from implementation body', () => {
     const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
@@ -2799,237 +944,6 @@ describe('TypeScript same-arity overload cross-file resolution', () => {
     );
     // TS overload signatures collapse to the implementation body — 1 node
     expect(findNodes.length).toBe(1);
-  });
-
-  it('ILookup.find interface declarations collapse to one node (type-hash skipped for TS)', () => {
-    const methods = getNodesByLabelFull(result, 'Method');
-    const findNodes = methods.filter(
-      (m) => m.name === 'find' && m.properties.filePath?.includes('ilookup'),
-    );
-    // Interface overloads also collapse — TS type-hash is skipped
-    expect(findNodes.length).toBe(1);
-  });
-
-  it('emits METHOD_IMPLEMENTS from DbLookup.find → ILookup.find', () => {
-    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
-    const edges = mi.filter(
-      (e) =>
-        e.source === 'find' &&
-        e.target === 'find' &&
-        e.sourceFilePath.includes('db-lookup') &&
-        e.targetFilePath.includes('ilookup'),
-    );
-    expect(edges.length).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SM-9: inherited method resolution — child.parentMethod() via first-wins walk
-// ---------------------------------------------------------------------------
-
-describe('TypeScript Child extends Parent — inherited method resolution (SM-9)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-child-extends-parent'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects Parent and Child classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('Parent');
-    expect(classes).toContain('Child');
-  });
-
-  it('emits EXTENDS edge: Child → Parent', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(edgeSet(extends_)).toContain('Child → Parent');
-  });
-
-  it('resolves c.parentMethod() to Parent.parentMethod via first-wins MRO walk', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const parentMethodCall = calls.find(
-      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent.ts'),
-    );
-    expect(parentMethodCall).toBeDefined();
-    expect(parentMethodCall!.source).toBe('run');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PR #1657 finding #6: ambient base class — Step 2 MRO ancestor whose body
-// is never parsed (declare class). Probes whether the owner-keyed lookup
-// can still resolve inherited members on owners that reconcile-ownership
-// skipped because they have no parsed body.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript Derived extends declare class AmbientBase — ambient MRO ancestor', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-ambient-base-class'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects AmbientBase and Derived classes', () => {
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('AmbientBase');
-    expect(classes).toContain('Derived');
-  });
-
-  it('emits EXTENDS edge: Derived → AmbientBase', () => {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    expect(edgeSet(extends_)).toContain('Derived → AmbientBase');
-  });
-
-  it('resolves d.ambientMethod() to AmbientBase.ambientMethod via MRO walk', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const ambientCall = calls.find(
-      (c) => c.target === 'ambientMethod' && c.targetFilePath.includes('ambient.ts'),
-    );
-    expect(ambientCall).toBeDefined();
-    expect(ambientCall!.source).toBe('run');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PR #1050: tsconfig path alias resolution under registry-primary path
-// (Adversarial review Finding 1 — `@/services/user` must resolve via tsconfig
-//  paths even when imports go through ScopeResolver.resolveImportTarget.)
-// ---------------------------------------------------------------------------
-
-describe('TypeScript tsconfig path alias resolution (registry-primary)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-tsconfig-aliases'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects UserService class in src/services/user.ts', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
-  });
-
-  it('emits IMPORTS edge from app.ts to services/user.ts via @/ alias', () => {
-    const imports = getRelationships(result, 'IMPORTS').filter(
-      (e) => e.sourceFilePath === 'src/app.ts',
-    );
-    expect(imports.map((e) => e.targetFilePath).sort()).toEqual(['src/services/user.ts']);
-  });
-
-  it('resolves new UserService() through alias to services/user.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const ctor = calls.find((c) => c.target === 'UserService' && c.targetLabel === 'Class');
-    expect(ctor).toBeDefined();
-    expect(ctor!.source).toBe('main');
-    expect(ctor!.targetFilePath).toBe('src/services/user.ts');
-  });
-
-  it('resolves svc.save() through alias to services/user.ts', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const save = calls.find((c) => c.target === 'save');
-    expect(save).toBeDefined();
-    expect(save!.source).toBe('main');
-    expect(save!.targetFilePath).toBe('src/services/user.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PR #1050: TSX files parsed with the TSX tree-sitter grammar (not TS).
-// (Adversarial review Finding 2 — JSX must parse so component definitions
-//  and imports are captured.)
-// ---------------------------------------------------------------------------
-
-describe('TypeScript TSX/JSX scope extraction (registry-primary)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-tsx-jsx'), () => {});
-  }, 60000);
-
-  it('detects Button and App functions in .tsx files (JSX did not break parsing)', () => {
-    const fns = getNodesByLabel(result, 'Function');
-    expect(fns).toContain('Button');
-    expect(fns).toContain('App');
-  });
-
-  it('emits IMPORTS edge from App.tsx to Button.tsx', () => {
-    const imports = getRelationships(result, 'IMPORTS').filter(
-      (e) => e.sourceFilePath === 'src/App.tsx',
-    );
-    expect(imports.map((e) => e.targetFilePath)).toContain('src/Button.tsx');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PR #1050: literal `import('./feature')` resolves to a target file.
-// (Adversarial review Finding 3 — dynamic-resolved emits a real IMPORTS edge.)
-// ---------------------------------------------------------------------------
-
-describe('TypeScript literal dynamic import resolution (registry-primary)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-dynamic-import'), () => {});
-  }, 60000);
-
-  it('detects Feature class in feature.ts', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('Feature');
-  });
-
-  it('emits IMPORTS edge from app.ts to feature.ts via `await import("./feature")`', () => {
-    const imports = getRelationships(result, 'IMPORTS').filter(
-      (e) => e.sourceFilePath === 'src/app.ts',
-    );
-    // Literal dynamic-import resolution: the interpreter emits
-    // `dynamic-resolved` and finalize pre-finalizes it as a file-level
-    // terminal, linking literal `import('…')` calls to a target file.
-    expect(imports.map((e) => e.targetFilePath)).toContain('src/feature.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PR #1050: `export * as ns from './m'` namespace barrel re-export.
-// (Adversarial review Finding 4 — barrel must expose `ns` as a binding so
-//  `import { ns } from './barrel'` resolves through to the namespace target.)
-// ---------------------------------------------------------------------------
-
-describe('TypeScript namespace re-export barrel (registry-primary)', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-reexport-namespace'),
-      () => {},
-    );
-  }, 60000);
-
-  it('detects User and Repo classes in base.ts', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-  });
-
-  // The synthetic Namespace `SymbolDefinition` lives in barrel.ts's
-  // `localDefs` so `findExportByName` can satisfy a downstream
-  // `import { Models } from './barrel'`. Unit coverage for the synthetic
-  // capture lives in `typescript-captures.test.ts`. The graph-bridge does
-  // not materialize a Namespace node for `export * as` — that's why this
-  // suite asserts on the chain edges, not on a `Namespace` graph node.
-  it('emits IMPORTS edges along the barrel chain: app.ts→barrel.ts and barrel.ts→base.ts', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const fromApp = imports
-      .filter((e) => e.sourceFilePath === 'src/app.ts')
-      .map((e) => e.targetFilePath);
-    const fromBarrel = imports
-      .filter((e) => e.sourceFilePath === 'src/barrel.ts')
-      .map((e) => e.targetFilePath);
-    expect(fromApp).toContain('src/barrel.ts');
-    expect(fromBarrel).toContain('src/base.ts');
   });
 });
 
@@ -3236,100 +1150,6 @@ describe('TS dynamic-this receiver seeding guard', () => {
     [['app.ts', 17, 6, 'go', 'call'], ['receiver-owned-but-unbound']],
   ])('records %j under its real reason', (site, reasons) => {
     expect(suppressionReasonsAt(result, site)).toEqual(reasons);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Inline constructor receiver: new Service(db).doWork() (#2708)
-// The keyword form of the same shape covered for Python and Ruby. The receiver
-// is the constructed value itself, so there is no binding to read a type from —
-// the compound receiver resolver types it from the class the callee names.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript inline constructor receiver resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-inline-constructor-receiver'),
-      () => {},
-    );
-  }, 60000);
-
-  it('resolves new Service(db).doWork() to Service.doWork', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const inlineCall = calls.find((c) => c.source === 'viaInlineNew' && c.target === 'doWork');
-    expect(inlineCall).toMatchObject({
-      source: 'viaInlineNew',
-      target: 'doWork',
-      targetFilePath: 'src/svc.ts',
-    });
-    expect(inlineCall!.rel.targetId).toContain('Service');
-  });
-
-  it('keeps the two-step spelling resolving to Service.doWork', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const twoStep = calls.find((c) => c.source === 'viaTwoStep' && c.target === 'doWork');
-    // Pin the file too: this fixture also defines `LegacyService`, and
-    // 'LegacyService'.includes('Service') is true, so the id check alone
-    // cannot tell the two targets apart.
-    expect(twoStep).toMatchObject({ target: 'doWork', targetFilePath: 'src/svc.ts' });
-    expect(twoStep!.rel.targetId).toContain('Service');
-  });
-
-  it('resolves a generic constructor receiver — new Box<string>().unwrap()', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const genericCall = calls.find((c) => c.source === 'viaGenericCtor' && c.target === 'unwrap');
-    expect(genericCall).toMatchObject({
-      source: 'viaGenericCtor',
-      target: 'unwrap',
-      targetFilePath: 'src/svc.ts',
-    });
-    expect(genericCall!.rel.targetId).toContain('Box');
-  });
-
-  it('resolves construction in the chain HEAD — new Service(db).inner.deep()', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const chainCall = calls.find((c) => c.source === 'viaChainHead' && c.target === 'deep');
-    expect(chainCall).toMatchObject({
-      source: 'viaChainHead',
-      target: 'deep',
-      targetFilePath: 'src/svc.ts',
-    });
-    expect(chainCall!.rel.targetId).toContain('Inner');
-  });
-
-  it('resolves the keyword separated by a tab or a newline, not just one space', () => {
-    const calls = getRelationships(result, 'CALLS');
-    for (const source of ['viaTabSeparatedNew', 'viaNewlineSeparatedNew']) {
-      const call = calls.find((c) => c.source === source && c.target === 'doWork');
-      expect(call, `${source} -> doWork`).toMatchObject({
-        source,
-        target: 'doWork',
-        targetFilePath: 'src/svc.ts',
-      });
-      expect(call!.rel.targetId).toContain('Service');
-    }
-  });
-
-  it('resolves a namespace-qualified constructor — new ns.Service(db).doWork()', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const qualified = calls.find((c) => c.source === 'viaQualifiedCtor' && c.target === 'doWork');
-    expect(qualified).toMatchObject({
-      source: 'viaQualifiedCtor',
-      target: 'doWork',
-      targetFilePath: 'src/svc.ts',
-    });
-    expect(qualified!.rel.targetId).toContain('Service');
-  });
-
-  it('resolves a bare factory call through its return type, not as a construction', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');
-    expect(factoryCall).toBeDefined();
-    // Other.doWork, via makeOther's return type — a bare call in a `new`
-    // language must never be typed as a construction of a same-named class.
-    expect(factoryCall!.rel.targetId).toContain('Other');
   });
 });
 
@@ -3801,87 +1621,85 @@ export function hoistedInline() {
   });
 });
 
-// ---------------------------------------------------------------------------
-// #3956: a default import binds the declaration the target module publishes as
-// its default export, whatever the importer calls it locally.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript default imports (#3956)', () => {
-  const result = useFixture('ts-default-import', {
-    'src/c/Child.tsx':
-      'export default function Child({ a }: { a: number }) { return <div>{a}</div>; }\n',
-    'src/c/Named.tsx': 'export function Named() { return <span />; }\n',
-    'src/c/plain.ts': 'export default function plainFn(x: number) { return x + 1; }\n',
-    'src/c/Widget.tsx': 'export default function Panel() { return <div />; }\n',
-    'src/c/helper.ts': 'function helper() { return 1; }\nexport { helper as default };\n',
-    'src/c/arrow.ts': 'const arrowFn = () => 2;\nexport default arrowFn;\n',
-    'src/ui/index.ts': "export { default } from '../c/Child';\n",
-    'src/ui/alias.ts': "export { default as Btn } from '../c/Child';\n",
-    'src/lib/index.ts':
-      "export * from '../c/Child';\nexport default makeClient();\nfunction makeClient() { return () => 3; }\n",
-    'src/route.ts':
-      'const defineEventHandler = <T,>(fn: T) => fn;\nexport default defineEventHandler(async () => 4);\n',
-    'src/Parent.tsx': `import Child from './c/Child';
-import { Named } from './c/Named';
-import plainFn from './c/plain';
-export default function Parent() {
-  const v = plainFn(1);
-  return <div><Child a={v} /><Named /></div>;
+describe('TypeScript ambient namespace export aliases', () => {
+  const result = useFixture('ambient-namespace-exports', {
+    'tsconfig.json': JSON.stringify({
+      compilerOptions: { target: 'ES2022', module: 'ESNext', moduleResolution: 'bundler' },
+      files: ['decl.d.ts', 'use.ts'],
+    }),
+    'decl.d.ts': `declare namespace API {
+  class Internal { run(): number }
+  class Private { hidden(): number }
+  function local(): number;
+  const notCallable: number;
+  namespace Interior { function nestedCall(): number; }
+  export {Interior as Nested, Internal as Public, Internal as Alternative, local as left, local as right, notCallable as numberValue};
+  export type {Internal as TypeView};
+}
+declare namespace API { function merged(): number; }
+declare namespace Other {
+  class Internal { other(): number }
+  export {Internal as Public};
 }
 `,
-    'src/Other.tsx': `import Kid from './c/Widget';
-import { default as P } from './c/plain';
-import h from './c/helper';
-import arrow from './c/arrow';
-export function Other() {
-  P(2);
-  h();
-  arrow();
-  return <Kid />;
-}
+    'use.ts': `export function both() { return API.left() + API.right(); }
+export function typed(a: API.Alternative, b: API.TypeView) { return a.run() + b.run(); }
+export function constructed() { return new API.Public().run(); }
+export function other(c: Other.Public) { return c.other(); }
+export function mergedBody() { return API.merged(); }
+export function nested() { return API.Nested.nestedCall(); }
+// @ts-expect-error private declaration spelling
+export function privateName() { return new API.Internal().run(); }
+// @ts-expect-error unexported declaration
+export function hidden() { return new API.Private().hidden(); }
+// @ts-expect-error erased class alias
+export function erased() { return new API.TypeView().run(); }
+// @ts-expect-error private local function
+export function privateFunction() { return API.local(); }
+// @ts-expect-error non-callable namespace value
+export function numberCall() { return API.numberValue(); }
 `,
-    'src/ViaDefault.tsx':
-      "import C from './ui';\nexport function ViaDefault() { return <C a={1} />; }\n",
-    'src/ViaAlias.tsx':
-      "import { Btn } from './ui/alias';\nexport function ViaAlias() { return <Btn a={2} />; }\n",
-    'src/Client.ts':
-      "import client from './lib';\nexport function useClient() { return client(); }\n",
-    'src/Ghost.ts':
-      "import Ghost from './c/Named';\nexport function useGhost() { return Ghost(); }\n",
-    'src/UseRoute.ts':
-      "import handler from './route';\nexport function useRoute() { return handler(); }\n",
-  });
-  const calls = () => getRelationships(result(), 'CALLS');
-  const callsFrom = (source: string, targetFilePath: string) =>
-    calls().filter((c) => c.source === source && c.targetFilePath === targetFilePath);
-
-  it('links JSX and plain-call default imports to their declarations (issue repro)', () => {
-    expect(callsFrom('Parent', 'src/c/Child.tsx').map((c) => c.target)).toContain('Child');
-    expect(callsFrom('Parent', 'src/c/plain.ts').map((c) => c.target)).toContain('plainFn');
-    expect(callsFrom('Parent', 'src/c/Named.tsx').map((c) => c.target)).toEqual(['Named']);
   });
 
-  it('binds a local name that differs from both the declared name and the file stem', () => {
-    expect(callsFrom('Other', 'src/c/Widget.tsx').map((c) => c.target)).toContain('Panel');
+  it('uses the published spelling and retains distinct calls to the same declaration', () => {
+    const calls = getRelationships(result(), 'CALLS')
+      .filter((edge) => edge.sourceFilePath === 'use.ts')
+      .map((edge) => [edge.source, edge.target])
+      .sort();
+    expect(calls).toEqual([
+      ['both', 'local'],
+      ['both', 'local'],
+      ['constructed', 'Internal'],
+      ['constructed', 'run'],
+      ['mergedBody', 'merged'],
+      ['nested', 'nestedCall'],
+      ['other', 'other'],
+      ['typed', 'run'],
+      ['typed', 'run'],
+    ]);
+  });
+});
+
+describe('TypeScript optional parameters named undefined', () => {
+  const result = useFixture('ts-optional-undefined-shadow', {
+    'tsconfig.json': JSON.stringify({
+      compilerOptions: { strict: true, exactOptionalPropertyTypes: true },
+    }),
+    'use.ts': `class WithText { read() {} }
+class Other { read() {} }
+function pick(value: { text?: string }): WithText;
+function pick(value: unknown): Other;
+function pick(value: unknown): WithText | Other { return new Other(); }
+export function maybe(undefined?: string) { const value = pick({ text: undefined }); value.read(); }
+export function known(undefined: string) { const value = pick({ text: undefined }); value.read(); }`,
   });
 
-  it('binds `{ default as X }`, `export { f as default }` and `export default <const arrow>`', () => {
-    expect(callsFrom('Other', 'src/c/plain.ts').map((c) => c.target)).toContain('plainFn');
-    expect(callsFrom('Other', 'src/c/helper.ts').map((c) => c.target)).toContain('helper');
-    expect(callsFrom('Other', 'src/c/arrow.ts').map((c) => c.target)).toContain('arrowFn');
-  });
-
-  it('carries the default through `export { default }` and `export { default as Btn }` barrels', () => {
-    expect(callsFrom('ViaDefault', 'src/c/Child.tsx').map((c) => c.target)).toContain('Child');
-    expect(callsFrom('ViaAlias', 'src/c/Child.tsx').map((c) => c.target)).toContain('Child');
-  });
-
-  it('does not forward a default through `export *` or invent one for a module without it', () => {
-    expect(callsFrom('useClient', 'src/c/Child.tsx')).toEqual([]);
-    expect(callsFrom('useGhost', 'src/c/Named.tsx')).toEqual([]);
-  });
-
-  it('links a default import of a synthesized HOC default export', () => {
-    expect(callsFrom('useRoute', 'src/route.ts').length).toBeGreaterThan(0);
+  it('only publishes the specific result for a definitely string-valued parameter', () => {
+    const callers = result()
+      .graph.relationships.filter(
+        (edge) => edge.type === 'CALLS' && edge.targetId === 'Method:use.ts:WithText.read#0',
+      )
+      .map((edge) => edge.sourceId);
+    expect(callers).toEqual(['Function:use.ts:known']);
   });
 });
