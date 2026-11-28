@@ -661,6 +661,34 @@ require __DIR__ . '/a.php';
     expect(map.get('routes/b.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
   });
 
+  it('a require cycle beside another root is still expanded', () => {
+    const entry = extractBindings(
+      `<?php
+require __DIR__ . '/web.php';
+`,
+      'routes/a.php',
+    );
+    const b = extractBindings(
+      `<?php
+$router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/c.php';
+});
+`,
+      'routes/b.php',
+    );
+    const c = extractBindings(
+      `<?php
+require __DIR__ . '/b.php';
+`,
+      'routes/c.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['routes/a.php', 'routes/b.php', 'routes/c.php', 'routes/web.php']),
+      [...entry, ...b, ...c],
+    );
+    expect(map.get('routes/c.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
   it('a require in a while condition counts as already run', () => {
     const source = `<?php
 while (require_once __DIR__ . '/../routes/web.php') {}
@@ -954,6 +982,18 @@ function later() {
     ]);
     expect(b.some((binding) => binding.deferred)).toBe(true);
     expect(map.get('routes/b.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('a require operand of an eager operator counts as already run', () => {
+    const source = `<?php
+$x = (require_once __DIR__ . '/../routes/web.php') + 1;
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.appliesContext)?.unguarded).toBe(true);
+    expect(webContexts(source)).toBeUndefined();
   });
 
   it('a require on the left of && counts as already run', () => {

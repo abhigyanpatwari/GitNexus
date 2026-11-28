@@ -200,7 +200,23 @@ export function resolvePhpRouterRequireBindings(
   const hosts = [...byHost.keys()].sort();
   const roots = hosts.filter((host) => !required.has(host));
   // A cycle with no outside entry still needs a walk. onChain stops the loop.
-  for (const host of roots.length > 0 ? roots : hosts) {
+  // A cycle that sits beside another root is not reachable from that root, so
+  // it is started on its own as well.
+  const starts = roots.length > 0 ? [...roots] : [...hosts];
+  if (roots.length > 0) {
+    const reachable = new Set<string>();
+    const pending = [...roots];
+    while (pending.length > 0) {
+      const host = pending.pop()!;
+      if (reachable.has(host)) continue;
+      reachable.add(host);
+      for (const edge of outgoing.get(host) ?? []) {
+        if (!reachable.has(edge.target)) pending.push(edge.target);
+      }
+    }
+    for (const host of hosts) if (!reachable.has(host)) starts.push(host);
+  }
+  for (const host of starts) {
     expand(host, IDENTITY_CONTEXT, null, new Set());
   }
 

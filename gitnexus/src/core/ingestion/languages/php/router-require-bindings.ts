@@ -527,15 +527,19 @@ export function extractPhpRouterRequireBindings(
     const isTry = node.type === 'try_statement';
     const insideForInitializer =
       node.parent?.type === 'for_statement' && node.parent.childForFieldName('initialize') === node;
+    const binaryOperator =
+      node.type === 'binary_expression'
+        ? ((node.children ?? []).find((child) => !child.isNamed)?.text ?? '')
+        : '';
+    const eagerBinary = binaryOperator !== '' && !SHORT_CIRCUIT_OPERATORS.has(binaryOperator);
     let childMustRun =
-      mustRun && (isTry || insideForInitializer || MUST_RUN_CONTAINER_TYPES.has(node.type));
+      mustRun &&
+      (isTry || insideForInitializer || eagerBinary || MUST_RUN_CONTAINER_TYPES.has(node.type));
     const finallyNeverRuns = isTry && straightLineEndsRequest(node);
     const finallyCertain = mustRun && isTry && !exitSkipsFinally(node);
-    const shortCircuitLeft =
-      node.type === 'binary_expression' &&
-      SHORT_CIRCUIT_OPERATORS.has((node.children ?? []).find((child) => !child.isNamed)?.text ?? '')
-        ? (node.children ?? []).find((child) => child.isNamed)
-        : undefined;
+    const shortCircuitLeft = SHORT_CIRCUIT_OPERATORS.has(binaryOperator)
+      ? (node.children ?? []).find((child) => child.isNamed)
+      : undefined;
     const forInitializer =
       node.type === 'for_statement' ? node.childForFieldName('initialize') : undefined;
     const alwaysEvaluated =
