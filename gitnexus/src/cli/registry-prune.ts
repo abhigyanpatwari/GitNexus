@@ -253,7 +253,7 @@ export const pruneBranchesCommand = async (
 
   emitResult(result, asJson);
 
-  if (failed.length > 0 || incomplete) {
+  if (failed.length > 0 || incomplete || probeFailed.length > 0) {
     process.exitCode = 1;
   }
 

@@ -279,6 +279,7 @@ describe('registry prune-branches (#3332)', () => {
 
     expect(result.pruned).toEqual([]);
     expect(result.probeFailed).toEqual(['feat/unreadable']);
+    expect(process.exitCode).toBe(1);
     const output = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(output).toContain('Could not inspect 1 branch slot(s): feat/unreadable');
     expect(output).not.toContain('No stale branch indexes found.');
