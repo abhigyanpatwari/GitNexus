@@ -216,7 +216,10 @@ export const listStaleBranchSlots = async (
 
   if (recorded.length === 0 && diskDirs.length === 0) return [];
 
-  const heads = input.heads !== undefined ? input.heads : listLocalHeads(input.repoPath);
+  const heads =
+    input.heads !== undefined
+      ? input.heads
+      : listLocalHeads(input.repoPath, { scrubLocalEnv: true });
   const live = heads === null ? null : new Set(heads);
 
   const pending: Array<Omit<StaleBranchSlot, 'sizeBytes'>> = [];

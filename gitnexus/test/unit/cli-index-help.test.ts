@@ -73,11 +73,13 @@ const allHelpCommands = [
   ['group', 'impact'],
   ['group', 'query'],
   ['group', 'contracts'],
+  ['registry'],
+  ['registry', 'prune-branches'],
 ];
 
 function extractRegisteredHelpDescriptions(): string[] {
   const descriptions = new Set<string>();
-  const sourceFiles = ['src/cli/index.ts', 'src/cli/group.ts'];
+  const sourceFiles = ['src/cli/index.ts', 'src/cli/group.ts', 'src/cli/registry.ts'];
 
   for (const relativePath of sourceFiles) {
     const filePath = path.join(repoRoot, relativePath);

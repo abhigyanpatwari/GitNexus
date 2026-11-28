@@ -310,6 +310,7 @@ gitnexus list                    # List all indexed repositories
 gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
+gitnexus registry prune-branches --repo .  # Prune stale branch slots under the registry lock (--dry-run, --json)
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: MiniMax-M3)
 gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no API key)

@@ -13,6 +13,7 @@ import {
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { IntegerOptionError, parseMemoryBudgetMb } from './int-option.js';
 import { registerGroupCommands } from './group.js';
+import { registerRegistryCommands } from './registry.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
 import { writeCommandBanner } from './command-banner.js';
@@ -636,6 +637,7 @@ program.command('__update-check', { hidden: true }).action(async () => {
 });
 
 registerGroupCommands(program);
+registerRegistryCommands(program);
 localizeCliHelp(program);
 
 program.hook('preAction', (_thisCommand, actionCommand) => {

@@ -416,7 +416,10 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
 /**
  * Find the git repository root from any path inside the repo
  */
-export const getGitRoot = (fromPath: string): string | null => {
+export const getGitRoot = (
+  fromPath: string,
+  options?: { scrubLocalEnv?: boolean },
+): string | null => {
   const resolved = path.resolve(fromPath);
   // Avoid git rev-parse --show-toplevel trimming trailing spaces from the
   // repository root on Windows; callers that need identity keys canonicalize
@@ -430,6 +433,7 @@ export const getGitRoot = (fromPath: string): string | null => {
         // Suppress stderr -- see getCurrentCommit comment and #1172.
         stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,
+        ...(options?.scrubLocalEnv ? { env: scrubbedGitEnv() } : {}),
       }),
     );
     // On Windows, git returns /d/Projects/Foo — path.resolve normalizes to D:\Projects\Foo
@@ -754,16 +758,47 @@ export const getCurrentCheckout = (repoPath: string): { commit: string; branch: 
   return { commit: getCurrentCommit(repoPath), branch: getCurrentBranch(repoPath) };
 };
 
+const GIT_LOCAL_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_GRAFT_FILE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_NAMESPACE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_QUARANTINE_PATH',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_SHALLOW_FILE',
+  'GIT_WORK_TREE',
+] as const;
+
+const scrubbedGitEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  for (const key of GIT_LOCAL_ENV_VARS) {
+    delete env[key];
+  }
+  return env;
+};
+
 /**
  * Local `refs/heads` names, or `null` when the directory is not a git
  * worktree or git cannot run. An empty array means the listing succeeded
  * and there are no local heads — that is not a listing failure (#3331).
  */
-export const listLocalHeads = (repoPath: string): string[] | null => {
+export const listLocalHeads = (
+  repoPath: string,
+  options?: { scrubLocalEnv?: boolean },
+): string[] | null => {
   try {
     const result = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], {
       cwd: repoPath,
       windowsHide: true,
+      ...(options?.scrubLocalEnv ? { env: scrubbedGitEnv() } : {}),
       ...gitPathListExec,
     });
     if (result.error || result.status !== 0) return null;

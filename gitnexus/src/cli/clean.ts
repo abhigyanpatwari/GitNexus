@@ -128,7 +128,7 @@ const cleanStaleBranchSlots = async (force: boolean): Promise<void> => {
   }
   let deletedAny = false;
   for (const slot of candidates) {
-    const heads = listLocalHeads(repo.repoPath);
+    const heads = listLocalHeads(repo.repoPath, { scrubLocalEnv: true });
     if (heads === null) {
       console.log(
         deletedAny ? t('clean.stale.remainingSkipped') : t('clean.stale.headsUnavailable'),
