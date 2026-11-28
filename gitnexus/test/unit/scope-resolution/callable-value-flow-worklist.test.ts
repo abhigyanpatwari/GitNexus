@@ -204,6 +204,113 @@ describe('callable-value-flow dependency worklist', () => {
       ),
     ).toEqual(['target']);
   });
+
+  it('uses a unique graph owner when the formal position misses', () => {
+    const ownerDefs = ['Unique.apply', 'Shared.apply', 'GraphOnly.run'].map(
+      (qualifiedName, index) => ({
+        nodeId: `def:${FILE}#${index + 3}:0:Method:${qualifiedName}`,
+        filePath: FILE,
+        type: 'Method' as const,
+        qualifiedName,
+        parameterCount: 1,
+      }),
+    );
+    const [unique, shared] = ownerDefs;
+    const localDefs = [
+      targetDef,
+      unique,
+      shared,
+      // Two scope definitions can collapse to the same graph node.
+      { ...shared, nodeId: `def:${FILE}#6:0:Method:Shared.apply` },
+    ];
+    const graph = createKnowledgeGraph();
+    const calleeIds = createCalleeIdAccumulator();
+    const ownerScopes = ownerDefs.map((def, index) => ({
+      ...scope(`scope:owner${index}` as ScopeId, MODULE, 'Function', [def]),
+      range: range(index + 3),
+    }));
+    const moduleBindings = new Map<string, readonly BindingRef[]>([
+      ['target', [{ def: targetDef, origin: 'local' }]],
+    ]);
+    const scopes = [
+      {
+        ...scope(MODULE, null, 'Module', localDefs, moduleBindings),
+        range: { ...range(1), endLine: 15 },
+      },
+      ...ownerScopes,
+    ];
+    const sites = ownerDefs.flatMap((def, index): NonNullable<ParsedFile['callableFlowSites']> => {
+      const ownerName = def.qualifiedName.slice(def.qualifiedName.lastIndexOf('.') + 1);
+      const id = `Method:${FILE}:${def.qualifiedName}`;
+      graph.addNode({
+        id,
+        label: 'Method',
+        properties: { name: ownerName, filePath: FILE, qualifiedName: def.qualifiedName },
+      });
+      const callSite = range(index + 10);
+      calleeIds.add(FILE, callSite.startLine, callSite.startCol, id);
+      const inScope = ownerScopes[index].id;
+      const binding = { ...operand('callback', index + 3), inScope };
+      return [
+        {
+          kind: 'formal',
+          binding,
+          ownerName,
+          ownerRange: { ...ownerScopes[index].range, startCol: 1 },
+          parameterIndex: 0,
+          passingMode: 'value',
+        },
+        {
+          kind: 'argument',
+          callSite,
+          parameterIndex: 0,
+          source: { ...operand('target', callSite.startLine), inScope: MODULE },
+        },
+        {
+          kind: 'invoke',
+          callSite: binding.atRange,
+          inScope,
+          callee: binding,
+          invocationKind: 'indirect',
+        },
+      ];
+    });
+    graph.addNode({
+      id: `Function:${FILE}:target`,
+      label: 'Function',
+      properties: { name: 'target', qualifiedName: 'target', filePath: FILE },
+    });
+    emitCallableValueFlow({
+      graph,
+      scopes: {
+        ...indexes(scopes),
+        defs: buildDefIndex(localDefs),
+        qualifiedNames: buildQualifiedNameIndex(localDefs),
+      },
+      parsedFiles: [
+        {
+          filePath: FILE,
+          moduleScope: MODULE,
+          scopes,
+          parsedImports: [],
+          localDefs,
+          referenceSites: [],
+          callableFlowSites: sites,
+        },
+      ],
+      nodeLookup: buildGraphNodeLookup(graph),
+      calleeIds,
+      language: 'typescript',
+      deferredIndirectSites: new Set(
+        ownerScopes.map(({ range }) => `${FILE}:${range.startLine}:0`),
+      ),
+    });
+
+    expect([...graph.iterRelationshipsByType('CALLS')].map(({ sourceId }) => sourceId)).toEqual([
+      `Method:${FILE}:Unique.apply`,
+      `Method:${FILE}:GraphOnly.run`,
+    ]);
+  });
 });
 
 describe('collectDeferredIndirectCollection', () => {

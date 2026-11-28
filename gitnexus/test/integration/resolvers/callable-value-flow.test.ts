@@ -1,10 +1,11 @@
 import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { providers } from '../../../src/core/ingestion/languages/index.js';
+import * as definitionIds from '../../../src/core/ingestion/scope-resolution/utils/definition-id.js';
 import {
   getRelationships,
   runPipelineFromRepo,
@@ -1014,6 +1015,45 @@ fn main() {
       ),
     ).toEqual([]);
   }, 60_000);
+
+  it('indexes Go method formals by position when receivers share a method name', async () => {
+    const applyDeclarations = Array.from(
+      { length: 64 },
+      (_, index) => `func (Receiver${index}) Apply(callback func()) { callback() }`,
+    );
+    const sourceLines = [
+      'package main',
+      ...applyDeclarations.flatMap((declaration, index) => [
+        `type Receiver${index} struct{}`,
+        declaration,
+        `func target${index}() {}`,
+        `func run${index}() { var receiver Receiver${index}; receiver.Apply(target${index}) }`,
+      ]),
+    ];
+    const positions = vi.spyOn(definitionIds, 'definitionIdPosition');
+    try {
+      const result = await runSource('go', sourceLines.join('\n'));
+      const edges = getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === 'Apply' && edge.rel.reason === 'callable-value-flow')
+        .map((edge) => {
+          // Go method nodes store zero-based source rows.
+          const startRow = result.graph.getNode(edge.rel.sourceId)?.properties.startLine;
+          const declaration = startRow === undefined ? undefined : sourceLines[startRow];
+          return `${declaration} -> ${edge.target}`;
+        })
+        .sort();
+      expect(edges).toEqual(
+        applyDeclarations.map((declaration, index) => `${declaration} -> target${index}`).sort(),
+      );
+
+      const ownerPositionLookups = positions.mock.calls.filter(([id]) => id?.endsWith(':Apply'));
+      // The lookup is shared by several resolver stages. Allow a constant number of
+      // lookups per method while catching a full scan of the name bucket per formal.
+      expect(ownerPositionLookups.length).toBeLessThanOrEqual(applyDeclarations.length * 16);
+    } finally {
+      positions.mockRestore();
+    }
+  });
 
   it('pairs Go multi-value := positionally instead of cross-wiring (#2522 review)', async () => {
     const result = await runSource(
