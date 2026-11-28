@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "module": "esnext", "moduleDetection": "legacy", "strict": true, "types": [] },
+  "files": ["tools/defs.ts", "tools/use.ts"]
+}

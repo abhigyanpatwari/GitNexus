@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { HeritageSubstitutions } from '../../src/core/ingestion/heritage-substitutions.js';
 import { computeMRO } from '../../src/core/ingestion/mro-processor.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { KnowledgeGraph } from '../../src/core/graph/types.js';
@@ -711,6 +712,39 @@ describe('computeMRO', () => {
 
   // ---- METHOD_IMPLEMENTS edges -----------------------------------------------
   describe('METHOD_IMPLEMENTS edges', () => {
+    it.each(['no methods', 'class override', 'interface implementation'] as const)(
+      'only composes generic substitutions for an actual comparison: %s',
+      (kind) => {
+        const graph = createKnowledgeGraph();
+        const parentLabel = kind === 'interface implementation' ? 'Interface' : 'Class';
+        const parent = addClass(graph, 'Box', 'typescript', parentLabel);
+        const child = addClass(graph, 'TextBox', 'typescript');
+        if (parentLabel === 'Interface') addImplements(graph, 'TextBox', 'Box');
+        else addExtends(graph, 'TextBox', 'Box');
+        const substitutions = new HeritageSubstitutions();
+        substitutions.registerBase(
+          child,
+          parent,
+          {
+            nodeId: parent,
+            filePath: 'src/Box.ts',
+            type: parentLabel,
+            typeParameters: [{ name: 'T' }],
+          },
+          ['string'],
+        );
+        if (kind !== 'no methods') {
+          addMethod(graph, 'Box', 'write', parentLabel, ['T']);
+          addMethod(graph, 'TextBox', 'write', 'Class', ['string']);
+        }
+        const compose = vi.spyOn(substitutions, 'forClass');
+        const result = computeMRO(graph, substitutions);
+        expect(result.overrideEdges).toBe(kind === 'class override' ? 1 : 0);
+        expect(result.methodImplementsEdges).toBe(kind === 'interface implementation' ? 1 : 0);
+        expect(compose).toHaveBeenCalledTimes(kind === 'no methods' ? 0 : 1);
+      },
+    );
+
     it('emits METHOD_IMPLEMENTS for class implementing interface method', () => {
       // IAnimal { speak() } <-- Dog { speak() }
       const graph = createKnowledgeGraph();
