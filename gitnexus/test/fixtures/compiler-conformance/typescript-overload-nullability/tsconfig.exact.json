@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.strict.json",
+  "compilerOptions": { "exactOptionalPropertyTypes": true },
+  "files": ["exact.ts"]
+}

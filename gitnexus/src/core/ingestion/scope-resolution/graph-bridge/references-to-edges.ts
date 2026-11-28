@@ -18,7 +18,7 @@
  * `referenceIndex` output and its own `nodeLookup`.
  */
 
-import type { Reference, ScopeId } from 'gitnexus-shared';
+import { makeScopeId, type Reference, type ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
@@ -121,6 +121,22 @@ export function emitReferencesViaLookup(
     const fromScopeMeta = scopes.scopeTree.getScope(fromScope);
     const fromFilePath = fromScopeMeta?.filePath;
 
+    // A type alias owns the types in its signature. Runtime references from
+    // the surrounding scope still belong to their executable caller.
+    const alias =
+      fromScopeMeta?.kind === 'Class' &&
+      fromScopeMeta.ownedDefs.find(
+        (def) =>
+          def.type === 'TypeAlias' &&
+          def.declarationRange &&
+          makeScopeId({
+            filePath: def.filePath,
+            range: def.declarationRange,
+            kind: fromScopeMeta.kind,
+          }) === fromScope,
+      );
+    const aliasId = alias ? resolveDefGraphId(alias.filePath, alias, nodeLookup) : undefined;
+
     for (const ref of refs) {
       if (skipSites !== undefined && fromFilePath !== undefined) {
         const siteKey = `${fromFilePath}:${ref.atRange.startLine}:${ref.atRange.startCol}`;
@@ -174,13 +190,14 @@ export function emitReferencesViaLookup(
         calleeIdSink.add(fromFilePath, ref.atRange.startLine, ref.atRange.startCol, targetGraphId);
       }
 
-      const dedupKey = referenceEdgeKey(edgeType, callerGraphId, targetGraphId, ref);
+      const sourceId = ref.kind === 'type-reference' ? (aliasId ?? callerGraphId) : callerGraphId;
+      const dedupKey = referenceEdgeKey(edgeType, sourceId, targetGraphId, ref);
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 
       graph.addRelationship({
         id: `rel:${dedupKey}`,
-        sourceId: callerGraphId,
+        sourceId,
         targetId: targetGraphId,
         type: edgeType,
         confidence: ref.confidence,

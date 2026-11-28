@@ -180,9 +180,31 @@ export function selectClaimsAtScope(
   name: string,
   options: NameLookupOptions = {},
 ): ScopeClaimSelection {
-  const candidates = visibleClaims(scope, name, options);
+  return selectVisibleClaims(visibleClaims(scope, name, options), options);
+}
+
+function inactiveSelection(claim: NameClaim, claims: readonly NameClaim[]): ScopeClaimSelection {
+  if (claim.inactive === 'outer') return { status: 'absent', claims };
+  if (claim.inactive === 'module') return { status: 'module', claims };
+  return { status: 'blocked', claims };
+}
+
+function selectVisibleClaims(
+  candidates: readonly NameClaim[],
+  options: NameLookupOptions,
+): ScopeClaimSelection {
   if (candidates.length === 0) return NO_SELECTION;
   const purpose = options.purpose ?? 'value';
+  if (candidates.length === 1) {
+    const claim = candidates[0];
+    if (claim.purpose !== undefined && claim.purpose !== 'both' && claim.purpose !== purpose)
+      return NO_SELECTION;
+    if (!isAvailableAt(claim, options.position)) return inactiveSelection(claim, [claim]);
+    return {
+      status: claim.kind === 'blocked' && claim.redirect === undefined ? 'blocked' : 'selected',
+      claims: [claim],
+    };
+  }
   const claims = candidates.filter(
     (c) => c.purpose === undefined || c.purpose === 'both' || c.purpose === purpose,
   );
@@ -190,11 +212,7 @@ export function selectClaimsAtScope(
   const active = claims.filter((c) => isAvailableAt(c, options.position));
   if (active.length === 0) {
     const first = claims.reduce((a, b) => (compareClaims(a, b) <= 0 ? a : b));
-    return {
-      status:
-        first.inactive === 'outer' ? 'absent' : first.inactive === 'module' ? 'module' : 'blocked',
-      claims,
-    };
+    return inactiveSelection(first, claims);
   }
   // Same-position alternatives retain ambiguity. Providers can mark uncertain
   // rebinding explicitly blocked rather than claiming a control-flow winner.
@@ -297,9 +315,12 @@ export function lookupLexicalName(
       continue;
     }
     if (selectionOptions.position !== position) selectionOptions = { ...options, position };
+    // Visibility depends on the callee flag. Source position affects the
+    // selection within this group, so ownership can reuse the same group.
+    const nameClaims = visibleClaims(scope, name, options);
     const selected: ScopeClaimSelection =
       forcedClaims === undefined
-        ? selectClaimsAtScope(scope, name, selectionOptions)
+        ? selectVisibleClaims(nameClaims, selectionOptions)
         : { status: 'selected', claims: forcedClaims };
     forcedClaims = undefined;
     const redirected = selected.claims.find((c) => c.redirect !== undefined);
@@ -331,7 +352,6 @@ export function lookupLexicalName(
     }
     if (selected.status === 'blocked')
       return { ...ABSENT, status: 'blocked', scope, claims: selected.claims };
-    const nameClaims = visibleClaims(scope, name, options);
     const hasClaimsForName = nameClaims.length > 0;
     const allBindings =
       sources.bindingsAt?.(scope, name) ?? scope.bindings.get(name) ?? NO_BINDINGS;

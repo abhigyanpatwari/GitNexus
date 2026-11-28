@@ -26,6 +26,7 @@ import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import {
   BUILT_INS as TS_BUILT_INS,
   EXTERNAL_RECEIVER_NAMES as TS_EXTERNAL_RECEIVER_NAMES,
+  typescriptProvider,
 } from './typescript.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
@@ -91,11 +92,13 @@ export const vueProvider = defineLanguage({
   entryPointPatterns: [],
   astFrameworkPatterns: [],
   treeSitterQueries: TYPESCRIPT_QUERIES,
+  mroStrategy: typescriptProvider.mroStrategy,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
+  shouldSkipDefinitionCapture: typescriptProvider.shouldSkipDefinitionCapture,
   classExtractor: vueClassExtractor,
   resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   builtInNames: VUE_BUILT_INS,
