@@ -1572,6 +1572,61 @@ describe('published vector readers', () => {
     expect(await store.seal(1, total)).toBe('hnsw');
   }, 120_000);
 
+  it('seals a 14434-row 1536-dimensional artifact with a 256 MiB writer pool', async (context) => {
+    const initial = await setup();
+    await store.close();
+    await fs.rm(path.join(initial.directory, 'vectors'), { force: true });
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+    const loaded = await loadVectorFixture(initial.directory);
+    if (!loaded && process.env.GITNEXUS_REQUIRE_VECTOR !== '1') {
+      context.skip('Optional native VECTOR extension is unavailable');
+      return;
+    }
+    expect(loaded).toBe(true);
+    const resources = resolveAnalysisResourceBudget({
+      effectiveMemoryBytes: 8 * 1024 ** 3,
+      availableCpus: 4,
+      modelMemoryMb: 0,
+    });
+    store = await VectorStore.open({
+      ...initial,
+      dimensions: 1536,
+      batchBytes: 2 * 1024 ** 2,
+      // Exercise high-dimensional vectors under constrained writer memory.
+      bufferPoolBytes: 256 * 1024 ** 2,
+      // Index construction may use the whole CPU allowance (#3870).
+      indexThreads: resources.embedding.indexThreads,
+    });
+    const indexThreads = vi.spyOn(lbug.Connection.prototype, 'setMaxNumThreadForExec');
+    const nodeId = 'Function:source.ts:large';
+    await store.beginNode(nodeId, 'hash');
+    const total = 14434;
+    for (let start = 0; start < total; start += 64) {
+      await store.append(
+        nodeId,
+        'hash',
+        Array.from({ length: Math.min(64, total - start) }, (_, offset) => ({
+          chunkIndex: start + offset,
+          startLine: start + offset + 1,
+          endLine: start + offset + 1,
+          embedding: Array.from({ length: 1536 }, (_, dimension) =>
+            dimension === 0 ? 1 : ((start + offset + dimension) % 997) / 997,
+          ),
+        })),
+      );
+    }
+    await store.finishNode(nodeId, 'hash', total);
+    const sealed = await store.seal(1, total);
+    expect(sealed).toBe('hnsw');
+    expect(initial.threads).toBe(1);
+    expect(indexThreads.mock.calls).toEqual([[4]]);
+    expect(store.isSealed).toBe(true);
+    const options = store.options;
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'read' });
+    expect(await store.seal(1, total)).toBe('hnsw');
+  }, 120_000);
+
   it('resumes writes after a crash between HNSW creation and publication', async (context) => {
     const options = await setup();
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
