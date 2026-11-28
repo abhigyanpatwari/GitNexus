@@ -4306,11 +4306,11 @@ function pickFirstNonStaticOnly(
     const fields = model.fields.lookupAllByOwner(ownerId, memberName);
     if (!fields.length) return undefined;
     // Only a field on the receiver's side can shadow an inherited method.
-    if (
-      site.kind === 'call' &&
-      provider.languageProvider?.separateStaticAndInstanceMethods &&
-      excludeMember
-    )
+    // Reads and writes are filtered as calls are (#4216): a value of the
+    // owner's type does not carry a static field either, so `c.count` on
+    // `c: C` is not `static count`, and `op.eq` on `op: FilterOp` is not the
+    // enum member (the field extractor marks enum members static).
+    if (provider.languageProvider?.separateStaticAndInstanceMethods && excludeMember)
       return fields.find((field) => !excludeMember(field)) ?? STATIC_ONLY_FILTERED;
     return fields[0];
   }

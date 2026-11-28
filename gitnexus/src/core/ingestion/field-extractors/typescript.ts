@@ -35,6 +35,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
     'interface_declaration',
     'abstract_class_declaration',
     'type_alias_declaration', // for object type literals
+    'enum_declaration', // members are static readonly properties of the enum object
   ]);
 
   /**
@@ -217,6 +218,39 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
   }
 
   /**
+   * Extract the members of an enum body (#4216). A member is a property of the
+   * enum OBJECT, not of a value typed as the enum: `FilterOp.eq` names it, while
+   * `op` in `op: FilterOp` is a string or number. So each member is static and
+   * readonly, which keeps instance dispatch (`op.startsWith()`) off it the way
+   * it already stays off a `static` class field.
+   */
+  private extractEnumMembers(bodyNode: SyntaxNode, context: FieldExtractorContext): FieldInfo[] {
+    const fields: FieldInfo[] = [];
+    for (let i = 0; i < bodyNode.namedChildCount; i++) {
+      const child = bodyNode.namedChild(i);
+      if (!child) continue;
+      const nameNode =
+        child.type === 'enum_assignment'
+          ? child.childForFieldName('name')
+          : child.type === 'property_identifier'
+            ? child
+            : null;
+      if (!nameNode || !nameNode.text) continue;
+      fields.push({
+        name: nameNode.text,
+        type: null,
+        visibility: 'public',
+        isStatic: true,
+        isReadonly: true,
+        sourceFile: context.filePath,
+        line: child.startPosition.row + 1,
+        column: child.startPosition.column,
+      });
+    }
+    return fields;
+  }
+
+  /**
    * Extract fields from an object type (used in type aliases)
    */
   private extractFieldsFromObjectType(
@@ -277,6 +311,9 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
         const extractedFields = this.extractFieldsFromBody(bodyNode, context);
         fields.push(...extractedFields);
       }
+    } else if (node.type === 'enum_declaration') {
+      const bodyNode = node.childForFieldName('body');
+      if (bodyNode) fields.push(...this.extractEnumMembers(bodyNode, context));
     } else if (node.type === 'type_alias_declaration') {
       // Handle type aliases with object types
       const valueNode = node.childForFieldName('value');
