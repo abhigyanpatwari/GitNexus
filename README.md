@@ -170,7 +170,7 @@ Enterprise includes:
 - **PR Review** — automated blast radius analysis on pull requests
 - **Auto-updating Code Wiki** — always up-to-date documentation (Code Wiki is also available in OSS)
 - **Auto-reindexing** — knowledge graph stays fresh automatically
-- **Multi-repo support** — unified graph across repositories
+- **Multi-repo support** — unified graph across repositories, including opt-in [Dubbo RPC dependencies](gitnexus/src/core/group/DUBBO.md)
 - **OCaml support** — additional language coverage
 - **Priority feature/language support** — request new languages or features
 

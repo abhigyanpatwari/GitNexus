@@ -35,6 +35,7 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GraphqlExtractor } from './extractors/graphql-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { ThriftExtractor } from './extractors/thrift-extractor.js';
+import { DubboExtractor } from './extractors/dubbo-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { IncludeExtractor } from './extractors/include-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
@@ -358,6 +359,14 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const graphqlEx = new GraphqlExtractor();
       const grpcEx = new GrpcExtractor();
       const thriftEx = new ThriftExtractor();
+      const dubboEx = new DubboExtractor(async () => {
+        const paths: string[] = [];
+        for (const [member, name] of Object.entries(config.repos)) {
+          const handle = await resolve(name, member);
+          if (handle) paths.push(handle.repoPath);
+        }
+        return paths;
+      });
       const topicEx = new TopicExtractor();
       const includeEx = new IncludeExtractor();
 
@@ -447,6 +456,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.thrift) {
             const extracted = await thriftEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              repoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.dubbo === true) {
+            const extracted = await dubboEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               repoContracts.push({
                 ...c,

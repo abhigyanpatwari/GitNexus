@@ -34,6 +34,7 @@ const DEFAULT_DETECT = {
   graphql: false,
   grpc: true,
   thrift: true,
+  dubbo: false,
   topics: true,
   includes: false,
   workspace_deps: false,
