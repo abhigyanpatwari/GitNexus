@@ -4744,6 +4744,7 @@ export class LocalBackend {
         // extension is already reported by ExtensionManager; an index/query
         // failure below gets its own once-per-backend diagnostic before the exact
         // scan fallback.
+        let vectorLaneRan = false;
         if (vectorReady) {
           try {
             bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
@@ -4768,6 +4769,7 @@ export class LocalBackend {
                 distance: row.distance ?? row[4],
               }));
             });
+            vectorLaneRan = true;
           } catch (err) {
             rethrowSymbolIdentityError(err);
             bestChunks = new Map();
@@ -4787,7 +4789,19 @@ export class LocalBackend {
         if (bestChunks.size === 0) {
           const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
           const exactLimit = getExactScanLimit();
-          if (embeddingCount > exactLimit) return [];
+          if (embeddingCount > exactLimit) {
+            // #3014: an empty vector answer is a real "no matches". When the
+            // vector lane could not run, the empty result only means the exact
+            // scan was skipped, so say so instead of looking like no matches.
+            if (degraded && !vectorLaneRan) {
+              degraded.reason =
+                `Semantic search is unavailable (the vector index could not be used, and ${embeddingCount} ` +
+                `embeddings exceed the exact-scan limit of ${exactLimit}). Raise ` +
+                'GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT to allow the slower exact scan; graph and keyword ' +
+                'search remain available.';
+            }
+            return [];
+          }
 
           const rows = await executeQuery(
             repo.lbugPath,

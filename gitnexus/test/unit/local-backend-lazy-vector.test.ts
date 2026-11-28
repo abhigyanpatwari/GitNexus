@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _captureLogger } from '../../src/core/logger.js';
 
 const executeQueryMock = vi.fn();
@@ -115,5 +115,90 @@ describe('LocalBackend semantic search lazy VECTOR loading (#3021)', () => {
     } finally {
       cap.restore();
     }
+  });
+});
+
+describe('LocalBackend semantic search past the exact-scan limit (#3014)', () => {
+  type Degraded = { reason?: string; embeddingDims?: number };
+  interface DegradableSearch {
+    semanticSearch(
+      repo: { lbugPath: string },
+      query: string,
+      limit: number,
+      degraded: Degraded,
+    ): Promise<unknown[]>;
+  }
+  const search = async (): Promise<{ results: unknown[]; degraded: Degraded }> => {
+    const degraded: Degraded = {};
+    const results = await (new LocalBackend() as unknown as DegradableSearch).semanticSearch(
+      { lbugPath: '/tmp/index' },
+      'q',
+      5,
+      degraded,
+    );
+    return { results, degraded };
+  };
+  const exactScanRan = (): boolean =>
+    executeQueryMock.mock.calls.some(([, cypher]) => String(cypher).includes('e.embedding AS'));
+  const expectSkippedLaneReason = (reason: string | undefined): void => {
+    expect(reason).toMatch(/^Semantic search is unavailable/);
+    expect(reason).toContain('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT');
+  };
+
+  beforeEach(() => {
+    executeQueryMock.mockReset();
+    ensureVectorExtensionMock.mockReset();
+    embedQueryMock.mockReset();
+    embedQueryMock.mockResolvedValue([0.1, 0.2, 0.3]);
+    // Three stored embeddings, two allowed in the exact scan.
+    vi.stubEnv('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT', '2');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    { lane: 'is unavailable', arrange: () => ensureVectorExtensionMock.mockResolvedValue(false) },
+    {
+      lane: 'fails to load',
+      arrange: () => ensureVectorExtensionMock.mockRejectedValue(new Error('load failure')),
+    },
+  ])('names the skipped semantic lane when VECTOR $lane', async ({ arrange }) => {
+    executeQueryMock.mockResolvedValueOnce([{ cnt: 3 }]);
+    arrange();
+
+    const { results, degraded } = await search();
+
+    expect(results).toEqual([]);
+    expect(exactScanRan()).toBe(false);
+    expectSkippedLaneReason(degraded.reason);
+  });
+
+  it('names the skipped semantic lane when the vector index query fails', async () => {
+    executeQueryMock.mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 3 }];
+      if (cypher.includes('QUERY_VECTOR_INDEX')) throw new Error('stale vector index');
+      return [];
+    });
+    ensureVectorExtensionMock.mockResolvedValue(true);
+
+    const { results, degraded } = await search();
+
+    expect(results).toEqual([]);
+    expect(exactScanRan()).toBe(false);
+    expectSkippedLaneReason(degraded.reason);
+  });
+
+  it('leaves a genuinely empty vector result unflagged', async () => {
+    executeQueryMock.mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 3 }];
+      return [];
+    });
+    ensureVectorExtensionMock.mockResolvedValue(true);
+
+    const { results, degraded } = await search();
+
+    expect(results).toEqual([]);
+    expect(degraded.reason).toBeUndefined();
   });
 });
