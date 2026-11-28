@@ -327,6 +327,7 @@ gitnexus trace [from] [to] [--from-uid <uid>] [--to-uid <uid>]  # Shortest direc
 gitnexus detect-changes          # Map the working-tree diff to affected symbols and execution flows
 gitnexus check                   # Read-only structural checks against the indexed graph
 gitnexus cypher "<query>"        # Run a raw Cypher query against the knowledge graph
+gitnexus query "<concept>" --stale-policy error  # Any command above: warn (default) keeps the stale hint, ignore drops it, error exits 1 when the index is behind or diverged
 
 # Repository groups (multi-repo / monorepo service tracking)
 gitnexus group create <name>                                   # Create a repository group

@@ -17,6 +17,7 @@ import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
 import { writeCommandBanner } from './command-banner.js';
 import { runProcessCliUpdateNotice } from './update-notice.js';
+import { DEFAULT_STALE_POLICY, STALE_POLICIES } from './stale-policy-choices.js';
 import { memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 
 const program = new Command();
@@ -509,6 +510,15 @@ program
 // ─── Direct Tool Commands (no MCP overhead) ────────────────────────
 // These invoke LocalBackend directly for use in eval, scripts, and CI.
 
+/** `--stale-policy` (#3127): what an index-reading command does with a stale index. */
+const stalePolicyOption = () =>
+  new Option(
+    '--stale-policy <policy>',
+    'Stale index handling: warn keeps the staleness hint, ignore drops it, error exits 1',
+  )
+    .choices(STALE_POLICIES)
+    .default(DEFAULT_STALE_POLICY);
+
 program
   .command('query [search_query]')
   .description('Search the knowledge graph for execution flows related to a concept')
@@ -522,6 +532,7 @@ program
     '--content',
     'Include retained symbol source text (reports availability when disabled by retention)',
   )
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
@@ -536,6 +547,7 @@ program
     '--content',
     'Include retained symbol source text (reports availability when disabled by retention)',
   )
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program
@@ -571,6 +583,7 @@ program
     '--max-tokens <n>',
     'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
   )
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program
@@ -587,6 +600,7 @@ program
   .option('--include-tests', 'Include test files in results')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index')
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'traceCommand'));
 
 program
@@ -595,6 +609,7 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-l, --limit <n>', 'Max result rows to return')
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
@@ -606,6 +621,7 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-l, --limit <n>', 'Max changed symbols to return')
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
 program
@@ -615,6 +631,7 @@ program
   .option('--json', 'Emit machine-readable JSON')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .addOption(stalePolicyOption())
   .action(createLbugLazyAction(() => import('./tool.js'), 'checkCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────

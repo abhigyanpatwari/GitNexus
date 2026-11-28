@@ -154,9 +154,13 @@ describe('CLI help surface', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('用法： gitnexus query [options] [search_query]');
     expect(result.stdout).toContain('搜索知识图谱中与概念相关的执行流程');
-    expect(result.stdout).toContain('-r, --repo <name>     目标仓库（仅有一个已索引仓库时可省略）');
-    expect(result.stdout).toContain('-l, --limit <n>       最多返回的流程数（默认：5）');
-    expect(result.stdout).toContain('-h, --help            显示命令帮助');
+    // The option column is as wide as `--stale-policy <policy>` (#3127).
+    expect(result.stdout).toContain(
+      '-r, --repo <name>        目标仓库（仅有一个已索引仓库时可省略）',
+    );
+    expect(result.stdout).toContain('-l, --limit <n>          最多返回的流程数（默认：5）');
+    expect(result.stdout).toContain('--stale-policy <policy>  索引过期时的处理');
+    expect(result.stdout).toContain('-h, --help               显示命令帮助');
     expect(result.stdout).not.toContain('Target repository (omit if only one indexed)');
   });
 
@@ -263,6 +267,31 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--scope <scope>');
     expect(result.stdout).toContain('--base-ref <ref>');
     expect(result.stdout).toContain('--repo <name>');
+  });
+
+  it('index-reading tool commands expose --stale-policy with its choices (#3127)', () => {
+    for (const cmd of [
+      'query',
+      'context',
+      'impact',
+      'trace',
+      'cypher',
+      'detect-changes',
+      'check',
+    ]) {
+      const result = runHelp(cmd);
+      expect(result.status, cmd).toBe(0);
+      expect(result.stdout, cmd).toContain('--stale-policy <policy>');
+      expect(result.stdout.replace(/\s+/g, ' '), cmd).toContain(
+        '(choices: "warn", "ignore", "error", default: "warn")',
+      );
+    }
+  });
+
+  it('rejects an invalid --stale-policy value before running the command (#3127)', () => {
+    const result = runCliArgs(['query', 'auth', '--stale-policy', 'bogus']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Allowed choices are warn, ignore, error.');
   });
 
   it('query-family commands expose the --branch scope flag (#2106)', () => {
