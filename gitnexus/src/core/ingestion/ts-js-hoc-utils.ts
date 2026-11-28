@@ -117,6 +117,9 @@ export const TS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
   ['parenthesized_expression', 'satisfies_expression'],
   ['parenthesized_expression', 'as_expression', 'parenthesized_expression'],
   ['parenthesized_expression', 'satisfies_expression', 'parenthesized_expression'],
+  ['non_null_expression'],
+  ['non_null_expression', 'parenthesized_expression'],
+  ['parenthesized_expression', 'non_null_expression'],
 ];
 export const JS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
   ['parenthesized_expression'],

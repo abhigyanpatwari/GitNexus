@@ -539,6 +539,21 @@ describe('@declaration.is-default-export (#3956)', () => {
     }
   });
 
+  it('declares non-null-asserted callable initializers as functions (#323)', () => {
+    const functionNames = (src: string) =>
+      [
+        ...new Set(
+          emitTsScopeCaptures(src, 'x.ts')
+            .filter((m) => m['@declaration.function'] !== undefined && m['@declaration.name'])
+            .map((m) => m['@declaration.name']?.text),
+        ),
+      ].sort();
+    expect(functionNames('const F = (() => 1)!;')).toContain('F');
+    expect(
+      defaultExports(emitTsScopeCaptures, 'const F = (() => 1)!;\nexport default memo(F);', 'x.ts'),
+    ).toEqual(['F']);
+  });
+
   it('never declares a comparator after a wrapped or imported component as the default', () => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'Widget.jsx'],
