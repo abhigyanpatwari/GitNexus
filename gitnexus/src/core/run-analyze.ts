@@ -4445,6 +4445,21 @@ async function runFullAnalysisInner(
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
 
+      // A mount can disappear along with its import while the route's handler file
+      // stays unchanged. The new graph has no boundary edge to that old route.
+      const deletedFiles = new Set(hashDiff.deleted);
+      const persistedRoutes = await executeQuery(
+        'MATCH (r:Route) RETURN r.id AS id, r.filePath AS filePath',
+      );
+      for (const { id, filePath } of persistedRoutes) {
+        if (typeof id !== 'string' || typeof filePath !== 'string') continue;
+        const currentOwner = pipelineResult.graph.getNode(id)?.properties.filePath;
+        if (currentOwner === filePath) continue;
+
+        if (!deletedFiles.has(filePath)) effectiveWriteSet.add(filePath);
+        if (typeof currentOwner === 'string') effectiveWriteSet.add(currentOwner);
+      }
+
       const springConfigChanged =
         hashDiff.toWrite.some((filePath) => classifySpringConfigFile(filePath) !== null) ||
         hashDiff.deleted.some((filePath) => classifySpringConfigFile(filePath) !== null);
