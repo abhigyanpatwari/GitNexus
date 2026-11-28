@@ -2652,3 +2652,54 @@ func (l *Ledger) Save() error { return nil }
     },
   );
 });
+
+// #2836: a decorator that implements an interface and holds its delegate in a
+// field of that interface type. Interface dispatch fans out to every
+// implementation, which used to include the calling method itself: a
+// self-recursive CALLS edge no concrete call makes, read downstream as a cycle
+// and as the method being its own caller.
+describe('Go interface dispatch from a decorator (#2836)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-interface-decorator-dispatch'),
+      () => {},
+    );
+  }, 120000);
+
+  /** CALLS rows named `Owner.method → Owner.method:reason`. */
+  const ownedCalls = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) =>
+        `${owningTypeName(result, e.rel.sourceId)}.${e.source} → ` +
+        `${owningTypeName(result, e.rel.targetId)}.${e.target}:${e.rel.reason}`,
+    );
+
+  it('emits no self-loop CALLS edge', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (e) => e.rel.sourceId === e.rel.targetId,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+
+  it('still dispatches from the decorator to the other implementation', () => {
+    expect(ownedCalls()).toContain(
+      'loggingRepo.DeleteItem → SqlRepo.DeleteItem:interface-dispatch',
+    );
+    expect(ownedCalls()).toContain('loggingRepo.Count → SqlRepo.Count:interface-dispatch');
+  });
+
+  it("keeps dispatch to the decorator's other methods", () => {
+    expect(ownedCalls()).toContain('loggingRepo.DeleteItem → loggingRepo.Count:interface-dispatch');
+  });
+
+  it('keeps the full fan-out for a caller that is not an implementation', () => {
+    expect(ownedCalls()).toEqual(
+      expect.arrayContaining([
+        'Service.Run → SqlRepo.DeleteItem:interface-dispatch',
+        'Service.Run → loggingRepo.DeleteItem:interface-dispatch',
+      ]),
+    );
+  });
+});

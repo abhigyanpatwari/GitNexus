@@ -1605,7 +1605,21 @@ function emitReceiverBoundCallsInPass(
       }
     }
 
+    // A decorator holds its delegate behind the interface it implements, so
+    // `l.next.DeleteItem(id)` inside `loggingRepo.DeleteItem` lists the caller
+    // among the implementations. The self-loop is only real when a decorator
+    // wraps another instance of itself; emitted for every decorator, it reads
+    // as a cycle and makes the method its own caller (#2836).
+    const callerGraphId =
+      targetByMemberId.size === 0
+        ? undefined
+        : resolveCallerGraphId(site.callerScope ?? site.inScope, scopes, nodeLookup, site.atRange);
     const targets = [...targetByMemberId.values()]
+      .filter(
+        (target) =>
+          callerGraphId === undefined ||
+          resolveDefGraphId(target.member.filePath, target.member, nodeLookup) !== callerGraphId,
+      )
       .sort(
         (left, right) =>
           left.syntheticOwnerPriority - right.syntheticOwnerPriority ||
