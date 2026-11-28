@@ -1145,7 +1145,14 @@ $router->group(['prefix' => 'b'], function ($router) { require '${target}'; });
       );
     }
     const map = resolvePhpRouterRequireBindings(chain, bindings);
-    expect(map.get('routes/r11.php')).toHaveLength(256);
+    const contexts = map.get('routes/r11.php') ?? [];
+    const prefixes = contexts.map((ctx) => ctx.prefix);
+    // Each hop is required under `a` and under `b`. The walk fills the cap
+    // from the `a` side first, but the kept prefixes are still distinct
+    // compositions, not 256 copies of one context.
+    expect(contexts).toHaveLength(256);
+    expect(new Set(prefixes).size).toBe(256);
+    expect(prefixes.some((prefix) => prefix?.split('/').includes('b'))).toBe(true);
   });
 
   it('applies bare and grouped contexts to extracted routes', () => {
