@@ -49,6 +49,7 @@ import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import i18n from '../i18n';
 import { normalizePath, resolveUniqueIndexedPath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
+import { debugLog } from '../lib/debug';
 import { GraphStateProvider, useGraphState, type GraphMode } from './app-state/graph';
 
 export const AUTO_START_EMBEDDINGS_STORAGE_KEY = 'gitnexus.autoStartEmbeddings';
@@ -690,9 +691,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         agentRef.current = createGraphRAGAgent(config, backend, codebaseContext, chatOnly);
         setIsAgentReady(true);
         setAgentError(null);
-        if (import.meta.env.DEV) {
-          console.log('✅ Agent initialized successfully');
-        }
+        debugLog('agent', 'agent initialized successfully');
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setAgentError(message);
